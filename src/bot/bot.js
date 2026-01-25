@@ -5692,11 +5692,7 @@ ${benefits}
 // -----------------------------
 
 async function renderAdminHome(ctx) {
-  const admins = (CFG.SUPER_ADMINS || []).map(Number);
-  if (!admins.includes(Number(ctx.from.id))) {
-    await ctx.answerCallbackQuery({ text: 'Нет доступа', show_alert: true });
-    return;
-  }
+  // Access is checked in the callback handler via isSuperAdminTg().
 
   let text = '👑 Админ-панель\n\n';
   text += '• Платежи: manual/apply\n';
