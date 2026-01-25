@@ -2134,33 +2134,68 @@ export function getBot() {
   });
 
   // --- TEXT INPUT router (expectText) ---
-  bot.on('message:text', async (ctx) => {
-    const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+
+  // Setup channel expects a forwarded post (any message type). We handle it on `message`
+  // so that photo/video-only forwards also work.
+  bot.on('message', async (ctx, next) => {
     const exp = await getExpectText(ctx.from.id);
-    if (!exp) return; // normal text ignored
+    if (!exp || String(exp.type) !== 'setup_forward') return next();
+
+    // If user sends a command while we ожидали форвард — не блокируем команду.
+    const txt = String(ctx.message?.text || '');
+    const isCommand = txt.startsWith('/') &&
+      Array.isArray(ctx.message?.entities) &&
+      ctx.message.entities.some((e) => e.type === 'bot_command' && e.offset === 0);
+    if (isCommand) {
+      await clearExpectText(ctx.from.id);
+      return next();
+    }
 
     await clearExpectText(ctx.from.id);
 
-    // Setup channel: forwarded message
-    if (exp.type === 'setup_forward') {
-      const f = ctx.message.forward_from_chat || ctx.message.sender_chat;
-      if (!f || !f.id) {
-        await ctx.reply('Не вижу пересланный пост из канала. Перешли сюда пост именно из канала 🙏');
-        return;
-      }
-      const title = f.title || 'Channel';
-      const channelUsername = f.username || null;
-      const ws = await db.createWorkspace({ ownerUserId: u.id, title, channelId: f.id, channelUsername });
-      await db.ensureWorkspaceSettings(ws.id);
-      db.trackEvent('ws_created', { userId: u.id, wsId: ws.id, meta: { channelId: f.id, channelUsername } });
-      await db.auditWorkspace(ws.id, u.id, 'ws.created', { title, channelId: f.id, channelUsername });
-      await setActiveWorkspace(ctx.from.id, ws.id);
-      await ctx.reply(`✅ Канал подключен: <b>${escapeHtml(channelUsername ? '@' + channelUsername : title)}</b>`, {
-        parse_mode: 'HTML',
-        reply_markup: wsMenuKb(ws.id)
-      });
+    const f = ctx.message.forward_from_chat || ctx.message.sender_chat;
+    if (!f || !f.id) {
+      await ctx.reply('Не вижу пересланный пост из канала. Перешли сюда пост именно из канала 🙏');
+      await setExpectText(ctx.from.id, exp);
       return;
     }
+
+    const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+
+    const title = f.title || 'Channel';
+    const channelUsername = f.username || null;
+
+    const ws = await db.createWorkspace({ ownerUserId: u.id, title, channelId: f.id, channelUsername });
+    await db.ensureWorkspaceSettings(ws.id);
+
+    db.trackEvent('ws_created', { userId: u.id, wsId: ws.id, meta: { channelId: f.id, channelUsername } });
+    await db.auditWorkspace(ws.id, u.id, 'ws.created', { title, channelId: f.id, channelUsername });
+
+    await setActiveWorkspace(ctx.from.id, ws.id);
+
+    await ctx.reply(`✅ Канал подключен: <b>${escapeHtml(channelUsername ? '@' + channelUsername : title)}</b>`, {
+      parse_mode: 'HTML',
+      reply_markup: wsMenuKb(ws.id),
+    });
+  });
+
+  bot.on('message:text', async (ctx, next) => {
+    const text = String(ctx.message?.text || '');
+    const isCommand = text.startsWith('/') &&
+      Array.isArray(ctx.message?.entities) &&
+      ctx.message.entities.some((e) => e.type === 'bot_command' && e.offset === 0);
+
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp) return next(); // allow commands like /start to reach bot.command()
+
+    // If user sends a command while мы ждали ввод — не блокируем команду.
+    if (isCommand) {
+      await clearExpectText(ctx.from.id);
+      return next();
+    }
+
+    const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+    await clearExpectText(ctx.from.id);
 
     // Add curator by username
     if (exp.type === 'curator_username') {
@@ -2903,9 +2938,9 @@ ${reason}
   });
 
   // Proofs: screenshot (photo)
-  bot.on('message:photo', async (ctx) => {
+  bot.on('message:photo', async (ctx, next) => {
     const exp = await getExpectText(ctx.from.id);
-    if (!exp || String(exp.type) !== 'bx_proof_photo') return;
+    if (!exp || String(exp.type) !== 'bx_proof_photo') return next();
 
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
     await clearExpectText(ctx.from.id);
