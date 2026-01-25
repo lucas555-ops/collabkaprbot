@@ -2121,6 +2121,18 @@ export function getBot() {
   assertEnv();
   const bot = new Bot(CFG.BOT_TOKEN);
 
+  // Never log ctx/api/token. Log only safe identifiers.
+  bot.catch((err) => {
+    const ctx = err?.ctx;
+    console.error('[BOT] error', {
+      update_id: ctx?.update?.update_id ?? null,
+      chat_id: ctx?.chat?.id ?? null,
+      from_id: ctx?.from?.id ?? null,
+      message: String(err?.error?.message || err?.message || err?.error || err),
+      name: err?.error?.name || err?.name || 'Error',
+    });
+  });
+
   // --- TEXT INPUT router (expectText) ---
   bot.on('message:text', async (ctx) => {
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
