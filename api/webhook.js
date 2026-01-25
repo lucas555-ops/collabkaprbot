@@ -3,40 +3,6 @@ import { assertEnv, CFG } from '../src/lib/config.js';
 
 let botInitPromise = null;
 
-// Prevent leaking secrets (bot token can appear in grammy BotError ctx)
-const TOKEN_RE = /\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g;
-function redact(v) {
-  const s = typeof v === 'string' ? v : (() => {
-    try { return JSON.stringify(v); } catch { return String(v); }
-  })();
-  return s.replace(TOKEN_RE, '[REDACTED_BOT_TOKEN]');
-}
-
-function updateMeta(update) {
-  const m = update?.message;
-  const cb = update?.callback_query;
-  return {
-    update_id: update?.update_id,
-    kind: m ? 'message' : cb ? 'callback' : 'other',
-    from_id: m?.from?.id ?? cb?.from?.id ?? null,
-    chat_id: m?.chat?.id ?? cb?.message?.chat?.id ?? null,
-    text: typeof m?.text === 'string' ? m.text.slice(0, 80) : null,
-    cb_data: typeof cb?.data === 'string' ? cb.data.slice(0, 80) : null,
-  };
-}
-
-function safeError(e) {
-  const ctx = e?.ctx;
-  const u = ctx?.update;
-  return {
-    name: e?.name || e?.error?.name,
-    message: redact(e?.message || e?.error?.message || e),
-    update_id: u?.update_id ?? null,
-    chat_id: ctx?.chat?.id ?? null,
-    from_id: ctx?.from?.id ?? null,
-  };
-}
-
 async function ensureBotInit(bot) {
   if (!botInitPromise) {
     botInitPromise = bot.init().catch((e) => {
@@ -48,8 +14,38 @@ async function ensureBotInit(bot) {
   await botInitPromise;
 }
 
+function summarizeUpdate(update) {
+  const u = update?.message?.from || update?.callback_query?.from || null;
+  const chat = update?.message?.chat || update?.callback_query?.message?.chat || null;
+  const text = update?.message?.text ? String(update.message.text) : '';
+  const cb = update?.callback_query?.data ? String(update.callback_query.data) : '';
+  let kind = 'other';
+  if (update?.callback_query) kind = 'callback_query';
+  else if (update?.message?.text) kind = 'message:text';
+  else if (update?.message) kind = 'message';
+
+  return {
+    update_id: update?.update_id,
+    kind,
+    user_id: u?.id,
+    username: u?.username,
+    chat_id: chat?.id,
+    text: text ? text.slice(0, 120) : undefined,
+    cb_data: cb ? cb.slice(0, 120) : undefined,
+  };
+}
+
+function safeErr(e) {
+  const inner = e?.error || null;
+  return {
+    name: String(inner?.name || e?.name || 'Error'),
+    message: String(inner?.message || e?.message || e || ''),
+  };
+}
+
 export default async function handler(req, res) {
   try {
+    const t0 = Date.now();
     if (req.method !== 'POST') {
       res.status(405).end('Method Not Allowed');
       return;
@@ -78,13 +74,17 @@ export default async function handler(req, res) {
       return;
     }
 
-    // Helpful, short, safe webhook log (visible in Vercel "Messages" column)
-    console.log('[WEBHOOK] in', updateMeta(update));
+    // Success logs were missing before (Vercel "Messages" column was empty).
+    // Keep it short + no secrets.
+    console.log('[WEBHOOK] in ' + JSON.stringify(summarizeUpdate(update)));
 
     await bot.handleUpdate(update);
+
+    console.log('[WEBHOOK] ok ' + JSON.stringify({ ms: Date.now() - t0, update_id: update?.update_id }));
     res.status(200).json({ ok: true });
   } catch (e) {
-    console.error('[WEBHOOK] error', safeError(e));
+    // IMPORTANT: don't log the whole object (grammy BotError may include ctx.api.token).
+    console.error('[WEBHOOK] error ' + JSON.stringify(safeErr(e)));
     res.status(500).json({ ok: false, error: 'internal' });
   }
 }
