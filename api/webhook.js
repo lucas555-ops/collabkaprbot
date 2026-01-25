@@ -1,6 +1,19 @@
 import { getBot } from '../src/bot/bot.js';
 import { assertEnv, CFG } from '../src/lib/config.js';
 
+let botInitPromise = null;
+
+async function ensureBotInit(bot) {
+  if (!botInitPromise) {
+    botInitPromise = bot.init().catch((e) => {
+      // если init упал на холодном старте — разрешаем повторить на следующем запросе
+      botInitPromise = null;
+      throw e;
+    });
+  }
+  await botInitPromise;
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== 'POST') {
@@ -21,7 +34,9 @@ export default async function handler(req, res) {
     }
 
     assertEnv();
+
     const bot = getBot();
+    await ensureBotInit(bot);
 
     const update = req.body;
     if (!update) {
@@ -33,7 +48,6 @@ export default async function handler(req, res) {
     res.status(200).json({ ok: true });
   } catch (e) {
     console.error('[WEBHOOK] error', e);
-    // Non-2xx makes Telegram retry: better for reliability.
-    res.status(500).json({ ok: false, error: 'internal_error' });
+    res.status(500).json({ ok: false, error: 'internal' });
   }
 }
