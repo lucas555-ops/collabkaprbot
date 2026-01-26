@@ -2173,7 +2173,31 @@ export function getBot() {
   // so that photo/video-only forwards also work.
   bot.on('message', async (ctx, next) => {
     const exp = await getExpectText(ctx.from.id);
-    if (!exp || String(exp.type) !== 'setup_forward') return next();
+    if (!exp) return next();
+
+    // 🧩 Access diagnostics: allow forwarding a message from a user to get user_id
+    if (String(exp.type) === 'gw_access_userid') {
+      // If this is a text message, let message:text handler parse the id.
+      const hasText = typeof ctx.message?.text === 'string' && String(ctx.message.text || '').trim().length > 0;
+      if (hasText) return next();
+
+      const fo = ctx.message?.forward_origin;
+      const fUser = ctx.message?.forward_from || (fo && fo.type === 'user' ? fo.sender_user : null);
+      const uid = fUser?.id;
+
+      if (!uid) {
+        await ctx.reply('Не вижу пользователя в пересылке. Перешли сообщение именно от нужного человека (не из канала).');
+        return;
+      }
+
+      await clearExpectText(ctx.from.id);
+
+      const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+      await renderGwAccess({ ctx, gwId: Number(exp.gwId), ownerUserId: u.id, redis, db, forceRecheck: false, checkUserId: Number(uid) });
+      return;
+    }
+
+    if (String(exp.type) !== 'setup_forward') return next();
 
     // If user sends a command while we ожидали форвард — не блокируем команду.
     const txt = String(ctx.message?.text || '');
@@ -2250,6 +2274,22 @@ export function getBot() {
       await ctx.reply(`✅ Куратор @${username} добавлен.
 
 Включи 🛡 Куратор: ВКЛ, если хочешь чтобы он мог модерировать споры.`);
+      return;
+    }
+
+
+    // 🧩 Access diagnostics: ask user_id then check membership
+    if (exp.type === 'gw_access_userid') {
+      const gwId = Number(exp.gwId);
+      const t = String(ctx.message.text || '').trim();
+      const m = t.match(/^(\d{4,20})$/);
+      if (!m) {
+        await ctx.reply('Пришли user_id цифрами (пример: 611377976) или перешли сообщение от пользователя.');
+        await setExpectText(ctx.from.id, exp);
+        return;
+      }
+      const userId = Number(m[1]);
+      await renderGwAccess({ ctx, gwId, ownerUserId: u.id, redis, db, forceRecheck: false, checkUserId: userId });
       return;
     }
 
@@ -5417,6 +5457,27 @@ ${winnersList}
     // 🧩 Access
     if (p.a === 'a:gw_access') {
       await renderGwAccess({ ctx, gwId: Number(p.i), ownerUserId: u.id, redis, db, forceRecheck: false });
+      return;
+    }
+    if (p.a === 'a:gw_access_checkme') {
+      await renderGwAccess({ ctx, gwId: Number(p.i), ownerUserId: u.id, redis, db, forceRecheck: false, checkUserId: ctx.from.id });
+      return;
+    }
+    if (p.a === 'a:gw_access_user_prompt') {
+      await ctx.answerCallbackQuery();
+      const gwId = Number(p.i);
+      await setExpectText(ctx.from.id, { type: 'gw_access_userid', gwId });
+      const kb = new InlineKeyboard()
+        .text('⬅️ Назад', `a:gw_access|i:${gwId}`);
+      await ctx.editMessageText(
+        '🔎 <b>Проверка участника</b>
+
+' +
+        'Пришли <b>user_id</b> цифрами (пример: <code>611377976</code>)
+' +
+        'или <b>перешли</b> сюда любое сообщение от нужного пользователя.',
+        { parse_mode: 'HTML', reply_markup: kb }
+      );
       return;
     }
     if (p.a === 'a:gw_access_recheck') {
