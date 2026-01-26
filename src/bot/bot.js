@@ -3856,7 +3856,26 @@ bot.on('message:successful_payment', async (ctx) => {
 });
 // --- Callback router ---
   bot.on('callback_query:data', async (ctx) => {
-    const p = parseCb(ctx.callbackQuery.data);
+      // Make callback UX resilient: ack immediately, and never crash on edit/ack edge-cases
+    const _acq = ctx.answerCallbackQuery.bind(ctx);
+    ctx.answerCallbackQuery = (opts) => _acq(opts).catch(() => {});
+    const _editText = ctx.editMessageText.bind(ctx);
+    ctx.editMessageText = (text, extra) =>
+      _editText(text, extra).catch(async (e) => {
+        const msg = String(e?.description || e?.message || e);
+        if (msg.includes('message is not modified')) return;
+        // Invoices and some system messages can't be edited — fallback to a new message
+        return ctx.reply(text, extra).catch(() => {});
+      });
+    if (typeof ctx.editMessageReplyMarkup === 'function') {
+      const _editMarkup = ctx.editMessageReplyMarkup.bind(ctx);
+      ctx.editMessageReplyMarkup = (markup) => _editMarkup(markup).catch(() => {});
+    }
+
+    // Stop Telegram "loading" spinner ASAP
+    await ctx.answerCallbackQuery();
+
+  const p = parseCb(ctx.callbackQuery.data);
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
 
     // MENU
