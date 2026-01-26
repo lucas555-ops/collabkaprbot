@@ -585,27 +585,6 @@ function participantKb(gwId) {
     .text('🧾 Лог конкурса', `a:gw_log|i:${gwId}`);
 }
 
-
-function gwEntriesKb(gwId, page, total, pageSize) {
-  const p = Math.max(0, Number(page || 0));
-  const t = Math.max(0, Number(total || 0));
-  const ps = Math.max(1, Number(pageSize || 10));
-  const maxPage = Math.max(0, Math.ceil(t / ps) - 1);
-
-  const kb = new InlineKeyboard();
-
-  if (p > 0) kb.text('⬅️ Назад', `a:gw_entries|i:${gwId}|p:${p - 1}`);
-  if (p < maxPage) kb.text('➡️ Вперёд', `a:gw_entries|i:${gwId}|p:${p + 1}`);
-  if (p > 0 || p < maxPage) kb.row();
-
-  kb
-    .text('🔄 Обновить статусы (страница)', `a:gw_entries_refresh|i:${gwId}|p:${p}`)
-    .row()
-    .text('⬅️ К статистике', `a:gw_stats|i:${gwId}`);
-
-  return kb;
-}
-
 function renderParticipantScreen(g, entry) {
   const prize = (g.prize_value_text || '').trim() || '—';
   const ends = g.ends_at ? fmtTs(g.ends_at) : '—';
@@ -2057,11 +2036,6 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
 async function renderGwStats(ctx, ownerUserId, gwId) {
   const st = await db.getGiveawayStats(gwId, ownerUserId);
   if (!st) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-  if (typeof db.listGiveawayEntriesPage !== 'function') {
-    await ctx.editMessageText('⚠️ Нужен апдейт базы: обнови <b>src/db/queries.js</b> (патч listGiveawayEntriesPage).', { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('⬅️ К статистике', `a:gw_stats|i:${gwId}`) });
-    return;
-  }
   const total = Number(st.entries_total || 0);
   const elig = Number(st.eligible_count || 0);
   const notElig = Number(st.not_eligible_count || 0);
@@ -2079,7 +2053,9 @@ async function renderGwStats(ctx, ownerUserId, gwId) {
 🔍 Transparency log: 🧾`;
 
   const kb = new InlineKeyboard()
-  .text('👥 Участники', `a:gw_entries|i:${gwId}|p:0`)
+    .text('✅ Готовность конкурса', `a:gw_preflight|i:${gwId}`)
+    .row()
+    .text('ℹ️ Почему не прошёл', `a:gw_why|i:${gwId}`)
     .row()
     .text('🧾 Transparency log', `a:gw_log|i:${gwId}`)
     .row()
@@ -2096,59 +2072,6 @@ async function renderGwStats(ctx, ownerUserId, gwId) {
     .text('📣 Напомнить проверить', `a:gw_remind_q|i:${gwId}`)
     .row()
     .text('⬅️ Назад', `a:gw_open|i:${gwId}`);
-
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
-}
-
-async function renderGwEntries(ctx, ownerUserId, gwId, page = 0) {
-  const st = await db.getGiveawayStats(gwId, ownerUserId);
-  if (!st) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-  const total = Number(st.entries_total || 0);
-  const pageSize = 10;
-  const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
-  const p = Math.min(maxPage, Math.max(0, Number(page || 0)));
-
-  const offset = p * pageSize;
-  const rows = await db.listGiveawayEntriesPage(gwId, ownerUserId, pageSize, offset);
-
-  const lines = rows.map((r) => {
-    const icon = r.is_eligible ? '✅' : (r.last_checked_at ? '⚠️' : '⏳');
-    const who = r.tg_username ? `@${escapeHtml(String(r.tg_username))}` : `<code>${Number(r.tg_id)}</code>`;
-    const chk = r.last_checked_at ? escapeHtml(fmtTs(r.last_checked_at)) : '—';
-    return `${icon} ${who} <i>chk:</i> ${chk}`;
-  });
-
-  const text =
-`👥 <b>Участники конкурса #${gwId}</b>
-
-Страница: <b>${p + 1}</b>/<b>${maxPage + 1}</b> · Всего: <b>${total}</b>
-
-${lines.length ? lines.join('
-') : 'Пока пусто.'}
-
-Легенда: ✅ подтверждено · ⚠️ не подтверждено · ⏳ не проверяли
-💡 Нажми на участника, чтобы открыть “почему не прошёл”.`;
-
-  const kb = new InlineKeyboard();
-
-  // Per-participant buttons (click to open detail)
-  for (const r of rows) {
-    const icon = r.is_eligible ? '✅' : (r.last_checked_at ? '⚠️' : '⏳');
-    const who = r.tg_username ? `@${String(r.tg_username)}` : String(r.tg_id);
-    const label = `${icon} ${who}`.slice(0, 60);
-    kb.text(label, `a:ge|i:${gwId}|uid:${r.user_id}|p:${p}`).row();
-  }
-
-  // Paging controls
-  if (p > 0) kb.text('⬅️ Назад', `a:gw_entries|i:${gwId}|p:${p - 1}`);
-  if (p < maxPage) kb.text('➡️ Вперёд', `a:gw_entries|i:${gwId}|p:${p + 1}`);
-  if (p > 0 || p < maxPage) kb.row();
-
-  kb
-    .text('🔄 Обновить статусы (страница)', `a:gw_entries_refresh|i:${gwId}|p:${p}`)
-    .row()
-    .text('⬅️ К статистике', `a:gw_stats|i:${gwId}`);
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
 }
@@ -2171,6 +2094,237 @@ async function renderGwOpenPublic(ctx, gwId, userId) {
   const text = renderParticipantScreen(g, entry);
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: participantKb(gwId) });
 }
+
+
+
+function formatChatRef(chat) {
+  const s = String(chat);
+  // For -100... channel ids we keep as-is; for @username we keep as-is.
+  return s;
+}
+
+async function checkBotAccessCached(api, chat, botId, { forceRecheck = false } = {}) {
+  const key = k(['acc2', chat]);
+  if (forceRecheck) {
+    try { await redis.del(key); } catch {}
+  }
+
+  const cached = await redis.get(key);
+  if (cached) {
+    try { return typeof cached === 'string' ? JSON.parse(cached) : cached; } catch {}
+  }
+
+  try {
+    const cm = await api.getChatMember(chat, botId);
+    const st = String(cm.status || '');
+    let res;
+    if (st === 'administrator' || st === 'creator') res = { state: 'admin', status: st };
+    else if (st === 'member') res = { state: 'member', status: st };
+    else if (st === 'left' || st === 'kicked') res = { state: 'no', status: st };
+    else res = { state: 'no', status: st || 'unknown' };
+    await redis.set(key, JSON.stringify(res), { ex: 10 * 60 });
+    return res;
+  } catch (e) {
+    const res = { state: 'no', status: 'error', reason: String(e?.message || e) };
+    await redis.set(key, JSON.stringify(res), { ex: 5 * 60 });
+    return res;
+  }
+}
+
+function accessLine(chat, a) {
+  const ref = formatChatRef(chat);
+  if (a.state === 'admin') return `✅ ${ref} — bot: <b>admin</b>`;
+  if (a.state === 'member') return `🟦 ${ref} — bot: <b>member</b>`;
+  return `❌ ${ref} — bot: <b>no access</b>`;
+}
+
+export async function renderGwPreflight(ctx, ownerUserId, gwId, { forceRecheck = false } = {}) {
+  const g = await db.getGiveawayForOwner(gwId, ownerUserId);
+  if (!g) {
+    await ctx.editMessageText('Нет доступа.');
+    return;
+  }
+
+  const botId = await ensureBotId(ctx);
+  const botUsername = CFG.BOT_USERNAME || 'YourBotUsername';
+
+  // Main chat where giveaway is/will be published
+  const mainChat = g.published_chat_id ?? g.published_chat ?? g.channel_id ?? null;
+
+  const sponsorsRaw = await db.listGiveawaySponsors(gwId);
+  const sponsorChats = sponsorsRaw.map(s => sponsorToChatId(s.sponsor_text)).filter(Boolean);
+
+  const chats = [...new Set([mainChat, ...sponsorChats].filter(Boolean).map((x) => String(x)))];
+
+  let mainAcc = null;
+  if (mainChat) mainAcc = await checkBotAccessCached(ctx.api, String(mainChat), botId, { forceRecheck });
+
+  const results = [];
+  for (const chat of sponsorChats.map(String)) {
+    const a = await checkBotAccessCached(ctx.api, chat, botId, { forceRecheck });
+    results.push({ chat, a });
+  }
+
+  const adminCount = results.filter(r => r.a.state === 'admin').length + (mainAcc?.state === 'admin' ? 1 : 0);
+  const memberCount = results.filter(r => r.a.state === 'member').length + (mainAcc?.state === 'member' ? 1 : 0);
+  const noCount = results.filter(r => r.a.state === 'no').length + (mainAcc?.state === 'no' ? 1 : 0);
+
+  let verdict = '✅ <b>Готово к запуску</b>';
+  let hint = `Можно публиковать — бот сможет проверять подписки.`;
+
+  if (!mainChat) {
+    verdict = '⚠️ <b>Не выбран канал конкурса</b>';
+    hint = 'Сначала опубликуй конкурс в канал (или перепроверь, что бот подключён к workspace).';
+  } else if (noCount > 0) {
+    verdict = '❌ <b>Не готово: нет доступа</b>';
+    hint = `Добавь бота @${escapeHtml(botUsername)} админом в каналы, где стоит ❌.`;
+  } else if (memberCount > 0) {
+    verdict = '⚠️ <b>Почти готово</b>';
+    hint = `Лучше выдать боту @${escapeHtml(botUsername)} права <b>админа</b> в каналах (сейчас часть каналов — member).`;
+  }
+
+  const lines = [];
+  lines.push(`<b>Канал конкурса</b>:`);
+  lines.push(mainChat ? accessLine(String(mainChat), mainAcc) : '—');
+
+  lines.push('');
+  lines.push(`<b>Спонсоры</b>: ${sponsorChats.length ? '' : '—'}`);
+  if (sponsorChats.length) {
+    for (const r of results) lines.push(accessLine(r.chat, r.a));
+  }
+
+  const text =
+`🧪 <b>Готовность конкурса #${gwId}</b>
+
+${verdict}
+${hint}
+
+${lines.join('\n')}
+
+<i>Зачем это:</i> чтобы бот мог подтвердить подписки участников, ему нужен доступ к каналам.`;
+
+  const kb = new InlineKeyboard()
+    .text('🔄 Перепроверить', `a:gw_preflight|i:${gwId}|r:1`)
+    .row()
+    .text('⬅️ Назад', `a:gw_stats|i:${gwId}`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+
+  try {
+    await db.auditGiveaway(gwId, g.workspace_id, ownerUserId, 'gw.preflight_checked', {
+      mainChat: mainChat ? String(mainChat) : null,
+      sponsors: sponsorChats.map(String),
+      adminCount, memberCount, noCount
+    });
+  } catch {}
+}
+
+export async function renderGwWhyMenu(ctx, ownerUserId, gwId) {
+  const g = await db.getGiveawayForOwner(gwId, ownerUserId);
+  if (!g) {
+    await ctx.editMessageText('Нет доступа.');
+    return;
+  }
+
+  const kb = new InlineKeyboard()
+    .text('🔎 Ввести ID', `a:gw_why_enter|i:${gwId}`)
+    .row()
+    .text('📨 Переслать сообщение', `a:gw_why_forward|i:${gwId}`)
+    .row()
+    .text('⬅️ Назад', `a:gw_stats|i:${gwId}`);
+
+  await ctx.editMessageText(
+    `ℹ️ <b>Почему участник не прошёл</b>\n\nВыбери режим:\n• <b>Ввести ID</b> — быстро и надёжно.\n• <b>Переслать сообщение</b> — сработает только если у участника выключена “Forward privacy”.`,
+    { parse_mode: 'HTML', reply_markup: kb }
+  );
+}
+
+async function clearEligibilityCacheForGw(gwId, userTgId) {
+  let mainChat = null;
+  try {
+    const g = await db.getGiveawayInfoForUser(gwId);
+    mainChat = g?.published_chat_id ?? g?.published_chat ?? g?.channel_id ?? null;
+  } catch {}
+  const sponsors = await db.listGiveawaySponsors(gwId);
+  const sponsorChats = sponsors.map(s => sponsorToChatId(s.sponsor_text)).filter(Boolean);
+
+  const chats = [...new Set([mainChat, ...sponsorChats].filter(Boolean).map((x) => String(x)))];
+  for (const chat of chats) {
+    try { await redis.del(k(['cm', chat, userTgId])); } catch {}
+  }
+}
+
+function buildWhyText({ gwId, targetUserId, check }) {
+  const who = `<a href="tg://user?id=${Number(targetUserId)}">id:${Number(targetUserId)}</a>`;
+  const ok = check.isEligible ? '✅ <b>Eligible</b>' : (check.unknown ? '❔ <b>Не могу проверить полностью</b>' : '⚠️ <b>Not eligible</b>');
+
+  const lines = (check.results || []).map(r => {
+    const ref = formatChatRef(r.chat);
+    if (r.status === 'ok') return `✅ ${ref} — подписка OK`;
+    if (r.status === 'no') return `❌ ${ref} — <b>нет подписки</b>`;
+    return `❔ ${ref} — <b>не могу проверить</b> (нет доступа/приватный канал)`;
+  });
+
+  let help = 'Если участник подписался только что — пусть нажмёт “Проверить” заново.';
+  if (check.unknown) help = 'Есть ❔: обычно это значит, что бот не админ в одном из каналов или канал приватный.';
+  if (!check.isEligible && !check.unknown) help = 'Есть ❌: участник не подписан на один из каналов.';
+
+  const text =
+`ℹ️ <b>Почему не прошёл</b> · конкурс #${gwId}
+
+Участник: ${who}
+Результат: ${ok}
+
+${lines.length ? lines.join('\n') : 'Нет каналов для проверки.'}
+
+<i>${help}</i>`;
+  return text;
+}
+
+export async function renderGwWhyResult(ctx, ownerUserId, gwId, targetUserId, { forceRecheck = false } = {}) {
+  const g = await db.getGiveawayForOwner(gwId, ownerUserId);
+  if (!g) {
+    await ctx.editMessageText('Нет доступа.');
+    return;
+  }
+
+  if (forceRecheck) await clearEligibilityCacheForGw(gwId, targetUserId);
+
+  const check = await doEligibilityCheck(ctx, gwId, targetUserId);
+  const text = buildWhyText({ gwId, targetUserId, check });
+
+  const kb = new InlineKeyboard()
+    .text('🔄 Проверить ещё раз', `a:gw_why_recheck|i:${gwId}|tu:${Number(targetUserId)}`)
+    .row()
+    .text('🔎 Проверить другого', `a:gw_why_enter|i:${gwId}`)
+    .row()
+    .text('⬅️ Назад', `a:gw_stats|i:${gwId}`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+export async function sendGwWhyResult(ctx, ownerUserId, gwId, targetUserId, { forceRecheck = false } = {}) {
+  const g = await db.getGiveawayForOwner(gwId, ownerUserId);
+  if (!g) {
+    await ctx.reply('Нет доступа.');
+    return;
+  }
+
+  if (forceRecheck) await clearEligibilityCacheForGw(gwId, targetUserId);
+
+  const check = await doEligibilityCheck(ctx, gwId, targetUserId);
+  const text = buildWhyText({ gwId, targetUserId, check });
+
+  const kb = new InlineKeyboard()
+    .text('🔄 Проверить ещё раз', `a:gw_why_recheck|i:${gwId}|tu:${Number(targetUserId)}`)
+    .row()
+    .text('🔎 Проверить другого', `a:gw_why_enter|i:${gwId}`)
+    .row()
+    .text('⬅️ Назад', `a:gw_stats|i:${gwId}`);
+
+  await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+}
+
 
 async function ensureBotId(ctx) {
   if (CFG.BOT_ID) return CFG.BOT_ID;
@@ -2218,112 +2372,6 @@ async function doEligibilityCheck(ctx, gwId, userTgId) {
 
   const isEligible = results.every(r => r.status === 'ok') && !unknown;
   return { isEligible, unknown, results };
-}
-
-async function getChatLabelCached(ctx, chatId) {
-  const id = String(chatId);
-  const cacheKey = k(['chatmeta', id]);
-  try {
-    const cached = await redis.get(cacheKey);
-    if (cached) return String(cached);
-  } catch {}
-
-  try {
-    const chat = await ctx.api.getChat(id);
-    const label = chat?.username ? `@${chat.username}` : (chat?.title ? String(chat.title) : id);
-    try { await redis.set(cacheKey, label, { ex: 24 * 3600 }); } catch {}
-    return label;
-  } catch {
-    // If bot has no access to the chat, just show the raw id / @username.
-    return id;
-  }
-}
-
-function gwEntryDetailKb(gwId, page, entryUserId) {
-  const kb = new InlineKeyboard()
-    .text('🔄 Проверить сейчас', `a:gec|i:${gwId}|uid:${entryUserId}|p:${page}`)
-    .row()
-    .text('⬅️ К участникам', `a:gw_entries|i:${gwId}|p:${page}`)
-    .row()
-    .text('⬅️ К статистике', `a:gw_stats|i:${gwId}`);
-  return kb;
-}
-
-async function renderGwEntryDetail(ctx, ownerUserId, gwId, entryUserId, page = 0) {
-  const gOwner = await db.getGiveawayForOwner(gwId, ownerUserId);
-  if (!gOwner) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-  const userMeta = await db.getUserTgIdByUserId(Number(entryUserId));
-  const entryTgId = userMeta?.tg_id ? Number(userMeta.tg_id) : null;
-  const who = userMeta?.tg_username ? `@${escapeHtml(String(userMeta.tg_username))}` : (entryTgId ? `<code>${Number(entryTgId)}</code>` : `<code>user:${Number(entryUserId)}</code>`);
-
-  const entry = await db.getEntryStatus(gwId, Number(entryUserId));
-  const lastChk = entry?.last_checked_at ? escapeHtml(fmtTs(entry.last_checked_at)) : '—';
-  const stored =
-    !entry ? '⛔ не участвует'
-      : entry.is_eligible ? '✅ подтверждено (в базе)'
-      : entry.last_checked_at ? '⚠️ не подтверждено (в базе)'
-      : '⏳ не проверяли (в базе)';
-
-  // Build ordered list of required channels: main first, then sponsors
-  let mainChat = null;
-  try {
-    const gPublic = await db.getGiveawayInfoForUser(gwId);
-    mainChat = gPublic?.published_chat_id ?? gPublic?.published_chat ?? gPublic?.channel_id ?? null;
-  } catch {}
-
-  const sponsors = await db.listGiveawaySponsors(gwId);
-  const sponsorPairs = sponsors
-    .map(s => ({ text: String(s.sponsor_text || '').trim(), chat: sponsorToChatId(s.sponsor_text) }))
-    .filter(x => x.chat);
-
-  const required = [];
-  if (mainChat) required.push({ kind: 'main', chat: String(mainChat), text: null });
-  for (const sp of sponsorPairs) required.push({ kind: 'sponsor', chat: String(sp.chat), text: sp.text });
-
-  // Run check (uses Redis cache for getChatMember results)
-  const check = entryTgId ? await doEligibilityCheck(ctx, gwId, Number(entryTgId)) : { isEligible: false, unknown: true, results: [] };
-  const statusByChat = new Map(check.results.map(r => [String(r.chat), String(r.status)]));
-
-  const rows = [];
-  for (const item of required) {
-    const st = statusByChat.get(String(item.chat)) || 'unknown';
-    const icon = st === 'ok' ? '✅' : (st === 'no' ? '❌' : '❔');
-    let label = '';
-    if (item.kind === 'main') {
-      const nm = await getChatLabelCached(ctx, item.chat);
-      label = `Основной канал: ${escapeHtml(nm)}`;
-    } else {
-      label = `Спонсор: ${escapeHtml(item.text || item.chat)}`;
-    }
-    const reason = st === 'ok' ? 'подписан' : (st === 'no' ? 'нет подписки' : 'не могу проверить');
-    rows.push(`${icon} ${label} — <i>${reason}</i>`);
-  }
-
-  const hasUnknown = check.unknown || rows.some(x => x.includes('❔'));
-  const headline = check.isEligible && !hasUnknown ? '✅ <b>Проходит условия</b>' : (hasUnknown ? '⚠️ <b>Не могу проверить все каналы</b>' : '⚠️ <b>Не проходит условия</b>');
-
-  const tips = hasUnknown
-    ? `
-
-💡 <b>Что делать:</b>
-• Добавь бота в админы проблемных каналов/спонсоров
-• Затем нажми “🔄 Проверить сейчас”`
-    : '';
-
-  const text =
-`👤 <b>Участник</b>: ${who}
-🎁 Конкурс: <b>#${gwId}</b>
-
-${headline}
-🕒 Последняя проверка (в базе): <b>${lastChk}</b>
-📌 Статус (в базе): <b>${stored}</b>
-
-<b>Проверка по каналам:</b>
-${rows.length ? rows.join('
-') : '—'}${tips}`;
-
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwEntryDetailKb(gwId, Number(page || 0), Number(entryUserId), Number(entryTgId)) });
 }
 
 async function renderSetupInstructions(ctx) {
@@ -2400,6 +2448,35 @@ export function getBot() {
     });
   });
 
+
+
+  // --- Why-not-eligible helper: expects a forwarded message from a participant (optional) ---
+  bot.on('message', async (ctx, next) => {
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp || String(exp.type) !== 'gw_why_forward') return next();
+
+    const txt = String(ctx.message?.text || '');
+    const isCommand = txt.startsWith('/') &&
+      Array.isArray(ctx.message?.entities) &&
+      ctx.message.entities.some((e) => e.type === 'bot_command' && e.offset === 0);
+    if (isCommand) {
+      await clearExpectText(ctx.from.id);
+      return next();
+    }
+
+    const targetId = ctx.message?.forward_from?.id;
+    if (!targetId) {
+      await ctx.reply('Не вижу user_id в форварде (возможно у участника включена Forward privacy). Используй кнопку “Ввести ID” и пришли user_id цифрами.');
+      await setExpectText(ctx.from.id, exp);
+      return;
+    }
+
+    await clearExpectText(ctx.from.id);
+
+    const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+    await sendGwWhyResult(ctx, u.id, Number(exp.gwId), Number(targetId), { forceRecheck: true });
+  });
+
   bot.on('message:text', async (ctx, next) => {
     const text = String(ctx.message?.text || '');
     const isCommand = text.startsWith('/') &&
@@ -2437,6 +2514,21 @@ export function getBot() {
       await ctx.reply(`✅ Куратор @${username} добавлен.
 
 Включи 🛡 Куратор: ВКЛ, если хочешь чтобы он мог модерировать споры.`);
+      return;
+    }
+
+
+    // Giveaway: why not eligible (owner tool)
+    if (exp.type === 'gw_why_userid') {
+      const gwId = Number(exp.gwId);
+      const m = String(ctx.message.text || '').match(/(\d{5,})/);
+      if (!m) {
+        await ctx.reply('Пришли user_id цифрами (пример: 611377976).');
+        await setExpectText(ctx.from.id, exp);
+        return;
+      }
+      const targetId = Number(m[1]);
+      await sendGwWhyResult(ctx, u.id, gwId, targetId, { forceRecheck: true });
       return;
     }
 
@@ -5477,85 +5569,6 @@ if (p.a === 'a:bx_cat') {
       await renderGwStats(ctx, u.id, Number(p.i));
       return;
     }
-
-    if (p.a === 'a:gw_entries') {
-      await ctx.answerCallbackQuery();
-      await renderGwEntries(ctx, u.id, Number(p.i), Number(p.p || 0));
-      return;
-    }
-
-    if (p.a === 'a:ge') {
-      await ctx.answerCallbackQuery();
-      await renderGwEntryDetail(ctx, u.id, Number(p.i), Number(p.uid), Number(p.p || 0));
-      return;
-    }
-    if (p.a === 'a:gec') {
-      const gwId = Number(p.i);
-      const entryUserId = Number(p.uid);
-      const page = Number(p.p || 0);
-
-      // Owner-only
-      const g = await db.getGiveawayForOwner(gwId, u.id);
-      if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-      const userMeta = await db.getUserTgIdByUserId(entryUserId);
-      const entryTgId = userMeta?.tg_id ? Number(userMeta.tg_id) : null;
-      if (!entryTgId) return ctx.answerCallbackQuery({ text: 'Не вижу TG ID участника.' });
-
-      await ctx.answerCallbackQuery({ text: 'Проверяю…' });
-
-      const check = await doEligibilityCheck(ctx, gwId, entryTgId);
-      await db.setEntryEligibility(gwId, entryUserId, check.isEligible);
-      await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.owner_check_one', { entryUserId, entryTgId, isEligible: check.isEligible, unknown: check.unknown });
-
-      await renderGwEntryDetail(ctx, u.id, gwId, entryUserId, page);
-      return;
-    }
-
-    if (p.a === 'a:gw_entries_refresh') { {
-      const gwId = Number(p.i);
-      const page = Number(p.p || 0);
-
-      // Owner-only
-      const g = await db.getGiveawayForOwner(gwId, u.id);
-      if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-      // Anti-spam: 1 refresh per 30s per giveaway per owner
-      const rl = await rateLimit(k(['gw', 'entries_refresh', gwId, u.id]), { limit: 1, windowSec: 30 });
-      if (!rl.allowed) return ctx.answerCallbackQuery({ text: `Подожди ${fmtWait(rl.resetSec)}.` });
-
-      await ctx.answerCallbackQuery({ text: 'Проверяю…' });
-
-      // Refresh only current page (uses Redis membership cache inside doEligibilityCheck)
-      const st = await db.getGiveawayStats(gwId, u.id);
-      const total = Number(st?.entries_total || 0);
-      const pageSize = 10;
-      const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
-      const pPage = Math.min(maxPage, Math.max(0, page));
-      const offset = pPage * pageSize;
-
-      if (typeof db.listGiveawayEntriesPage !== 'function') {
-        await ctx.answerCallbackQuery({ text: 'Нужен апдейт src/db/queries.js (listGiveawayEntriesPage).' });
-        return;
-      }
-
-      const rows = await db.listGiveawayEntriesPage(gwId, u.id, pageSize, offset);
-
-      let okCount = 0;
-      let unknownCount = 0;
-
-      for (const r of rows) {
-        const check = await doEligibilityCheck(ctx, gwId, Number(r.tg_id));
-        await db.setEntryEligibility(gwId, Number(r.user_id), check.isEligible);
-        if (check.isEligible) okCount += 1;
-        if (check.unknown) unknownCount += 1;
-      }
-
-      await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.owner_refresh_page', { page: pPage, pageSize, okCount, unknownCount });
-
-      await renderGwEntries(ctx, u.id, gwId, pPage);
-      return;
-    }
     if (p.a === 'a:gw_log') {
       await ctx.answerCallbackQuery();
       await renderGwLog(ctx, u.id, Number(p.i));
@@ -5689,6 +5702,46 @@ ${winnersList}
       await renderGwAccess({ ctx, gwId: Number(p.i), ownerUserId: u.id, redis, db, forceRecheck: true });
       return;
     }
+
+    // ✅ Preflight readiness (owner)
+    if (p.a === 'a:gw_preflight') {
+      await ctx.answerCallbackQuery();
+      await renderGwPreflight(ctx, u.id, Number(p.i), { forceRecheck: String(p.r || '') === '1' });
+      return;
+    }
+
+    // ℹ️ Why not eligible (owner)
+    if (p.a === 'a:gw_why') {
+      await ctx.answerCallbackQuery();
+      await renderGwWhyMenu(ctx, u.id, Number(p.i));
+      return;
+    }
+    if (p.a === 'a:gw_why_enter') {
+      const gwId = Number(p.i);
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText(
+        'ℹ️ <b>Почему не прошёл</b>\n\nПришли <b>user_id</b> участника (цифрами).\n\nПодсказка: участник может узнать свой id командой /whoami.',
+        { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_stats|i:${gwId}`) }
+      );
+      await setExpectText(ctx.from.id, { type: 'gw_why_userid', gwId });
+      return;
+    }
+    if (p.a === 'a:gw_why_forward') {
+      const gwId = Number(p.i);
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText(
+        'ℹ️ <b>Почему не прошёл</b>\n\nПерешли сюда сообщение участника (forward).\n\nВажно: если у участника включена “Forward privacy”, бот не увидит user_id — тогда используй “Ввести ID”.',
+        { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_why|i:${gwId}`) }
+      );
+      await setExpectText(ctx.from.id, { type: 'gw_why_forward', gwId });
+      return;
+    }
+    if (p.a === 'a:gw_why_recheck') {
+      await ctx.answerCallbackQuery();
+      await renderGwWhyResult(ctx, u.id, Number(p.i), Number(p.tu), { forceRecheck: true });
+      return;
+    }
+
 
     // Create giveaway
     if (p.a === 'a:gw_new') {
