@@ -527,6 +527,8 @@ function gwSponsorsOptionalKb(wsId) {
   return new InlineKeyboard()
     .text('✅ Без спонсоров (соло)', `a:gw_sponsors_skip|ws:${wsId}`)
     .row()
+    .text('✍️ Ввести списком', `a:gw_sponsors_enter|ws:${wsId}`)
+    .row()
     .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
     .row()
     .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
@@ -2904,7 +2906,7 @@ ${reason}
 ` +
 `Если это соло-розыгрыш — нажми «✅ Без спонсоров (соло)».
 ` +
-`Если есть партнёры — пришли список @каналов или ссылками t.me (через пробел/перенос строки).
+`Если есть партнёры — нажми «✍️ Ввести списком» и пришли список @каналов или ссылками t.me (через пробел/перенос строки).
 
 ` +
 `Можно и через папку: нажми «📁 Из папки».`,
@@ -5117,6 +5119,30 @@ if (p.a === 'a:bx_cat') {
       return;
     }
 
+    // Giveaways: sponsors enter list (explicit)
+    if (p.a === 'a:gw_sponsors_enter') {
+      const wsId = Number(p.ws);
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      await clearExpectText(ctx.from.id);
+      await setExpectText(ctx.from.id, { type: 'gw_sponsors_text', wsId });
+
+      await ctx.answerCallbackQuery();
+      const isPro = await db.isWorkspacePro(wsId);
+      const max = isPro ? CFG.GIVEAWAY_SPONSORS_MAX_PRO : CFG.GIVEAWAY_SPONSORS_MAX_FREE;
+
+      await ctx.editMessageText(
+        `✍️ Пришли список спонсоров (до ${max}) — @каналы или ссылки t.me (через пробел/перенос строки).
+
+` +
+        `Если это соло — нажми «✅ Без спонсоров (соло)».`,
+        { reply_markup: gwSponsorsOptionalKb(wsId) }
+      );
+      return;
+    }
+
+
 // Giveaways: load sponsors from folder
     if (p.a === 'a:gw_sponsors_from_folder') {
       const wsId = Number(p.ws);
@@ -5393,13 +5419,15 @@ if (p.a === 'a:gw_prize') {
       const kb = new InlineKeyboard()
         .text('✅ Без спонсоров (соло)', `a:gw_sponsors_skip|ws:${wsId}`)
         .row()
+        .text('✍️ Ввести списком', `a:gw_sponsors_enter|ws:${wsId}`)
+        .row()
         .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
         .row()
         .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
       await ctx.editMessageText(
         `Спонсоры (необязательно, до ${max}).\n\n` +
         `Если это соло — нажми «✅ Без спонсоров (соло)».\n` +
-        `Если есть партнёры — пришли список @каналов или t.me ссылками.`,
+        `Если есть партнёры — нажми «✍️ Ввести списком» и пришли список @каналов или t.me ссылками (можно просто прислать).`,
         { reply_markup: kb }
       );
       await setExpectText(ctx.from.id, { type: 'gw_sponsors_text', wsId });
@@ -5426,13 +5454,15 @@ if (p.a === 'a:gw_prize') {
       const kb = new InlineKeyboard()
         .text('✅ Без спонсоров (соло)', `a:gw_sponsors_skip|ws:${wsId}`)
         .row()
+        .text('✍️ Ввести списком', `a:gw_sponsors_enter|ws:${wsId}`)
+        .row()
         .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
         .row()
         .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
       await ctx.editMessageText(
         `Спонсоры (необязательно, до ${max}).\n\n` +
         `Если соло — нажми «✅ Без спонсоров (соло)».\n` +
-        `Если есть партнёры — пришли список @каналов или t.me ссылками.`,
+        `Если есть партнёры — нажми «✍️ Ввести списком» и пришли список @каналов или t.me ссылками (можно просто прислать).`,
         { reply_markup: kb }
       );
       await setExpectText(ctx.from.id, { type: 'gw_sponsors_text', wsId });
