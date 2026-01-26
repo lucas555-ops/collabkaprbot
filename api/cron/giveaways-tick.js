@@ -10,13 +10,15 @@ function getBearerToken(req) {
 
 export default async function handler(req, res) {
   try {
-    // NOTE: Vercel Cron invokes endpoints via HTTP GET (docs),
-    // but we also allow POST for manual runs (curl / external schedulers).
-    const m = String(req.method || 'GET').toUpperCase();
-    if (m !== 'GET' && m !== 'POST') {
+    // Vercel Cron invokes the path with GET.
+    // Keep POST support for manual triggers / external schedulers.
+    if (req.method !== 'GET' && req.method !== 'POST') {
       res.status(405).end('Method Not Allowed');
       return;
     }
+
+    // Never cache cron responses.
+    res.setHeader('Cache-Control', 'no-store');
 
     // Cron secret is REQUIRED in prod.
     if (!CFG.CRON_SECRET) {
