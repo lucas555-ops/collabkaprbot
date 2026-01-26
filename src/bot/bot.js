@@ -523,6 +523,16 @@ function gwNewStepDeadlineKb(wsId) {
     .text('⬅️ Назад', `a:gw_step_sponsors|ws:${wsId}`);
 }
 
+function gwSponsorsOptionalKb(wsId) {
+  return new InlineKeyboard()
+    .text('✅ Без спонсоров (соло)', `a:gw_sponsors_skip|ws:${wsId}`)
+    .row()
+    .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
+    .row()
+    .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
+}
+
+
 function gwConfirmKb(wsId) {
   return new InlineKeyboard()
     .text('📣 Опубликовать', `a:gw_publish|ws:${wsId}`)
@@ -2073,8 +2083,17 @@ async function ensureBotId(ctx) {
 }
 
 async function doEligibilityCheck(ctx, gwId, userTgId) {
+  // Always check the main giveaway channel (where the post is published), plus optional sponsor channels.
+  let mainChat = null;
+  try {
+    const g = await db.getGiveawayInfoForUser(gwId);
+    mainChat = g?.published_chat_id ?? g?.published_chat ?? g?.channel_id ?? null;
+  } catch {}
+
   const sponsors = await db.listGiveawaySponsors(gwId);
-  const chats = sponsors.map(s => sponsorToChatId(s.sponsor_text)).filter(Boolean);
+  const sponsorChats = sponsors.map(s => sponsorToChatId(s.sponsor_text)).filter(Boolean);
+
+  const chats = [...new Set([mainChat, ...sponsorChats].filter(Boolean).map((x) => String(x)))];
   const results = [];
   let unknown = false;
 
@@ -2880,9 +2899,16 @@ ${reason}
       await setDraft(ctx.from.id, draft);
       const isPro = await db.isWorkspacePro(exp.wsId);
       const max = isPro ? CFG.GIVEAWAY_SPONSORS_MAX_PRO : CFG.GIVEAWAY_SPONSORS_MAX_FREE;
-      await ctx.reply(`Ок. Теперь спонсоры (до ${max}). Пришли списком @каналов или ссылками t.me (через пробел/перенос строки).
+      await ctx.reply(`Ок. Спонсоры (необязательно, до ${max}).
 
-Можно и через папку: нажми «📁 Из папки» в меню шага.`);
+` +
+`Если это соло-розыгрыш — нажми «✅ Без спонсоров (соло)».
+` +
+`Если есть партнёры — пришли список @каналов или ссылками t.me (через пробел/перенос строки).
+
+` +
+`Можно и через папку: нажми «📁 Из папки».`,
+{ reply_markup: gwSponsorsOptionalKb(exp.wsId) });
       await setExpectText(ctx.from.id, { type: 'gw_sponsors_text', wsId: exp.wsId });
       return;
     }
@@ -2890,7 +2916,10 @@ ${reason}
     if (exp.type === 'gw_sponsors_text') {
       const sponsors = parseSponsorsFromText(ctx.message.text);
       if (!sponsors.length) {
-        await ctx.reply('Не вижу спонсоров. Пришли хотя бы один @канал или t.me/username');
+        await ctx.reply(
+          'Спонсоры не распознаны. Пришли список @каналов / t.me-ссылок\nили нажми «✅ Без спонсоров (соло)».',
+          { reply_markup: gwSponsorsOptionalKb(exp.wsId) }
+        );
         await setExpectText(ctx.from.id, exp);
         return;
       }
@@ -5070,7 +5099,25 @@ if (p.a === 'a:bx_cat') {
       return;
     }
 
-    // Giveaways: load sponsors from folder
+    
+    // Giveaways: sponsors skip (solo mode)
+    if (p.a === 'a:gw_sponsors_skip') {
+      const wsId = Number(p.ws);
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      const draft = (await getDraft(ctx.from.id)) || {};
+      draft.wsId = wsId;
+      draft.sponsors = [];
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.answerCallbackQuery({ text: 'Соло: без спонсоров ✅' });
+      await ctx.editMessageText('Ок. Выбери дедлайн:', { reply_markup: gwNewStepDeadlineKb(wsId) });
+      return;
+    }
+
+// Giveaways: load sponsors from folder
     if (p.a === 'a:gw_sponsors_from_folder') {
       const wsId = Number(p.ws);
       const ws = await db.getWorkspace(u.id, wsId);
@@ -5344,10 +5391,17 @@ if (p.a === 'a:gw_prize') {
       const isPro = await db.isWorkspacePro(wsId);
       const max = isPro ? CFG.GIVEAWAY_SPONSORS_MAX_PRO : CFG.GIVEAWAY_SPONSORS_MAX_FREE;
       const kb = new InlineKeyboard()
+        .text('✅ Без спонсоров (соло)', `a:gw_sponsors_skip|ws:${wsId}`)
+        .row()
         .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
         .row()
         .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
-      await ctx.editMessageText(`Теперь спонсоры (до ${max}). Пришли списком @каналов или ссылками t.me.`, { reply_markup: kb });
+      await ctx.editMessageText(
+        `Спонсоры (необязательно, до ${max}).\n\n` +
+        `Если это соло — нажми «✅ Без спонсоров (соло)».\n` +
+        `Если есть партнёры — пришли список @каналов или t.me ссылками.`,
+        { reply_markup: kb }
+      );
       await setExpectText(ctx.from.id, { type: 'gw_sponsors_text', wsId });
       return;
     }
@@ -5370,10 +5424,17 @@ if (p.a === 'a:gw_prize') {
       const isPro = await db.isWorkspacePro(wsId);
       const max = isPro ? CFG.GIVEAWAY_SPONSORS_MAX_PRO : CFG.GIVEAWAY_SPONSORS_MAX_FREE;
       const kb = new InlineKeyboard()
+        .text('✅ Без спонсоров (соло)', `a:gw_sponsors_skip|ws:${wsId}`)
+        .row()
         .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
         .row()
         .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
-      await ctx.editMessageText(`Пришли спонсоров списком (до ${max}):`, { reply_markup: kb });
+      await ctx.editMessageText(
+        `Спонсоры (необязательно, до ${max}).\n\n` +
+        `Если соло — нажми «✅ Без спонсоров (соло)».\n` +
+        `Если есть партнёры — пришли список @каналов или t.me ссылками.`,
+        { reply_markup: kb }
+      );
       await setExpectText(ctx.from.id, { type: 'gw_sponsors_text', wsId });
       return;
     }
@@ -5551,9 +5612,15 @@ if (p.a === 'a:gw_prize') {
       const ok = await redis.set(rlKey, '1', { nx: true, ex: 30 * 60 });
       if (!ok) return ctx.answerCallbackQuery({ text: 'Уже отправляли недавно.' });
 
+      const sponsors = await db.listGiveawaySponsors(gwId);
+      const hasSponsors = Array.isArray(sponsors) && sponsors.length > 0;
+
       const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${gwId}`;
+      const line1 = hasSponsors
+        ? '1) Подпишись на канал конкурса (этот канал) и на все каналы-спонсоры'
+        : '1) Подпишись на канал конкурса (этот канал)';
       const text =
-`📣 <b>Напоминание участникам</b>\n\nЧтобы участие засчиталось ✅\n1) Подпишись на все каналы-спонсоры\n2) Нажми <b>«Проверить участие»</b> в боте\n\n🔍 Проверка: ${escapeHtml(link)}`;
+`📣 <b>Напоминание участникам</b>\n\nЧтобы участие засчиталось ✅\n${line1}\n2) Нажми <b>«Проверить участие»</b> в боте\n\n🔍 Проверка: ${escapeHtml(link)}`;
 
       try {
         const sent = await ctx.api.sendMessage(Number(g.published_chat_id), text, {
