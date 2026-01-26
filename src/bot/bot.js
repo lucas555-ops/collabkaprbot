@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from 'grammy'; 
+import { Bot, InlineKeyboard } from 'grammy';
 import { CFG, assertEnv } from '../lib/config.js';
 import { redis, k, rateLimit } from '../lib/redis.js';
 import * as db from '../db/queries.js';
@@ -4222,6 +4222,14 @@ bot.on('message:successful_payment', async (ctx) => {
       await renderAdminMetrics(ctx, days);
       return;
     }
+    if (p.a === 'a:admin_mod_list') {
+      await ctx.answerCallbackQuery();
+      const isAdmin = isSuperAdminTg(ctx.from.id);
+      if (!isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+      await renderAdminModerators(ctx);
+      return;
+    }
+
     if (p.a === 'a:admin_mod_add') {
       const isAdmin = isSuperAdminTg(ctx.from.id);
       if (!isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
@@ -4233,9 +4241,9 @@ bot.on('message:successful_payment', async (ctx) => {
     if (p.a === 'a:admin_mod_rm') {
       const isAdmin = isSuperAdminTg(ctx.from.id);
       if (!isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-      await ctx.answerCallbackQuery();
+      await ctx.answerCallbackQuery({ text: 'Удалено.' });
       await db.removeNetworkModerator(Number(p.uid));
-      await ctx.editMessageText('✅ Удалено.', { reply_markup: new InlineKeyboard().text('⬅️ Назад', 'a:admin_home') });
+      await renderAdminModerators(ctx);
       return;
     }
 
@@ -6417,6 +6425,128 @@ async function renderAdminHome(ctx) {
 
   await ctx.editMessageText(text, { reply_markup: kb });
 }
+
+
+async function renderAdminMetrics(ctx, days = 14) {
+  const d = Math.max(1, Math.min(90, Number(days) || 14));
+  const snap = await db.getAdminMetricsSnapshot(d);
+
+  const usersTotal = snap?.users_total ?? '—';
+  const wsTotal = snap?.workspaces_total ?? '—';
+  const gwTotal = snap?.giveaways_total ?? '—';
+  const gwActive = snap?.giveaways_active ?? '—';
+  const offersTotal = snap?.offers_total ?? '—';
+  const offersActive = snap?.offers_active ?? '—';
+
+  let text = `📈 <b>Метрики</b> · окно <b>${d}д</b>
+
+`;
+  text += `👥 Пользователи: <b>${escapeHtml(String(usersTotal))}</b>
+`;
+  text += `📣 Каналы: <b>${escapeHtml(String(wsTotal))}</b>
+`;
+  text += `🎁 Конкурсы: <b>${escapeHtml(String(gwActive))}</b> активн. / <b>${escapeHtml(String(gwTotal))}</b> всего
+`;
+  text += `📦 Офферы: <b>${escapeHtml(String(offersActive))}</b> активн. / <b>${escapeHtml(String(offersTotal))}</b> всего
+`;
+
+  // Payments summary
+  const pays = Array.isArray(snap?.payments) ? snap.payments : [];
+  if (pays.length) {
+    const byCurrency = new Map();
+    for (const r of pays) {
+      const cur = String(r.currency || '');
+      const status = String(r.status || '');
+      const key = `${status}::${cur}`;
+      const prev = byCurrency.get(key) || { cnt: 0, amount_sum: 0 };
+      byCurrency.set(key, { cnt: prev.cnt + Number(r.cnt || 0), amount_sum: prev.amount_sum + Number(r.amount_sum || 0) });
+    }
+
+    text += `
+💳 <b>Payments</b> (за ${d}д)
+`;
+    for (const [key, v] of byCurrency.entries()) {
+      const [status, cur] = key.split('::');
+      text += `• ${escapeHtml(status)}: <b>${escapeHtml(String(v.cnt))}</b> / <b>${escapeHtml(String(v.amount_sum))} ${escapeHtml(cur)}</b>
+`;
+    }
+  }
+
+  // Optional analytics
+  const topline = snap?.analytics_topline || null;
+  if (topline) {
+    text += `
+📊 <b>Активность</b>
+`;
+    text += `DAU(24h): <b>${escapeHtml(String(topline.dau_24h ?? 0))}</b> · `;
+    text += `WAU(7d): <b>${escapeHtml(String(topline.wau_7d ?? 0))}</b> · `;
+    text += `MAU(30d): <b>${escapeHtml(String(topline.mau_30d ?? 0))}</b>
+`;
+
+    // Show last 7 days table (if available)
+    const daily = Array.isArray(snap?.analytics_daily) ? snap.analytics_daily : [];
+    if (daily.length) {
+      const rows = daily.slice(0, 7);
+      text += `
+📅 Последние дни (MSK)
+`;
+      for (const r of rows) {
+        const day = escapeHtml(String(r.day || '')); // already date
+        text += `• ${day}: DAU ${escapeHtml(String(r.dau ?? 0))}, starts ${escapeHtml(String(r.starts ?? 0))}, ws ${escapeHtml(String(r.ws_created ?? 0))}, gw ${escapeHtml(String(r.gw_published ?? 0))}
+`;
+      }
+    }
+  } else {
+    text += `
+ℹ️ Analytics выключены (ANALYTICS_ENABLED=false) — показываю базовые счётчики.`;
+  }
+
+  const kb = new InlineKeyboard()
+    .text('7д', 'a:admin_metrics|d:7')
+    .text('14д', 'a:admin_metrics|d:14')
+    .row()
+    .text('30д', 'a:admin_metrics|d:30')
+    .text('90д', 'a:admin_metrics|d:90')
+    .row()
+    .text('📋 Модераторы', 'a:admin_mod_list')
+    .row()
+    .text('⬅️ Админка', 'a:admin_home');
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function renderAdminModerators(ctx) {
+  const rows = await db.listNetworkModerators();
+
+  let text = `📋 <b>Модераторы</b>
+
+`;
+  if (!rows.length) {
+    text += 'Пока нет модераторов.';
+  } else {
+    for (const r of rows) {
+      const who = r.tg_username ? '@' + r.tg_username : 'id ' + r.tg_id;
+      const when = r.created_at ? new Date(r.created_at).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }) : '—';
+      text += `• <b>${escapeHtml(who)}</b> · ${escapeHtml(when)}
+`;
+    }
+  }
+
+  const kb = new InlineKeyboard()
+    .text('➕ Добавить модератора', 'a:admin_mod_add')
+    .row();
+
+  // Remove buttons
+  for (const r of rows) {
+    const who = r.tg_username ? '@' + r.tg_username : 'id ' + r.tg_id;
+    kb.text(`🗑 ${who}`, `a:admin_mod_rm|uid:${r.user_id}`).row();
+  }
+
+  kb.text('⬅️ Админка', 'a:admin_home');
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
 async function renderAdminPayments(ctx, statusRaw = 'ORPHANED', page = 0) {
   const status = String(statusRaw || 'ORPHANED').toUpperCase();
   const limit = 10;
