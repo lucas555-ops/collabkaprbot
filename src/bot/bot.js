@@ -367,30 +367,37 @@ function bxNeedNetworkKb(wsId) {
     .text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
 }
 
+
+const BX_CATEGORIES = [
+  { key: 'cosmetics', label: '💄 Косметика' },
+  { key: 'fashion', label: '👗 Одежда' },
+  { key: 'unboxing', label: '📦 Распаковка' },
+  { key: 'other', label: '✨ Другое' }
+];
+
+function bxCategoryLabel(c) {
+  return BX_CATEGORIES.find((x) => x.key === c)?.label || '✨ Другое';
+}
+
 function bxCategoryKb(wsId) {
-  return new InlineKeyboard()
-    .text('💄 Косметика', `a:bx_cat|ws:${wsId}|c:cosmetics`)
-    .row()
-    .text('🧴 Уход', `a:bx_cat|ws:${wsId}|c:skincare`)
-    .row()
-    .text('🎀 Аксессуары', `a:bx_cat|ws:${wsId}|c:accessories`)
-    .row()
-    .text('✨ Другое', `a:bx_cat|ws:${wsId}|c:other`)
-    .row()
-    .text('🧩 Шаблоны', `a:bx_preset_home|ws:${wsId}`)
-    .row()
-    .text('⬅️ Отмена', `a:bx_open|ws:${wsId}`);
+  const kb = new InlineKeyboard();
+  for (const c of BX_CATEGORIES) {
+    kb.text(c.label, `a:bx_cat|ws:${wsId}|c:${c.key}`).row();
+  }
+  kb.text('🧩 Шаблоны', `a:bx_preset_home|ws:${wsId}`).row();
+  kb.text('⬅️ Отмена', `a:bx_open|ws:${wsId}`);
+  return kb;
 }
 
 const BX_PRESETS = [
   {
-    id: 'review_barter_skincare',
-    title: '🎥 Обзор/распаковка за бартер (уход)',
-    category: 'skincare',
+    id: 'review_barter_unboxing',
+    title: '📦 Распаковка за бартер (любой бренд)',
+    category: 'unboxing',
     offer_type: 'review',
     compensation_type: 'barter',
     example:
-      'Заголовок: Ищу магазин уходовой косметики для обзора\n\nУсловия: обзор + 3 сторис. Аудитория: 500–2k. Гео: РФ. Хочу: бартер (продукты для обзора). Контакт: @myname'
+      'Заголовок: Ищу бренд для распаковки/обзора\n\nУсловия: обзор + 3 сторис. Аудитория: 500–2k. Гео: РФ. Хочу: бартер (товары для обзора). Контакт: @myname'
   },
   {
     id: 'ad_cert_cosmetics',
@@ -466,10 +473,9 @@ function bxPickKb(wsId, key, page = 0) {
   const kb = new InlineKeyboard();
   if (key === 'cat') {
     kb.text('Все', `a:bx_fset|ws:${wsId}|k:cat|v:all|p:${page}`).row();
-    kb.text('💄 Косметика', `a:bx_fset|ws:${wsId}|k:cat|v:cosmetics|p:${page}`).row();
-    kb.text('🧴 Уход', `a:bx_fset|ws:${wsId}|k:cat|v:skincare|p:${page}`).row();
-    kb.text('🎀 Аксессуары', `a:bx_fset|ws:${wsId}|k:cat|v:accessories|p:${page}`).row();
-    kb.text('✨ Другое', `a:bx_fset|ws:${wsId}|k:cat|v:other|p:${page}`).row();
+    for (const c of BX_CATEGORIES) {
+      kb.text(c.label, `a:bx_fset|ws:${wsId}|k:cat|v:${c.key}|p:${page}`).row();
+    }
   }
   if (key === 'type') {
     kb.text('Все', `a:bx_fset|ws:${wsId}|k:type|v:all|p:${page}`).row();
@@ -1040,14 +1046,6 @@ async function renderWsEditors(ctx, ownerUserId, wsId) {
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
 }
 
-function bxCategoryLabel(c) {
-  switch (c) {
-    case 'cosmetics': return '💄 Косметика';
-    case 'skincare': return '🧴 Уход';
-    case 'accessories': return '🎀 Аксессуары';
-    default: return '✨ Другое';
-  }
-}
 
 function bxTypeLabel(t) {
   switch (t) {
@@ -1067,7 +1065,7 @@ function bxCompLabel(p) {
   }
 }
 
-const BX_CATS = [null, 'cosmetics', 'skincare', 'accessories', 'other'];
+const BX_CATS = [null, 'cosmetics', 'fashion', 'unboxing', 'other'];
 const BX_TYPES = [null, 'ad', 'review', 'giveaway', 'other'];
 const BX_COMPS = [null, 'barter', 'cert', 'rub', 'mixed'];
 
