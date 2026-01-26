@@ -98,6 +98,44 @@ async function getPaymentsRuntimeFlags() {
   const autoApply = await getSysBool(SYS_KEYS.pay_auto_apply, CFG.PAYMENTS_AUTO_APPLY_DEFAULT);
   return { accept, autoApply };
 }
+async function sendStarsInvoice(ctx, { title, description, payload, amount, backCb }) {
+  // Stars payments: currency XTR, prices must contain exactly one item.
+  const chatId = ctx?.chat?.id;
+  const userId = ctx?.from?.id;
+
+  const prices = [{ label: title, amount: Number(amount) }];
+
+  try {
+    // Use raw API to OMIT provider_token (Bot API 7.4+ allows it and some stacks break on empty string)
+    await ctx.api.raw.sendInvoice({
+      chat_id: chatId,
+      title,
+      description,
+      payload,
+      currency: 'XTR',
+      prices,
+    });
+    return true;
+  } catch (e) {
+    const desc = String(e?.description || e?.error?.description || e?.message || e);
+    console.error('[PAY] sendInvoice(stars) failed', {
+      chat_id: chatId ?? null,
+      from_id: userId ?? null,
+      payload: String(payload || '').slice(0, 64),
+      error: desc,
+    });
+
+    const isAdmin = isSuperAdminTg(userId);
+    const text = isAdmin
+      ? `❌ Не удалось отправить Stars-инвойс.\nПричина: ${desc}\n\nПроверь:\n• Telegram клиент обновлён\n• Тестируешь НЕ с аккаунта владельца бота\n• Валидный Stars прайс (целое число Stars)\n`
+      : 'Не удалось отправить инвойс. Проверь, что Telegram обновлён и Stars доступны.';
+    try {
+      await ctx.reply(text, backCb ? { reply_markup: new InlineKeyboard().text('⬅️ Назад', backCb) } : undefined);
+    } catch {}
+    return false;
+  }
+}
+
 
 async function getRoleFlags(userRow, tgId) {
   const isAdmin = isSuperAdminTg(tgId);
@@ -3839,19 +3877,13 @@ bot.on('message:successful_payment', async (ctx) => {
       const token = randomToken(10);
       await redis.set(k(['pay_pro', token]), { wsId, ownerUserId: u.id, tgId: ctx.from.id }, { ex: 15 * 60 });
       const payload = `pro_${wsId}_${u.id}_${token}`;
-      try {
-        await ctx.api.sendInvoice(
-          ctx.chat.id,
-          'MicroGiveaways PRO',
-          'PRO на 30 дней: чаще bump, больше офферов, пин в ленте, расширенная аналитика.',
-          payload,
-          '',
-          'XTR',
-          [{ label: 'PRO 30 days', amount: CFG.PRO_STARS_PRICE }]
-        );
-      } catch (e) {
-        await ctx.reply('Не удалось отправить инвойс. Проверь, что бот может принимать Stars.', { reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:ws_pro|ws:${wsId}`) });
-      }
+      await sendStarsInvoice(ctx, {
+        title: 'MicroGiveaways PRO',
+        description: 'PRO на 30 дней: чаще bump, больше офферов, пин в ленте, расширенная аналитика.',
+        payload,
+        amount: CFG.PRO_STARS_PRICE,
+        backCb: `a:ws_pro|ws:${wsId}`,
+      });
       return;
     }
 
@@ -3877,22 +3909,14 @@ bot.on('message:successful_payment', async (ctx) => {
       );
 
       const payload = `brand_${u.id}_${pack.id}_${token}`;
-      try {
-        await ctx.api.sendInvoice(
-          ctx.chat.id,
-          `Brand Pass · ${pack.credits} контактов`,
-          'Кредиты нужны только для открытия НОВОГО диалога. Переписка внутри диалога — бесплатна.',
-          payload,
-          '',
-          'XTR',
-          [{ label: `Brand Pass ${pack.id}`, amount: pack.stars }]
-        );
-      } catch (e) {
-        const back = offerId ? `a:bx_pub|ws:${wsId}|o:${offerId}|p:${page}` : `a:brand_pass|ws:${wsId}`;
-        await ctx.reply('Не удалось отправить инвойс. Проверь, что бот может принимать Stars.', {
-          reply_markup: new InlineKeyboard().text('⬅️ Назад', back)
-        });
-      }
+      const back = offerId ? `a:bx_pub|ws:${wsId}|o:${offerId}|p:${page}` : `a:brand_pass|ws:${wsId}`;
+      await sendStarsInvoice(ctx, {
+        title: `Brand Pass · ${pack.credits} контактов`,
+        description: 'Кредиты нужны только для открытия НОВОГО диалога. Переписка внутри диалога — бесплатна.',
+        payload,
+        amount: pack.stars,
+        backCb: back,
+      });
       return;
     }
 
@@ -3931,21 +3955,13 @@ bot.on('message:successful_payment', async (ctx) => {
       );
       const payload = `bplan_${u.id}_${plan}_${token}`;
       const label = plan === 'max' ? 'Max' : 'Basic';
-      try {
-        await ctx.api.sendInvoice(
-          ctx.chat.id,
-          `Brand Plan · ${label} · ${CFG.BRAND_PLAN_DURATION_DAYS} дней`,
-          'Подписка на инструменты бренда: CRM стадии, расширенная воронка, удобный менеджмент диалогов.',
-          payload,
-          '',
-          'XTR',
-          [{ label: `Brand Plan ${label}`, amount: stars }]
-        );
-      } catch (e) {
-        await ctx.reply('Не удалось отправить инвойс. Проверь, что бот может принимать Stars.', {
-          reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:brand_plan|ws:${wsId}`)
-        });
-      }
+      await sendStarsInvoice(ctx, {
+        title: `Brand Plan · ${label} · ${CFG.BRAND_PLAN_DURATION_DAYS} дней`,
+        description: 'Подписка на инструменты бренда: CRM стадии, расширенная воронка, удобный менеджмент диалогов.',
+        payload,
+        amount: stars,
+        backCb: `a:brand_plan|ws:${wsId}`,
+      });
       return;
     }
 
@@ -3973,21 +3989,13 @@ bot.on('message:successful_payment', async (ctx) => {
         { ex: 15 * 60 }
       );
       const payload = `match_${u.id}_${tier.id}_${token}`;
-      try {
-        await ctx.api.sendInvoice(
-          ctx.chat.id,
-          `Smart Matching · ${tier.title}`,
-          'Подбор подходящих микро-каналов под твой бриф. После оплаты отправь бриф одним сообщением.',
-          payload,
-          '',
-          'XTR',
-          [{ label: `${tier.title}`, amount: tier.stars }]
-        );
-      } catch (e) {
-        await ctx.reply('Не удалось отправить инвойс. Проверь, что бот может принимать Stars.', {
-          reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:match_home|ws:${wsId}`)
-        });
-      }
+      await sendStarsInvoice(ctx, {
+        title: `Smart Matching · ${tier.title}`,
+        description: 'Подбор подходящих микро-каналов под твой бриф. После оплаты отправь бриф одним сообщением.',
+        payload,
+        amount: tier.stars,
+        backCb: `a:match_home|ws:${wsId}`,
+      });
       return;
     }
 
@@ -4015,21 +4023,13 @@ bot.on('message:successful_payment', async (ctx) => {
         { ex: 15 * 60 }
       );
       const payload = `feat_${u.id}_${d.days}_${token}`;
-      try {
-        await ctx.api.sendInvoice(
-          ctx.chat.id,
-          `Featured · ${d.title}`,
-          'Твой блок появится сверху в ленте у всех (бренд + блогеры). После оплаты отправь контент.',
-          payload,
-          '',
-          'XTR',
-          [{ label: `Featured ${d.title}`, amount: d.stars }]
-        );
-      } catch (e) {
-        await ctx.reply('Не удалось отправить инвойс. Проверь, что бот может принимать Stars.', {
-          reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:feat_home|ws:${wsId}`)
-        });
-      }
+      await sendStarsInvoice(ctx, {
+        title: `Featured · ${d.title}`,
+        description: 'Твой блок появится сверху в ленте у всех (бренд + блогеры). После оплаты отправь контент.',
+        payload,
+        amount: d.stars,
+        backCb: `a:feat_home|ws:${wsId}`,
+      });
       return;
     }
 
@@ -4402,15 +4402,14 @@ bot.on('message:successful_payment', async (ctx) => {
 
       const title = 'Размещение в официальном канале';
       const description = `${d.label} • оффер #${offerId}`;
-      await ctx.api.sendInvoice(
-        ctx.from.id,
+      const okInv = await sendStarsInvoice(ctx, {
         title,
         description,
-        `offpub_${u.id}_${offerId}_${d.days}_${token}`,
-        CFG.STARS_PROVIDER_TOKEN,
-        'XTR',
-        [{ label: title, amount: d.price }]
-      );
+        payload: `offpub_${u.id}_${offerId}_${d.days}_${token}`,
+        amount: d.price,
+        backCb: `a:off_manage|ws:${wsId}|o:${offerId}`,
+      });
+      if (!okInv) return;
 
       await ctx.editMessageText(
         `💳 Счёт выставлен на **${d.price}⭐️**.
