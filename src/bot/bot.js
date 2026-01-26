@@ -106,6 +106,11 @@ async function sendStarsInvoice(ctx, { title, description, payload, amount, back
   const prices = [{ label: title, amount: Number(amount) }];
 
   try {
+    // Add quick navigation so users don't get "stuck" with an unpaid invoice message.
+    const invKb = new InlineKeyboard();
+    if (backCb) invKb.text('⬅️ Назад', backCb);
+    invKb.text('📋 Меню', 'a:menu');
+
     // Use raw API to OMIT provider_token (Bot API 7.4+ allows it and some stacks break on empty string)
     await ctx.api.raw.sendInvoice({
       chat_id: chatId,
@@ -114,7 +119,14 @@ async function sendStarsInvoice(ctx, { title, description, payload, amount, back
       payload,
       currency: 'XTR',
       prices,
+      reply_markup: invKb,
     });
+
+    // Extra helper message (only in private chats) so the last message isn't the invoice.
+    if (ctx?.chat?.type === 'private') {
+      await ctx.reply('Счёт отправлен. Если передумал — жми «📋 Меню».', { reply_markup: invKb });
+    }
+
     return true;
   } catch (e) {
     const desc = String(e?.description || e?.error?.description || e?.message || e);
@@ -134,6 +146,27 @@ async function sendStarsInvoice(ctx, { title, description, payload, amount, back
     } catch {}
     return false;
   }
+}
+
+async function renderGwNewWorkspacePicker(ctx, ownerUserId, backCb = 'a:gw_list') {
+  const wss = await db.listWorkspaces(ownerUserId);
+  const kb = new InlineKeyboard();
+  if (!wss.length) {
+    kb.text('⬅️ Меню', 'a:menu');
+    await ctx.editMessageText('Сначала подключи канал: нажми «🚀 Подключить канал» в меню.', { reply_markup: kb });
+    return;
+  }
+
+  for (const ws of wss) {
+    const label = `📣 ${String(ws.title || ws.channel_username || ws.id).slice(0, 32)}`;
+    kb.text(label, `a:gw_new|ws:${ws.id}`).row();
+  }
+  kb.text('⬅️ Назад', backCb).row().text('🏠 Меню', 'a:menu');
+
+  await ctx.editMessageText(
+    `Выбери канал, где создать новый конкурс:`,
+    { reply_markup: kb }
+  );
 }
 
 
@@ -609,6 +642,8 @@ function gwOpenKb(g, flags = {}) {
 
   kb
     .text('🏁 Завершить сейчас', `a:gw_end_now|i:${gwId}`)
+    .row()
+    .text('🗑 Удалить', `a:gw_del_q|i:${gwId}|ws:${g.workspace_id}`)
     .row()
     .text('⬅️ Назад', 'a:gw_list');
   return kb;
@@ -1205,17 +1240,69 @@ async function renderBxMy(ctx, ownerUserId, wsId, page = 0) {
   const rows = await db.listBarterOffersForOwnerWorkspace(ownerUserId, wsId, limit, offset);
 
   const kb = new InlineKeyboard();
+  kb.text('📁 Архив', `a:bx_my_arch|ws:${wsId}|p:0`).row();
   for (const o of rows) {
     const st = String(o.status || 'ACTIVE').toUpperCase();
     const stEmoji = st === 'ACTIVE' ? '✅' : (st === 'PAUSED' ? '⏸' : '⛔');
-    kb.text(`${stEmoji} #${o.id} · ${o.title}`, `a:bx_view|ws:${wsId}|o:${o.id}|back:my`).row();
+    kb
+      .text(`${stEmoji} #${o.id} · ${o.title}`, `a:bx_view|ws:${wsId}|o:${o.id}|back:my`)
+      .text('🗑', `a:bx_archive|ws:${wsId}|o:${o.id}|p:${page}`)
+      .row();
   }
   kb.text('⬅️ Назад', `a:bx_open|ws:${wsId}`);
 
   await ctx.editMessageText(
     `📦 <b>Мои офферы</b>
 
-Нажми оффер, чтобы поставить паузу/удалить.`,
+Нажми оффер, чтобы открыть. Кнопка 🗑 — архивирует и сразу убирает из списка.`,
+    { parse_mode: 'HTML', reply_markup: kb }
+  );
+}
+
+async function renderBxMyArchive(ctx, ownerUserId, wsId, page = 0) {
+  const ws = await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+  if (!ws.network_enabled) return renderBxOpen(ctx, ownerUserId, wsId);
+
+  const limit = 8;
+  const offset = page * limit;
+  const rows = await db.listArchivedBarterOffersForOwnerWorkspace(ownerUserId, wsId, limit, offset);
+
+  const kb = new InlineKeyboard();
+
+  if (!rows.length) {
+    kb.text('⬅️ Назад', `a:bx_my|ws:${wsId}|p:0`).row().text('🏠 Меню', 'a:menu');
+    await ctx.editMessageText(
+      `📁 <b>Архив офферов</b>
+
+Пока пусто. Нажми 🗑 в «Мои офферы», чтобы архивировать оффер (он останется в истории).`,
+      { parse_mode: 'HTML', reply_markup: kb }
+    );
+    return;
+  }
+
+  for (const o of rows) {
+    kb
+      .text(`⛔ #${o.id} · ${o.title}`, `a:bx_view|ws:${wsId}|o:${o.id}|back:arch`)
+      .text('↩️', `a:bx_restore|ws:${wsId}|o:${o.id}|p:${page}`)
+      .row();
+  }
+
+  const hasPrev = page > 0;
+  const hasNext = rows.length === limit;
+  if (hasPrev || hasNext) {
+    const nav = new InlineKeyboard();
+    if (hasPrev) nav.text('⬅️', `a:bx_my_arch|ws:${wsId}|p:${page - 1}`);
+    if (hasNext) nav.text('➡️', `a:bx_my_arch|ws:${wsId}|p:${page + 1}`);
+    kb.inline_keyboard.push(nav.inline_keyboard[0]);
+  }
+
+  kb.text('⬅️ Назад', `a:bx_my|ws:${wsId}|p:0`).row().text('🏠 Меню', 'a:menu');
+
+  await ctx.editMessageText(
+    `📁 <b>Архив офферов</b>
+
+Открой оффер, чтобы посмотреть. ↩️ — вернуть в активные.`,
     { parse_mode: 'HTML', reply_markup: kb }
   );
 }
@@ -1280,8 +1367,17 @@ ${contact ? `Контакт: <b>${escapeHtml(contact)}</b>` : ''}`;
     kb.text('⏸ Пауза', `a:bx_pause|ws:${wsId}|o:${o.id}`).row();
   }
   if (st === 'PAUSED') kb.text('✅ Возобновить', `a:bx_resume|ws:${wsId}|o:${o.id}`).row();
-  kb.text('🗑 Удалить', `a:bx_del_q|ws:${wsId}|o:${o.id}`).row();
-  kb.text('⬅️ Назад', back === 'my' ? `a:bx_my|ws:${wsId}|p:0` : `a:bx_feed|ws:${wsId}|p:0`);
+
+  if (st === 'CLOSED') {
+    kb.text('↩️ Восстановить', `a:bx_restore|ws:${wsId}|o:${o.id}|p:0`).row();
+  } else {
+    kb.text('🗑 Архивировать', `a:bx_del_q|ws:${wsId}|o:${o.id}`).row();
+  }
+
+  const backCb = back === 'my'
+    ? `a:bx_my|ws:${wsId}|p:0`
+    : (back === 'arch' ? `a:bx_my_arch|ws:${wsId}|p:0` : `a:bx_feed|ws:${wsId}|p:0`);
+  kb.text('⬅️ Назад', backCb);
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
 }
@@ -2039,20 +2135,38 @@ ${contact ? `Контакт: <b>${escapeHtml(String(contact))}</b>
 async function renderGwList(ctx, ownerUserId, wsId = null) {
   const items = await db.listGiveaways(ownerUserId, 25);
   const filtered = wsId ? items.filter(x => x.workspace_id === wsId) : items;
+
+  const activeWs = wsId || (ctx?.from?.id ? await getActiveWorkspace(ctx.from.id) : null);
+  const createCb = activeWs ? `a:gw_new|ws:${activeWs}` : 'a:gw_new_pick';
+
+  const kb = new InlineKeyboard();
+  kb.text('➕ Новый конкурс', createCb);
+  if (!wsId) kb.text('📣 Выбрать канал', 'a:gw_new_pick');
+  kb.row();
+
   if (!filtered.length) {
+    kb.text('⬅️ Назад', wsId ? `a:ws_open|ws:${wsId}` : 'a:menu');
     await ctx.editMessageText(`🎁 Конкурсов пока нет.
 
-Нажми “➕ Новый конкурс” в канале.`, { reply_markup: new InlineKeyboard().text('⬅️ Назад', wsId ? `a:ws_open|ws:${wsId}` : 'a:menu') });
+Жми «➕ Новый конкурс», чтобы создать первый.`, { reply_markup: kb });
     return;
   }
-  const kb = new InlineKeyboard();
-  for (const g of filtered) {
-    kb.text(`#${g.id} · ${String(g.status).toUpperCase()}`, `a:gw_open|i:${g.id}`).row();
-  }
-  kb.text('⬅️ Назад', wsId ? `a:ws_open|ws:${wsId}` : 'a:menu');
-  await ctx.editMessageText(`🎁 <b>Мои конкурсы</b>
 
-Выбери конкурс:`, { parse_mode: 'HTML', reply_markup: kb });
+  for (const g of filtered) {
+    const st = String(g.status || '').toUpperCase();
+    const wsLabel = !wsId ? ` · ${String(g.workspace_title || '').slice(0, 18)}` : '';
+    kb.text(`#${g.id} · ${st}${wsLabel}`, `a:gw_open|i:${g.id}`)
+      .text('🗑', `a:gw_del_q|i:${g.id}|ws:${g.workspace_id}`)
+      .row();
+  }
+
+  kb.text('⬅️ Назад', wsId ? `a:ws_open|ws:${wsId}` : 'a:menu');
+  await ctx.editMessageText(
+    `🎁 <b>${wsId ? 'Конкурсы канала' : 'Мои конкурсы'}</b>
+
+Выбери конкурс (или создай новый):`,
+    { parse_mode: 'HTML', reply_markup: kb }
+  );
 }
 
 async function renderGwOpen(ctx, ownerUserId, gwId) {
@@ -4838,6 +4952,12 @@ if (p.a === 'a:bx_retry_help') {
       return;
     }
 
+    if (p.a === 'a:bx_my_arch') {
+      await ctx.answerCallbackQuery();
+      await renderBxMyArchive(ctx, u.id, Number(p.ws), Number(p.p || 0));
+      return;
+    }
+
     if (p.a === 'a:bx_new') {
       const wsId = Number(p.ws);
       db.trackEvent('bx_offer_new_open', { userId: u.id, wsId, meta: {} });
@@ -5012,16 +5132,49 @@ if (p.a === 'a:bx_cat') {
       return;
     }
 
+    // One-tap archive from list (soft delete). Hides immediately from "Мои офферы".
+    if (p.a === 'a:bx_archive') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const page = Math.max(0, Number(p.p || 0));
+      const o = await db.getBarterOfferForOwner(u.id, offerId);
+      if (!o) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+      await db.updateBarterOfferStatus(offerId, 'CLOSED');
+      await db.auditBarterOffer(offerId, wsId, u.id, 'bx.offer_archived', {});
+      await ctx.answerCallbackQuery({ text: 'Архивировано.' });
+      await renderBxMy(ctx, u.id, wsId, page);
+      return;
+    }
+
+    if (p.a === 'a:bx_restore') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const page = Math.max(0, Number(p.p || 0));
+
+      const restored = await db.restoreBarterOfferForOwner(offerId, u.id);
+      if (!restored) {
+        await ctx.answerCallbackQuery({ text: 'Не найдено / нет доступа.' });
+        await renderBxMyArchive(ctx, u.id, wsId, page);
+        return;
+      }
+      await db.auditBarterOffer(offerId, wsId, u.id, 'bx.offer_restored', {});
+      await ctx.answerCallbackQuery({ text: 'Восстановлено.' });
+      await renderBxMy(ctx, u.id, wsId, 0);
+      return;
+    }
+
     if (p.a === 'a:bx_del_q') {
       const wsId = Number(p.ws);
       const offerId = Number(p.o);
       const o = await db.getBarterOfferForOwner(u.id, offerId);
       if (!o) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
       const kb = new InlineKeyboard()
-        .text('✅ Удалить', `a:bx_del_do|ws:${wsId}|o:${offerId}`)
+        .text('✅ Архивировать', `a:bx_del_do|ws:${wsId}|o:${offerId}`)
         .text('❌ Отмена', `a:bx_view|ws:${wsId}|o:${offerId}|back:my`);
       await ctx.answerCallbackQuery();
-      await ctx.editMessageText(`Удалить оффер <b>#${offerId}</b>?`, { parse_mode: 'HTML', reply_markup: kb });
+      await ctx.editMessageText(`Архивировать оффер <b>#${offerId}</b>?
+
+Он исчезнет из списка, но останется в базе для истории.`, { parse_mode: 'HTML', reply_markup: kb });
       return;
     }
 
@@ -5031,8 +5184,8 @@ if (p.a === 'a:bx_cat') {
       const o = await db.getBarterOfferForOwner(u.id, offerId);
       if (!o) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
       await db.updateBarterOfferStatus(offerId, 'CLOSED');
-      await db.auditBarterOffer(offerId, wsId, u.id, 'bx.offer_deleted', {});
-      await ctx.answerCallbackQuery({ text: 'Удалено.' });
+      await db.auditBarterOffer(offerId, wsId, u.id, 'bx.offer_archived', {});
+      await ctx.answerCallbackQuery({ text: 'Архивировано.' });
       await renderBxMy(ctx, u.id, wsId, 0);
       return;
     }
@@ -5563,6 +5716,11 @@ if (p.a === 'a:bx_cat') {
       await renderGwList(ctx, u.id, null);
       return;
     }
+    if (p.a === 'a:gw_new_pick') {
+      await ctx.answerCallbackQuery();
+      await renderGwNewWorkspacePicker(ctx, u.id, 'a:gw_list');
+      return;
+    }
     if (p.a === 'a:gw_list_ws') {
       await ctx.answerCallbackQuery();
       await renderGwList(ctx, u.id, Number(p.ws));
@@ -5581,6 +5739,48 @@ if (p.a === 'a:bx_cat') {
     if (p.a === 'a:gw_log') {
       await ctx.answerCallbackQuery();
       await renderGwLog(ctx, u.id, Number(p.i));
+      return;
+    }
+
+    if (p.a === 'a:gw_del_q') {
+      const gwId = Number(p.i);
+      const g = await db.getGiveawayForOwner(gwId, u.id);
+      if (!g) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      const kb = new InlineKeyboard()
+        .text('✅ Да, удалить', `a:gw_del_do|i:${gwId}|ws:${g.workspace_id}`)
+        .row()
+        .text('⬅️ Назад', `a:gw_open|i:${gwId}`)
+        .row()
+        .text('🏠 Меню', 'a:menu');
+
+      await ctx.editMessageText(
+        `🗑 <b>Удалить конкурс #${gwId}?</b>
+
+Это действие необратимо (удалятся спонсоры/участники/победители).
+Если нужно просто остановить — используй «🏁 Завершить сейчас».`,
+        { parse_mode: 'HTML', reply_markup: kb }
+      );
+      return;
+    }
+    if (p.a === 'a:gw_del_do') {
+      const gwId = Number(p.i);
+      // Owner-gated hard delete
+      const deleted = await db.deleteGiveawayForOwner(gwId, u.id);
+      if (!deleted) {
+        await ctx.answerCallbackQuery({ text: 'Не найдено / нет доступа.' });
+        await renderGwList(ctx, u.id, null);
+        return;
+      }
+      try {
+        await db.auditWorkspace(deleted.workspace_id, u.id, 'gw.deleted', { giveaway_id: gwId });
+      } catch {}
+
+      await ctx.answerCallbackQuery({ text: 'Удалено.' });
+      await renderGwList(ctx, u.id, null);
       return;
     }
 
