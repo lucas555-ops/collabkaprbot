@@ -1,5 +1,5 @@
 import { giveawaysTick } from '../../src/bot/cron.js';
-import { CFG, assertEnv } from '../../src/lib/config.js';
+import { CFG, assertEnv } from '../../src/lib/config.js'; 
 
 function getBearerToken(req) {
   const h = req.headers?.authorization || req.headers?.Authorization || '';
