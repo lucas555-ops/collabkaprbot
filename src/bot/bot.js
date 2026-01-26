@@ -584,35 +584,6 @@ function participantKb(gwId) {
     .row()
     .text('🧾 Лог конкурса', `a:gw_log|i:${gwId}`);
 }
-function gwEntriesKb(gwId, page, total, pageSize, rows = []) {
-  const p = Math.max(0, Number(page || 0));
-  const t = Math.max(0, Number(total || 0));
-  const ps = Math.max(1, Number(pageSize || 10));
-  const maxPage = Math.max(0, Math.ceil(t / ps) - 1);
-
-  const kb = new InlineKeyboard();
-
-  // Participants (clickable)
-  for (const r of rows || []) {
-    const icon = r.is_eligible === true ? '✅' : (r.last_checked_at ? '⚠️' : '⏳');
-    const label = r.tg_username ? '@' + String(r.tg_username) : 'id:' + String(r.tg_id);
-    kb.text(`${icon} ${label}`, `a:gw_entry|i:${gwId}|tu:${Number(r.tg_id)}|p:${p}`).row();
-  }
-
-  if (rows && rows.length) kb.row();
-
-  if (p > 0) kb.text('⬅️ Назад', `a:gw_entries|i:${gwId}|p:${p - 1}`);
-  if (p < maxPage) kb.text('➡️ Вперёд', `a:gw_entries|i:${gwId}|p:${p + 1}`);
-  if (p > 0 || p < maxPage) kb.row();
-
-  kb
-    .text('🔄 Обновить статусы (страница)', `a:gw_entries_refresh|i:${gwId}|p:${p}`)
-    .row()
-    .text('⬅️ К статистике', `a:gw_stats|i:${gwId}`);
-
-  return kb;
-}
-
 
 function renderParticipantScreen(g, entry) {
   const prize = (g.prize_value_text || '').trim() || '—';
@@ -2082,8 +2053,6 @@ async function renderGwStats(ctx, ownerUserId, gwId) {
 🔍 Transparency log: 🧾`;
 
   const kb = new InlineKeyboard()
-    .text('👥 Участники', `a:gw_entries|i:${gwId}|p:0`)
-    .row()
     .text('✅ Готовность конкурса', `a:gw_preflight|i:${gwId}`)
     .row()
     .text('ℹ️ Почему не прошёл', `a:gw_why|i:${gwId}`)
@@ -2105,77 +2074,6 @@ async function renderGwStats(ctx, ownerUserId, gwId) {
     .text('⬅️ Назад', `a:gw_open|i:${gwId}`);
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
-}
-
-async function renderGwEntries(ctx, ownerUserId, gwId, page = 0) {
-  const g = await db.getGiveawayForOwner(gwId, ownerUserId);
-  if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-  const st = await db.getGiveawayStats(gwId, ownerUserId);
-  const total = Number(st?.entries_total || 0);
-  const pageSize = 10;
-
-  const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
-  const p = Math.min(maxPage, Math.max(0, Number(page) || 0));
-  const offset = p * pageSize;
-
-  if (typeof db.listGiveawayEntriesPage !== 'function') {
-    await ctx.editMessageText(
-      '⚠️ Нужен апдейт src/db/queries.js: добавь функцию <b>listGiveawayEntriesPage</b>.',
-      { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_stats|i:${gwId}`) }
-    );
-    return;
-  }
-
-  const rows = await db.listGiveawayEntriesPage(gwId, ownerUserId, pageSize, offset);
-
-  const legend = 'Легенда: ✅ прошёл • ⚠️ не прошёл • ⏳ не проверялся';
-  const lines = rows.map((r) => {
-    const icon = r.is_eligible === true ? '✅' : (r.last_checked_at ? '⚠️' : '⏳');
-    const name = r.tg_username ? '@' + escapeHtml(String(r.tg_username)) : `id:${Number(r.tg_id)}`;
-    const when = r.last_checked_at ? ` • ${escapeHtml(fmtTs(r.last_checked_at))}` : '';
-    return `${icon} ${name}${when}`;
-  });
-
-  const text =
-`👥 <b>Участники конкурса #${gwId}</b>
-
-Всего участников: <b>${total}</b>
-${escapeHtml(legend)}
-
-Нажми на участника в списке ниже — покажу “почему не прошёл” (какой канал/спонсор ❌).
-
-${lines.length ? lines.join('
-') : 'Пока нет участников.'}`;
-
-  await ctx.editMessageText(text, {
-    parse_mode: 'HTML',
-    disable_web_page_preview: true,
-    reply_markup: gwEntriesKb(gwId, p, total, pageSize, rows)
-  });
-}
-
-async function renderGwEntryDetail(ctx, ownerUserId, gwId, targetUserId, page = 0, { forceRecheck = false } = {}) {
-  const g = await db.getGiveawayForOwner(gwId, ownerUserId);
-  if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-  const tu = Number(targetUserId);
-
-  if (forceRecheck) {
-    try { await clearEligibilityCacheForGw(gwId, tu); } catch {}
-  }
-
-  const check = await doEligibilityCheck(ctx, gwId, tu);
-  const body = buildWhyText({ gwId, targetUserId: tu, check });
-
-  const kb = new InlineKeyboard()
-    .text('🔄 Перепроверить', `a:gw_entry_recheck|i:${gwId}|tu:${tu}|p:${Math.max(0, Number(page) || 0)}`)
-    .row()
-    .text('⬅️ К списку', `a:gw_entries|i:${gwId}|p:${Math.max(0, Number(page) || 0)}`)
-    .row()
-    .text('⬅️ К статистике', `a:gw_stats|i:${gwId}`);
-
-  await ctx.editMessageText(body, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
 }
 
 async function renderGwLog(ctx, ownerUserIdOrNull, gwId) {
@@ -2891,31 +2789,36 @@ export function getBot() {
       const r = await db.createBarterReport({ workspaceId: wsId, reporterUserId: u.id, offerId, threadId, reason });
       await ctx.reply(`✅ Жалоба отправлена (id: ${r.id}). Модератор посмотрит.`);
       return;
-    }    // Admin: add moderator by @username
+    }
+    // Admin: add moderator by @username
     if (exp.type === 'admin_add_mod_username') {
       const txt = String(ctx.message.text || '').trim();
-      const m = txt.match(/^@?([a-zA-Z0-9_]{5,})$/);
-      if (!m) { await ctx.reply('Введи @username (пример: @user)'); await setExpectText(ctx.from.id, exp); return; }
-      const username = m[1];
+      const mm = txt.match(/^@?([a-zA-Z0-9_]{5,})$/);
+      if (!mm) {
+        await ctx.reply('Введи @username (пример: @user)');
+        await setExpectText(ctx.from.id, exp);
+        return;
+      }
+      const username = mm[1];
 
-      // IMPORTANT: Telegram Bot API does NOT reliably resolve user accounts by @username
-      // (getChat(@username) works for channels/supergroups, but not for arbitrary users).
-      // Поэтому добавляем модератора только если он уже есть в нашей базе (т.е. писал боту /start).
+      // Telegram Bot API cannot reliably resolve a *user* by @username via getChat().
+      // Correct flow: the person should have started the bot at least once so we have them in DB.
       const u2 = await db.findUserByUsername(username);
       if (!u2) {
-        await ctx.reply('⚠️ Не вижу этого пользователя в базе.
+        await ctx.reply(
+          `⚠️ Не нашёл пользователя @${username} в базе.
 
-Попроси модератора написать боту /start (чтобы он появился в базе), затем повтори добавление.');
+` +
+          `Пусть он откроет бота и нажмёт /start (это добавит его в базу), ` +
+          `и потом повтори добавление модератора.`
+        );
         return;
       }
 
-      await db.addNetworkModerator(Number(u2.id), u.id);
-      await ctx.reply(`✅ Модератор добавлен: @${u2.tg_username || username} (id: ${Number(u2.tg_id)})`);
+      await db.addNetworkModerator(u2.id, u.id);
+      await ctx.reply(`✅ Модератор добавлен: @${u2.tg_username || username}`);
       return;
     }
-      return;
-    }
-
 
     // Smart Matching brief (after payment)
     if (exp.type === 'match_brief') {
@@ -5676,58 +5579,6 @@ if (p.a === 'a:bx_cat') {
       await renderGwStats(ctx, u.id, Number(p.i));
       return;
     }
-if (p.a === 'a:gw_entries') {
-  await ctx.answerCallbackQuery();
-  await renderGwEntries(ctx, u.id, Number(p.i), Number(p.p || 0));
-  return;
-}
-if (p.a === 'a:gw_entries_refresh') {
-  await ctx.answerCallbackQuery();
-  const gwId = Number(p.i);
-  const page = Math.max(0, Number(p.p || 0));
-
-  const g = await db.getGiveawayForOwner(gwId, u.id);
-  if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-  if (typeof db.listGiveawayEntriesPage !== 'function') {
-    await ctx.editMessageText(
-      '⚠️ Нужен апдейт src/db/queries.js: добавь функцию <b>listGiveawayEntriesPage</b>.',
-      { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_stats|i:${gwId}`) }
-    );
-    return;
-  }
-
-  const st = await db.getGiveawayStats(gwId, u.id);
-  const total = Number(st?.entries_total || 0);
-  const pageSize = 10;
-  const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
-  const p2 = Math.min(maxPage, page);
-  const offset = p2 * pageSize;
-
-  const rows = await db.listGiveawayEntriesPage(gwId, u.id, pageSize, offset);
-  for (const r of rows) {
-    try {
-      await rateLimit(async () => {
-        const check = await doEligibilityCheck(ctx, gwId, Number(r.tg_id));
-        await db.setEntryEligibility(gwId, Number(r.user_id), check.isEligible);
-      });
-    } catch {}
-  }
-
-  await renderGwEntries(ctx, u.id, gwId, p2);
-  return;
-}
-if (p.a === 'a:gw_entry') {
-  await ctx.answerCallbackQuery();
-  await renderGwEntryDetail(ctx, u.id, Number(p.i), Number(p.tu), Number(p.p || 0), { forceRecheck: false });
-  return;
-}
-if (p.a === 'a:gw_entry_recheck') {
-  await ctx.answerCallbackQuery();
-  await renderGwEntryDetail(ctx, u.id, Number(p.i), Number(p.tu), Number(p.p || 0), { forceRecheck: true });
-  return;
-}
-
     if (p.a === 'a:gw_log') {
       await ctx.answerCallbackQuery();
       await renderGwLog(ctx, u.id, Number(p.i));
