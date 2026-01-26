@@ -799,40 +799,312 @@ ${lines.length ? lines.join('\n') : 'Пока пусто.'}`;
 }
 
 
-async function renderWsProfile(ctx, ownerUserId, wsId) {
-  const ws = await db.getWorkspace(ownerUserId, wsId);
-  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
-  await db.ensureWorkspaceSettings(wsId);
-  const s = await db.getWorkspace(ownerUserId, wsId);
-  const isPro = await db.isWorkspacePro(wsId);
-  const name = s.profile_title || (ws.channel_username ? '@' + ws.channel_username : ws.title);
-  const niche = s.profile_niche || '—';
-  const contact = s.profile_contact || '—';
-  const geo = s.profile_geo || '—';
-  const proLine = isPro ? '⭐️ PRO: <b>активен</b>' : '⭐️ PRO: <b>free</b>';
 
-  const text = `👤 <b>Профиль</b>
+// Workspace Profile Matrix (IG leads → TG deals)
+// Stored in workspace_settings (per-channel profile)
+const PROFILE_VERTICALS = [
+  { key: 'beauty', title: '💄 Косметика / уход' },
+  { key: 'fashion', title: '👗 Одежда / обувь' },
+  { key: 'jewelry', title: '💍 Украшения / аксессуары' },
+  { key: 'home', title: '🏠 Дом / декор' },
+  { key: 'food', title: '🍽️ Еда / кафе / FMCG' },
+  { key: 'kids', title: '🧸 Дети / семья' },
+  { key: 'fitness', title: '🧘 Фитнес / здоровье' },
+  { key: 'tech', title: '📱 Тех / гаджеты' },
+  { key: 'services', title: '🎓 Сервисы / обучение' }
+];
 
-Канал: <b>${escapeHtml(ws.channel_username ? '@' + ws.channel_username : ws.title)}</b>
-${proLine}
+const PROFILE_FORMATS = [
+  { key: 'reels', title: '🎬 Reels / short video' },
+  { key: 'stories', title: '📲 Stories-пакет' },
+  { key: 'post', title: '🖼️ Пост / карусель' },
+  { key: 'unboxing', title: '📦 Распаковка' },
+  { key: 'tryon', title: '🧥 Примерка / try-on' },
+  { key: 'review', title: '⭐ Честный обзор' },
+  { key: 'howto', title: '🛠️ How-to / туториал' },
+  { key: 'ugc_ads', title: '🎯 UGC для рекламы (файлы)' },
+  { key: 'giveaway', title: '🎁 Конкурс / розыгрыш (TG)' }
+];
 
-Название/витрина: <b>${escapeHtml(name)}</b>
-Ниша: <b>${escapeHtml(niche)}</b>
-Контакт: <b>${escapeHtml(contact)}</b>
-Гео: <b>${escapeHtml(geo)}</b>
+const PROFILE_MODE_LABELS = {
+  channel: 'Канал (интеграции)',
+  ugc: 'UGC (контент без аудитории)',
+  both: 'Оба (канал + UGC)'
+};
 
-💡 Профиль показывается в бирже и помогает брендам быстрее написать тебе.`;
+function wsBrandLink(wsId) {
+  const un = String(CFG.BOT_USERNAME || '').replace(/^@/, '');
+  if (!un) return null;
+  return `https://t.me/${un}?start=wsp_${wsId}`;
+}
+
+function shortUrl(u) {
+  const s = String(u || '').replace(/^https?:\/\//i, '');
+  return s.length > 48 ? s.slice(0, 45) + '…' : s;
+}
+
+function fmtMatrix(keys, dict, empty = '—') {
+  const arr = Array.isArray(keys) ? keys.map(String) : [];
+  const set = new Set(arr);
+  const titles = dict.filter(x => set.has(x.key)).map(x => x.title);
+  return titles.length ? titles.join(', ') : empty;
+}
+
+function normalizeIgHandle(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  let s = raw.replace(/\s+/g, '');
+  s = s.replace(/^@/, '');
+
+  // instagram.com/<handle>
+  const m = s.match(/instagram\.com\/([^\/\?\#]+)/i);
+  if (m) {
+    const seg = String(m[1] || '').trim();
+    const bad = ['reel', 'p', 'tv', 'stories', 'explore'].includes(seg.toLowerCase());
+    if (bad) return null;
+    const hm = seg.replace(/^@/, '').match(/^([A-Za-z0-9._]{2,30})$/);
+    return hm ? hm[1] : null;
+  }
+
+  // If it's some other URL — reject
+  if (/^https?:\/\//i.test(s)) return null;
+
+  // plain handle
+  const hm = s.match(/^([A-Za-z0-9._]{2,30})$/);
+  if (!hm) return null;
+  const bad = ['reel', 'p', 'tv', 'stories', 'explore'].includes(hm[1].toLowerCase());
+  if (bad) return null;
+  return hm[1];
+}
+
+function parseUrlsFromText(input, max = 3) {
+  const text = String(input || '');
+  const re = /(https?:\/\/[^\s<>"']+)/gi;
+  const out = [];
+  let m;
+  while ((m = re.exec(text))) {
+    let u = String(m[1] || '').trim();
+    // strip trailing punctuation
+    u = u.replace(/[)\],.!?]+$/g, '');
+    if (!u) continue;
+    if (!out.includes(u)) out.push(u);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function wsProfileKb(wsId, ws) {
+  const vCount = Array.isArray(ws.profile_verticals) ? ws.profile_verticals.length : 0;
+  const fCount = Array.isArray(ws.profile_formats) ? ws.profile_formats.length : 0;
 
   const kb = new InlineKeyboard()
     .text('✏️ Название', `a:ws_prof_edit|ws:${wsId}|f:title`)
-    .text('✏️ Ниша', `a:ws_prof_edit|ws:${wsId}|f:niche`)
+    .text('🧩 Режим', `a:ws_prof_mode|ws:${wsId}`)
     .row()
+    .text('📸 Instagram', `a:ws_prof_edit|ws:${wsId}|f:ig`)
+    .text(`🏷 Ниши (${vCount}/3)`, `a:ws_prof_verticals|ws:${wsId}`)
+    .row()
+    .text(`🎬 Форматы (${fCount}/5)`, `a:ws_prof_formats|ws:${wsId}`)
+    .text('🔗 Портфолио', `a:ws_prof_edit|ws:${wsId}|f:portfolio`)
+    .row()
+    .text('📝 Описание', `a:ws_prof_edit|ws:${wsId}|f:about`)
     .text('✏️ Контакт', `a:ws_prof_edit|ws:${wsId}|f:contact`)
+    .row()
     .text('✏️ Гео', `a:ws_prof_edit|ws:${wsId}|f:geo`)
     .row()
     .text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
 
+  return kb;
+}
+
+async function renderWsProfile(ctx, ownerUserId, wsId) {
+  const ws0 = await db.getWorkspace(ownerUserId, wsId);
+  if (!ws0) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  await db.ensureWorkspaceSettings(wsId);
+  const ws = await db.getWorkspace(ownerUserId, wsId);
+  const isPro = await db.isWorkspacePro(wsId);
+
+  const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+  const name = ws.profile_title || channel;
+  const mode = String(ws.profile_mode || 'both');
+  const ig = ws.profile_ig ? String(ws.profile_ig) : null;
+
+  const verticalsTxt = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS);
+  const formatsTxt = fmtMatrix(ws.profile_formats, PROFILE_FORMATS);
+
+  const geo = ws.profile_geo || '—';
+  const contact = ws.profile_contact || '—';
+  const about = ws.profile_about || '—';
+
+  const link = wsBrandLink(wsId);
+
+  let igLine = '—';
+  if (ig) {
+    igLine =
+      `<a href="https://instagram.com/${escapeHtml(ig)}">instagram.com/${escapeHtml(ig)}</a>\n` +
+      `<code>@${escapeHtml(ig)}</code>`;
+  }
+
+  let portLine = '—';
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls : [];
+  if (ports.length) {
+    portLine = ports
+      .slice(0, 3)
+      .map(u => `• <a href="${escapeHtml(String(u))}">${escapeHtml(shortUrl(u))}</a>`)
+      .join('\n');
+  }
+
+  const proLine = isPro ? '⭐️ PRO: <b>активен</b>' : '⭐️ PRO: <b>free</b>';
+  const modeLine = PROFILE_MODE_LABELS[mode] || PROFILE_MODE_LABELS.both;
+
+  const text =
+    `👤 <b>Профиль (витрина)</b>\n\n` +
+    `<b>IG leads → TG deals</b>\n` +
+    `Бренды находят тебя в Instagram → по ссылке открывают этот профиль → дальше всё в Telegram.\n\n` +
+    `Канал: <b>${escapeHtml(channel)}</b>\n` +
+    `${proLine}\n\n` +
+    `Название/витрина: <b>${escapeHtml(name)}</b>\n` +
+    `🧩 Режим: <b>${escapeHtml(modeLine)}</b>\n` +
+    `📸 Instagram:\n${igLine}\n` +
+    `🏷 Ниши: <b>${escapeHtml(verticalsTxt)}</b>\n` +
+    `🎬 Форматы: <b>${escapeHtml(formatsTxt)}</b>\n` +
+    `🔗 Портфолио:\n${portLine}\n` +
+    `📝 Описание: <b>${escapeHtml(about)}</b>\n` +
+    `✉️ Контакт: <b>${escapeHtml(contact)}</b>\n` +
+    `📍 Гео: <b>${escapeHtml(geo)}</b>\n\n` +
+    (link
+      ? `🔗 <b>Ссылка для брендов</b> (вставь в IG bio / сторис):\n<code>${escapeHtml(link)}</code>`
+      : `⚠️ Не задан BOT_USERNAME — ссылка для брендов недоступна.`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: wsProfileKb(wsId, ws), disable_web_page_preview: true });
+}
+
+async function renderWsProfileMode(ctx, ownerUserId, wsId) {
+  const ws = await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  const cur = String(ws.profile_mode || 'both');
+
+  const kb = new InlineKeyboard()
+    .text(`${cur === 'channel' ? '✅ ' : ''}Канал`, `a:ws_prof_mode_set|ws:${wsId}|m:channel`)
+    .text(`${cur === 'ugc' ? '✅ ' : ''}UGC`, `a:ws_prof_mode_set|ws:${wsId}|m:ugc`)
+    .row()
+    .text(`${cur === 'both' ? '✅ ' : ''}Оба`, `a:ws_prof_mode_set|ws:${wsId}|m:both`)
+    .row()
+    .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`);
+
+  const text =
+    `🧩 <b>Режим профиля</b>\n\n` +
+    `• <b>Канал</b> — интеграции/посты в TG\n` +
+    `• <b>UGC</b> — контент без аудитории (файлы)\n` +
+    `• <b>Оба</b> — лучше по РФ-рынку\n\n` +
+    `Сейчас: <b>${escapeHtml(PROFILE_MODE_LABELS[cur] || PROFILE_MODE_LABELS.both)}</b>`;
+
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function renderWsProfileVerticals(ctx, ownerUserId, wsId) {
+  const ws = await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+
+  const selected = Array.isArray(ws.profile_verticals) ? ws.profile_verticals.map(String) : [];
+  const kb = new InlineKeyboard();
+
+  PROFILE_VERTICALS.forEach((it, i) => {
+    const on = selected.includes(it.key);
+    kb.text(`${on ? '✅' : '▫️'} ${it.title}`, `a:ws_prof_vert_t|ws:${wsId}|v:${it.key}`);
+    if (i % 2 === 1) kb.row();
+  });
+
+  kb.row()
+    .text('🧹 Сброс', `a:ws_prof_vert_clear|ws:${wsId}`)
+    .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`);
+
+  const text =
+    `🏷 <b>Ниши</b> (максимум 3)\n\n` +
+    `Выбери до 3 ниш — так брендам проще понять, ты про что.\n\n` +
+    `Сейчас: <b>${escapeHtml(fmtMatrix(selected, PROFILE_VERTICALS))}</b>`;
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function renderWsProfileFormats(ctx, ownerUserId, wsId) {
+  const ws = await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+
+  const selected = Array.isArray(ws.profile_formats) ? ws.profile_formats.map(String) : [];
+  const kb = new InlineKeyboard();
+
+  PROFILE_FORMATS.forEach((it, i) => {
+    const on = selected.includes(it.key);
+    kb.text(`${on ? '✅' : '▫️'} ${it.title}`, `a:ws_prof_fmt_t|ws:${wsId}|f:${it.key}`);
+    if (i % 2 === 1) kb.row();
+  });
+
+  kb.row()
+    .text('🧹 Сброс', `a:ws_prof_fmt_clear|ws:${wsId}`)
+    .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`);
+
+  const text =
+    `🎬 <b>Форматы</b> (максимум 5)\n\n` +
+    `Выбери форматы — так брендам проще сделать быстрый заказ.\n\n` +
+    `Сейчас: <b>${escapeHtml(fmtMatrix(selected, PROFILE_FORMATS))}</b>`;
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function renderWsPublicProfile(ctx, wsId) {
+  const ws = await db.getWorkspaceAny(wsId);
+  if (!ws) return ctx.reply('Профиль не найден.');
+
+  const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+  const name = ws.profile_title || channel;
+  const mode = String(ws.profile_mode || 'both');
+  const ig = ws.profile_ig ? String(ws.profile_ig) : null;
+
+  const verticalsTxt = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS);
+  const formatsTxt = fmtMatrix(ws.profile_formats, PROFILE_FORMATS);
+  const geo = ws.profile_geo || '—';
+  const contact = ws.profile_contact || '—';
+  const about = ws.profile_about || '—';
+
+  let igLine = '—';
+  if (ig) {
+    igLine =
+      `<a href="https://instagram.com/${escapeHtml(ig)}">instagram.com/${escapeHtml(ig)}</a>\n` +
+      `<code>@${escapeHtml(ig)}</code>`;
+  }
+
+  let portLine = '—';
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls : [];
+  if (ports.length) {
+    portLine = ports
+      .slice(0, 3)
+      .map(u => `• <a href="${escapeHtml(String(u))}">${escapeHtml(shortUrl(u))}</a>`)
+      .join('\n');
+  }
+
+  const modeLine = PROFILE_MODE_LABELS[mode] || PROFILE_MODE_LABELS.both;
+
+  const text =
+    `✨ <b>${escapeHtml(name)}</b>\n\n` +
+    `IG leads → TG deals: бренд находит в Instagram → сделка закрывается в Telegram.\n\n` +
+    `Канал: <b>${escapeHtml(channel)}</b>\n` +
+    `🧩 Режим: <b>${escapeHtml(modeLine)}</b>\n` +
+    `📸 Instagram:\n${igLine}\n` +
+    `🏷 Ниши: <b>${escapeHtml(verticalsTxt)}</b>\n` +
+    `🎬 Форматы: <b>${escapeHtml(formatsTxt)}</b>\n` +
+    `🔗 Портфолио:\n${portLine}\n` +
+    `📝 Описание: <b>${escapeHtml(about)}</b>\n` +
+    `✉️ Контакт: <b>${escapeHtml(contact)}</b>\n` +
+    `📍 Гео: <b>${escapeHtml(geo)}</b>\n\n` +
+    `Если хочешь коллаб — пиши по контакту или перейди в меню бота.`;
+
+  const kb = new InlineKeyboard();
+  if (ws.channel_username) kb.url('📣 Telegram канал', `https://t.me/${String(ws.channel_username).replace(/^@/, '')}`);
+  if (ig) kb.url('📸 Instagram', `https://instagram.com/${ig}`);
+  kb.row().text('📋 Меню', 'a:menu');
+
+  await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
 }
 
 async function renderWsPro(ctx, ownerUserId, wsId) {
@@ -2925,16 +3197,76 @@ export function getBot() {
       const field = String(exp.field || '');
       const ws = await db.getWorkspace(u.id, wsId);
       if (!ws) { await ctx.reply('Нет доступа к этому каналу.'); return; }
-      const v = String(ctx.message.text || '').trim().slice(0, 120);
-      if (!v || v.length < 2) { await ctx.reply('Слишком коротко. Введи ещё раз.'); await setExpectText(ctx.from.id, exp); return; }
+
+      const raw = String(ctx.message.text || '').trim();
+      const rawLc = raw.toLowerCase();
+      const wantClear = ['-', '—', 'нет', 'no', 'clear'].includes(rawLc);
+
       const patch = {};
-      if (field === 'title') patch.profile_title = v;
-      if (field === 'niche') patch.profile_niche = v;
-      if (field === 'contact') patch.profile_contact = v;
-      if (field === 'geo') patch.profile_geo = v;
+
+      // title / niche / contact / geo
+      if (field === 'title') {
+        const v = wantClear ? null : raw.slice(0, 120);
+        if (!wantClear && (!v || v.length < 2)) { await ctx.reply('Слишком коротко. Введи ещё раз.'); await setExpectText(ctx.from.id, exp); return; }
+        patch.profile_title = v;
+      }
+      if (field === 'niche') {
+        const v = wantClear ? null : raw.slice(0, 120);
+        if (!wantClear && (!v || v.length < 2)) { await ctx.reply('Слишком коротко. Введи ещё раз.'); await setExpectText(ctx.from.id, exp); return; }
+        patch.profile_niche = v;
+      }
+      if (field === 'contact') {
+        const v = wantClear ? null : raw.slice(0, 160);
+        if (!wantClear && (!v || v.length < 2)) { await ctx.reply('Слишком коротко. Введи ещё раз.'); await setExpectText(ctx.from.id, exp); return; }
+        patch.profile_contact = v;
+      }
+      if (field === 'geo') {
+        const v = wantClear ? null : raw.slice(0, 120);
+        if (!wantClear && (!v || v.length < 2)) { await ctx.reply('Слишком коротко. Введи ещё раз.'); await setExpectText(ctx.from.id, exp); return; }
+        patch.profile_geo = v;
+      }
+
+      // Instagram
+      if (field === 'ig') {
+        if (wantClear) {
+          patch.profile_ig = null;
+        } else {
+          const handle = normalizeIgHandle(raw);
+          if (!handle) {
+            await ctx.reply('⚠️ Пришли @handle или ссылку на профиль вида instagram.com/handle.\n\nЧтобы очистить поле — отправь “-”.');
+            await setExpectText(ctx.from.id, exp);
+            return;
+          }
+          patch.profile_ig = handle;
+        }
+      }
+
+      // About
+      if (field === 'about') {
+        const v = wantClear ? null : raw.slice(0, 400);
+        if (!wantClear && (!v || v.length < 5)) { await ctx.reply('Слишком коротко (нужно 5+ символов).'); await setExpectText(ctx.from.id, exp); return; }
+        patch.profile_about = v;
+      }
+
+      // Portfolio URLs (1–3)
+      if (field === 'portfolio') {
+        if (wantClear) {
+          patch.profile_portfolio_urls = [];
+        } else {
+          const urls = parseUrlsFromText(raw, 3);
+          if (!urls.length) {
+            await ctx.reply('⚠️ Пришли 1–3 ссылки (https://...). Можно в одном сообщении или по строкам.\n\nЧтобы очистить поле — отправь “-”.');
+            await setExpectText(ctx.from.id, exp);
+            return;
+          }
+          patch.profile_portfolio_urls = urls;
+        }
+      }
+
       if (!Object.keys(patch).length) { await ctx.reply('Поле не найдено.'); return; }
       await db.setWorkspaceSetting(wsId, patch);
       await db.auditWorkspace(wsId, u.id, 'ws.profile_updated', { field });
+
       await ctx.reply('✅ Сохранено.', { reply_markup: wsMenuKb(wsId) });
       return;
     }
@@ -3541,7 +3873,15 @@ ${reason}
       return;
     }
 
-    if (payload?.type === 'bxo') {
+    
+    if (payload?.type === 'wsp') {
+      const wsId = Number(payload.wsId || 0);
+      if (!wsId) return ctx.reply('Профиль не найден.');
+      await renderWsPublicProfile(ctx, wsId);
+      return;
+    }
+
+if (payload?.type === 'bxo') {
       const offer = await db.getBarterOfferPublic(payload.id);
       if (!offer) return ctx.reply('Оффер не найден.');
       const wsId = Number(offer.workspace_id);
@@ -3994,13 +4334,112 @@ bot.on('message:successful_payment', async (ctx) => {
       await renderWsProfile(ctx, u.id, Number(p.ws));
       return;
     }
+
+    if (p.a === 'a:ws_prof_mode') {
+      await ctx.answerCallbackQuery();
+      await renderWsProfileMode(ctx, u.id, Number(p.ws));
+      return;
+    }
+    if (p.a === 'a:ws_prof_mode_set') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws);
+      const mode = String(p.m || 'both');
+      const allowed = ['channel', 'ugc', 'both'];
+      if (!allowed.includes(mode)) return ctx.answerCallbackQuery({ text: 'Неверный режим.' });
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+      await db.setWorkspaceSetting(wsId, { profile_mode: mode });
+      await db.auditWorkspace(wsId, u.id, 'ws.profile_mode_updated', { mode });
+      await renderWsProfileMode(ctx, u.id, wsId);
+      return;
+    }
+
+    if (p.a === 'a:ws_prof_verticals') {
+      await ctx.answerCallbackQuery();
+      await renderWsProfileVerticals(ctx, u.id, Number(p.ws));
+      return;
+    }
+    if (p.a === 'a:ws_prof_vert_t') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws);
+      const key = String(p.v || '');
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      const cur = Array.isArray(ws.profile_verticals) ? ws.profile_verticals.map(String) : [];
+      const has = cur.includes(key);
+      let next = cur.filter(x => x !== key);
+      if (!has) {
+        if (cur.length >= 3) {
+          await ctx.answerCallbackQuery({ text: 'Максимум 3 ниши.', show_alert: true });
+          return renderWsProfileVerticals(ctx, u.id, wsId);
+        }
+        next = [...cur, key];
+      }
+      await db.setWorkspaceSetting(wsId, { profile_verticals: next });
+      await db.auditWorkspace(wsId, u.id, 'ws.profile_verticals_updated', { count: next.length });
+      await renderWsProfileVerticals(ctx, u.id, wsId);
+      return;
+    }
+    if (p.a === 'a:ws_prof_vert_clear') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws);
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+      await db.setWorkspaceSetting(wsId, { profile_verticals: [] });
+      await db.auditWorkspace(wsId, u.id, 'ws.profile_verticals_cleared', {});
+      await renderWsProfileVerticals(ctx, u.id, wsId);
+      return;
+    }
+
+    if (p.a === 'a:ws_prof_formats') {
+      await ctx.answerCallbackQuery();
+      await renderWsProfileFormats(ctx, u.id, Number(p.ws));
+      return;
+    }
+    if (p.a === 'a:ws_prof_fmt_t') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws);
+      const key = String(p.f || '');
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      const cur = Array.isArray(ws.profile_formats) ? ws.profile_formats.map(String) : [];
+      const has = cur.includes(key);
+      let next = cur.filter(x => x !== key);
+      if (!has) {
+        if (cur.length >= 5) {
+          await ctx.answerCallbackQuery({ text: 'Максимум 5 форматов.', show_alert: true });
+          return renderWsProfileFormats(ctx, u.id, wsId);
+        }
+        next = [...cur, key];
+      }
+      await db.setWorkspaceSetting(wsId, { profile_formats: next });
+      await db.auditWorkspace(wsId, u.id, 'ws.profile_formats_updated', { count: next.length });
+      await renderWsProfileFormats(ctx, u.id, wsId);
+      return;
+    }
+    if (p.a === 'a:ws_prof_fmt_clear') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws);
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+      await db.setWorkspaceSetting(wsId, { profile_formats: [] });
+      await db.auditWorkspace(wsId, u.id, 'ws.profile_formats_cleared', {});
+      await renderWsProfileFormats(ctx, u.id, wsId);
+      return;
+    }
+
     if (p.a === 'a:ws_prof_edit') {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws);
       const field = String(p.f || 'title');
       const prompts = {
-        title: '✍️ Введи название профиля (показывается в бирже).',
-        niche: '✍️ Введи нишу (например: косметика, уход, лайфстайл).',
+        title: '✍️ Введи название витрины (как тебя видит бренд).',
+        niche: '✍️ Введи нишу (устар.) — лучше выбрать “🏷 Ниши”.',
+        ig: '✍️ Пришли Instagram: @handle или ссылку на профиль (instagram.com/handle).\n\nЧтобы очистить поле — отправь “-”.',
+        about: '✍️ Короткое описание (1–2 предложения).\n\nПример: “Тестирую косметику и делаю распаковки. Люблю честные обзоры.”',
+        portfolio: '✍️ Пришли 1–3 ссылки на портфолио (каждая с новой строки или в одном сообщении).\n\nЧтобы очистить поле — отправь “-”.',
         contact: '✍️ Введи контакт (например: @username / ссылка / почта).',
         geo: '✍️ Введи город/гео.'
       };
