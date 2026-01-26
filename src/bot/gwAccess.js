@@ -20,13 +20,27 @@ async function mapLimit(items, limit, fn) {
   return res;
 }
 
-async function checkBotAdminCached(redis, api, chat, botId) {
+async function resolveBotMe(api) {
+  // Prefer env (faster), but auto-fallback to getMe so диагностика never blocks.
+  if (CFG.BOT_ID && CFG.BOT_USERNAME) return { id: Number(CFG.BOT_ID), username: String(CFG.BOT_USERNAME) };
+
+  try {
+    const me = await api.getMe();
+    return { id: Number(me.id), username: String(me.username || CFG.BOT_USERNAME || '') };
+  } catch {
+    return { id: Number(CFG.BOT_ID || 0), username: String(CFG.BOT_USERNAME || '') };
+  }
+}
+
+async function checkBotAdminCached(redis, api, chat, botId, force = false) {
   const key = acc2Key(chat);
-  const cached = await redis.get(key);
-  if (cached) {
-    try {
-      return typeof cached === 'string' ? JSON.parse(cached) : cached;
-    } catch {}
+  if (!force) {
+    const cached = await redis.get(key);
+    if (cached) {
+      try {
+        return typeof cached === 'string' ? JSON.parse(cached) : cached;
+      } catch {}
+    }
   }
 
   try {
@@ -37,6 +51,7 @@ async function checkBotAdminCached(redis, api, chat, botId) {
     else if (st === 'member') res = { state: 'member', status: st };
     else if (st === 'left' || st === 'kicked') res = { state: 'no', status: st };
     else res = { state: 'no', status: st || 'unknown' };
+
     await redis.set(key, JSON.stringify(res), { ex: 10 * 60 });
     return res;
   } catch (e) {
@@ -46,96 +61,207 @@ async function checkBotAdminCached(redis, api, chat, botId) {
   }
 }
 
-function fmtLine(chat, a) {
-  if (a.state === 'admin') return `✅ ${chat} — bot: <b>admin</b>`;
-  if (a.state === 'member') return `🟦 ${chat} — bot: <b>member</b>`;
-  return `❌ ${chat} — bot: <b>no access</b>`;
+async function checkUserMember(api, chat, userId) {
+  try {
+    const cm = await api.getChatMember(chat, userId);
+    const st = String(cm.status || '');
+    const isIn =
+      st === 'creator' ||
+      st === 'administrator' ||
+      st === 'member' ||
+      (st === 'restricted' && cm.is_member === true);
+
+    if (isIn) return { state: 'in', status: st };
+    if (st === 'left' || st === 'kicked' || (st === 'restricted' && cm.is_member === false)) return { state: 'out', status: st };
+
+    return { state: 'unknown', status: st || 'unknown' };
+  } catch (e) {
+    return { state: 'unknown', status: 'error', reason: String(e?.message || e) };
+  }
+}
+
+function fmtBotLine(label, chat, a) {
+  const name = label ? `<b>${label}</b> — ` : '';
+  if (a.status === 'error') return `⚠️ ${name}<code>${chat}</code> — bot: <b>error</b>`;
+  if (a.state === 'admin') return `✅ ${name}<code>${chat}</code> — bot: <b>admin</b>`;
+  if (a.state === 'member') return `🟦 ${name}<code>${chat}</code> — bot: <b>member</b>`;
+  return `❌ ${name}<code>${chat}</code> — bot: <b>no access</b>`;
+}
+
+function fmtUserLine(label, chat, r) {
+  const name = label ? `<b>${label}</b> — ` : '';
+  if (r.state === 'in') return `✅ ${name}<code>${chat}</code> — user: <b>subscribed</b>`;
+  if (r.state === 'out') return `❌ ${name}<code>${chat}</code> — user: <b>not subscribed</b>`;
+  if (r.status === 'error') return `⚠️ ${name}<code>${chat}</code> — user: <b>check error</b>`;
+  return `⚠️ ${name}<code>${chat}</code> — user: <b>unknown</b>`;
 }
 
 function accessHelpText(botUsername) {
+  const u = botUsername ? `@${botUsername}` : 'бот';
   return (
-`<b>Как исправить ❌</b>
-Открой канал-спонсор → Управление → Администраторы → Добавить → @${botUsername}
+`<b>Как исправить ❌/⚠️</b>
+1) Открой канал → Управление → Администраторы → Добавить → ${u}
+2) Дай права: читать сообщения/управление (достаточно минимальных админ-прав).
 
-<b>Почему это важно:</b>
-без доступа бот не сможет подтвердить подписки участников (будет ❔/не подтверждено).`
+<b>Почему важно:</b>
+без доступа бот не сможет корректно подтверждать подписки участников.`
   );
 }
 
-export async function renderGwAccess({ ctx, gwId, ownerUserId, redis, db, forceRecheck = false }) {
+async function safeAnswerCb(ctx) {
+  try {
+    if (ctx?.callbackQuery?.id) await ctx.answerCallbackQuery();
+  } catch {}
+}
+
+async function safeEditOrReply(ctx, text, kb) {
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  // Prefer edit (callback), fallback to reply.
+  try {
+    if (ctx?.callbackQuery?.message) {
+      await ctx.editMessageText(text, opts);
+      return;
+    }
+  } catch {}
+  await ctx.reply(text, opts);
+}
+
+export async function renderGwAccess({ ctx, gwId, ownerUserId, redis, db, forceRecheck = false, checkUserId = null }) {
   const g = await db.getGiveawayForOwner(gwId, ownerUserId);
   if (!g) {
-    await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+    await safeAnswerCb(ctx);
+    if (ctx?.callbackQuery?.id) await ctx.answerCallbackQuery({ text: 'Нет доступа.' }).catch(() => {});
+    else await ctx.reply('Нет доступа.');
     return null;
   }
 
   const sponsorsRaw = await db.listGiveawaySponsors(gwId);
-  const chats = sponsorsRaw.map((s) => sponsorToChatId(s.sponsor_text)).filter(Boolean);
+  const parsedSponsors = sponsorsRaw.map((s) => {
+    const raw = String(s.sponsor_text || '').trim();
+    const chat = sponsorToChatId(raw);
+    return { raw, chat };
+  });
 
-  const botId = CFG.BOT_ID;
-  const botUsername = CFG.BOT_USERNAME || 'YourBotUsername';
+  const mainChat = g.published_chat_id ? String(g.published_chat_id) : null;
 
-  if (!botId) {
-    await ctx.answerCallbackQuery();
-    await ctx.editMessageText(
-      `⚠️ BOT_ID не задан.\n\nСделай /whoami в боте, возьми BOT_ID и добавь в env.`,
-      { reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_open|i:${gwId}`) }
-    );
-    return null;
+  const channels = [];
+  if (mainChat) channels.push({ label: 'Канал конкурса', chat: mainChat, kind: 'main' });
+
+  for (const s of parsedSponsors) {
+    if (s.chat) channels.push({ label: 'Спонсор', chat: s.chat, kind: 'sponsor' });
   }
 
-  if (!chats.length) {
-    await ctx.answerCallbackQuery();
-    await ctx.editMessageText(
-      '🧩 Проверка доступа\n\nСпонсоров нет — проверять нечего ✅',
-      { reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_open|i:${gwId}`) }
-    );
-    return { adminCount: 0, memberCount: 0, noCount: 0, total: 0 };
-  }
+  const invalidSponsors = parsedSponsors.filter((s) => !s.chat && s.raw);
 
+  const botMe = await resolveBotMe(ctx.api);
+  const botId = botMe.id || Number(CFG.BOT_ID || 0);
+  const botUsername = botMe.username || CFG.BOT_USERNAME || 'YourBotUsername';
+
+  // Recheck: clear cached bot access states
   if (forceRecheck) {
-    for (const chat of chats) await redis.del(acc2Key(chat));
+    for (const c of channels) await redis.del(acc2Key(c.chat));
   }
 
   const limit = CFG.TG_ACCESS_CHECK_CONCURRENCY || 4;
-  const results = await mapLimit(chats, limit, async (chat) => {
-    const a = await checkBotAdminCached(redis, ctx.api, chat, botId);
-    return { chat, a };
-  });
 
-  let adminCount = 0, memberCount = 0;
-  const lines = [];
+  const botAccessResults = channels.length
+    ? await mapLimit(channels, limit, async (c) => {
+        const a = await checkBotAdminCached(redis, ctx.api, c.chat, botId, forceRecheck);
+        return { ...c, a };
+      })
+    : [];
 
-  for (const r of results) {
-    if (r.a.state === 'admin') adminCount++;
-    if (r.a.state === 'member') memberCount++;
-    lines.push(fmtLine(r.chat, r.a));
+  let adminCount = 0, memberCount = 0, noCount = 0, errCount = 0;
+  const botLines = [];
+
+  for (const r of botAccessResults) {
+    if (r.a.status === 'error') errCount++;
+    else if (r.a.state === 'admin') adminCount++;
+    else if (r.a.state === 'member') memberCount++;
+    else noCount++;
+
+    botLines.push(fmtBotLine(r.label, r.chat, r.a));
   }
 
-  const noCount = chats.length - adminCount - memberCount;
+  // Optional: check a user across channels
+  let userLines = [];
+  let userOk = 0, userBad = 0, userUnknown = 0;
+
+  if (checkUserId && channels.length) {
+    const ures = await mapLimit(channels, limit, async (c) => {
+      const r = await checkUserMember(ctx.api, c.chat, Number(checkUserId));
+      return { ...c, r };
+    });
+
+    for (const x of ures) {
+      if (x.r.state === 'in') userOk++;
+      else if (x.r.state === 'out') userBad++;
+      else userUnknown++;
+      userLines.push(fmtUserLine(x.label, x.chat, x.r));
+    }
+  }
+
+  const envNote = CFG.BOT_ID
+    ? `BOT_ID: <code>${CFG.BOT_ID}</code>`
+    : `BOT_ID: <b>auto</b> (через getMe)`;
+
+  const sponsorNote = invalidSponsors.length
+    ? `\n\n⚠️ <b>Невалидные спонсоры:</b>\n${invalidSponsors.map(s => '• ' + s.raw).join('\n')}`
+    : '';
+
+  const header =
+`🧩 <b>Проверка доступа</b>
+<code>giveaway:${gwId}</code>
+
+<b>Bot:</b> ${botUsername ? '@' + botUsername : '—'}  (id: <code>${botId || '—'}</code>)
+<b>Env:</b> ${envNote}`;
+
+  const botSection =
+channels.length
+  ? `\n\n<b>Доступ бота к каналам</b>
+✅ admin: <b>${adminCount}</b>   🟦 member: <b>${memberCount}</b>   ❌ no: <b>${noCount}</b>   ⚠️ err: <b>${errCount}</b>
+
+${botLines.join('\n')}`
+  : `\n\n<b>Каналы</b>\nСпонсоров нет и конкурс не опубликован — проверять нечего ✅`;
+
+  const userSection =
+checkUserId
+  ? `\n\n<b>Проверка участника</b> (user_id: <code>${Number(checkUserId)}</code>)
+✅ ok: <b>${userOk}</b>   ❌ fail: <b>${userBad}</b>   ⚠️ unknown: <b>${userUnknown}</b>
+
+${userLines.join('\n')}`
+  : '';
 
   const text =
-`🧩 <b>Проверка доступа (бот в каналах-спонсорах)</b>
-
-✅ admin: <b>${adminCount}</b>
-🟦 member: <b>${memberCount}</b>
-❌ no access: <b>${noCount}</b>
-
-${lines.join('\n')}
+`${header}${botSection}${userSection}${sponsorNote}
 
 ${accessHelpText(botUsername)}`;
 
   const kb = new InlineKeyboard()
-    .text('🔄 Обновить', `a:gw_access_recheck|i:${gwId}`)
+    .text('🔄 Перепроверить', `a:gw_access_recheck|i:${gwId}`)
+    .row()
+    .text('👤 Проверить меня', `a:gw_access_checkme|i:${gwId}`)
+    .text('🔎 Проверить по ID', `a:gw_access_user_prompt|i:${gwId}`)
     .row()
     .text('⬅️ Назад', `a:gw_open|i:${gwId}`);
 
-  await ctx.answerCallbackQuery();
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+  await safeAnswerCb(ctx);
+  await safeEditOrReply(ctx, text, kb);
 
   await db.auditGiveaway(gwId, g.workspace_id, ownerUserId, 'gw.access_checked', {
-    adminCount, memberCount, noCount, total: chats.length
+    adminCount,
+    memberCount,
+    noCount,
+    errCount,
+    total: channels.length,
+    checkUserId: checkUserId ? Number(checkUserId) : null
   });
 
-  return { adminCount, memberCount, noCount, total: chats.length };
+  return {
+    adminCount,
+    memberCount,
+    noCount,
+    errCount,
+    total: channels.length
+  };
 }
