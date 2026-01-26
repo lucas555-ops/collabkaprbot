@@ -108,16 +108,10 @@ async function sendStarsInvoice(ctx, { title, description, payload, amount, back
   try {
     // IMPORTANT: For sendInvoice, if reply_markup is present and non-empty,
     // the FIRST button MUST be a Pay button (otherwise Telegram returns REPLY_MARKUP_BUY_EMPTY).
-    // We'll include a Pay button + navigation.
+    // We'll include ONLY the Pay button in the invoice to avoid duplicated nav keyboards.
     const invoiceMarkup = {
       inline_keyboard: [
         [{ text: `⭐️ Оплатить (${Number(amount)} Stars)`, pay: true }],
-        backCb
-          ? [
-              { text: '⬅️ Назад', callback_data: backCb },
-              { text: '📋 Меню', callback_data: 'a:menu' },
-            ]
-          : [{ text: '📋 Меню', callback_data: 'a:menu' }],
       ],
     };
 
