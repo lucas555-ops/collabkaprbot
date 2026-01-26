@@ -103,39 +103,42 @@ async function sendStarsInvoice(ctx, { title, description, payload, amount, back
   const chatId = ctx?.chat?.id;
   const userId = ctx?.from?.id;
 
-  const prices = [{ label: title, amount: Number(amount) }];
+  // Put the "cancel/help" hint into the invoice description to avoid sending a second message.
+  const fullDescription = `${description}
+
+Если передумал — жми «📋 Меню».`;
+
+  // Prices must contain exactly one item for Stars.
+  const prices = [{ label: 'СЧЁТ', amount: Number(amount) }];
 
   try {
     // IMPORTANT: For sendInvoice, if reply_markup is present and non-empty,
     // the FIRST button MUST be a Pay button (otherwise Telegram returns REPLY_MARKUP_BUY_EMPTY).
-    // We'll include ONLY the Pay button in the invoice to avoid duplicated nav keyboards.
+    // We'll keep everything in ONE invoice message:
+    //   row1: Pay
+    //   row2: Back/Menu (regular callback buttons)
+    const navRow = [];
+    if (backCb) navRow.push({ text: '⬅️ Назад', callback_data: backCb });
+    navRow.push({ text: '📋 Меню', callback_data: 'a:menu' });
+
     const invoiceMarkup = {
       inline_keyboard: [
         [{ text: `⭐️ Оплатить (${Number(amount)} Stars)`, pay: true }],
+        navRow,
       ],
     };
-
-    // Navigation keyboard for normal messages (NO pay button here)
-    const navKb = new InlineKeyboard();
-    if (backCb) navKb.text('⬅️ Назад', backCb);
-    navKb.text('📋 Меню', 'a:menu');
 
     // Stars: currency XTR, provider_token must be empty string
     await ctx.api.raw.sendInvoice({
       chat_id: chatId,
       title,
-      description,
+      description: fullDescription,
       payload,
       provider_token: '',
       currency: 'XTR',
       prices,
       reply_markup: invoiceMarkup,
     });
-
-    // Extra helper message (only in private chats) so the last message isn't the invoice.
-    if (ctx?.chat?.type === 'private') {
-      await ctx.reply('Счёт отправлен. Если передумал — жми «📋 Меню».', { reply_markup: navKb });
-    }
 
     return true;
   } catch (e) {
@@ -149,7 +152,14 @@ async function sendStarsInvoice(ctx, { title, description, payload, amount, back
 
     const isAdmin = isSuperAdminTg(userId);
     const text = isAdmin
-      ? `❌ Не удалось отправить Stars-инвойс.\nПричина: ${desc}\n\nПроверь:\n• Telegram клиент обновлён\n• Тестируешь НЕ с аккаунта владельца бота\n• Валидный Stars прайс (целое число Stars)\n`
+      ? `❌ Не удалось отправить Stars-инвойс.
+Причина: ${desc}
+
+Проверь:
+• Telegram клиент обновлён
+• Тестируешь НЕ с аккаунта владельца бота
+• Валидный Stars прайс (целое число Stars)
+`
       : 'Не удалось отправить инвойс. Проверь, что Telegram обновлён и Stars доступны.';
     try {
       await ctx.reply(text, backCb ? { reply_markup: new InlineKeyboard().text('⬅️ Назад', backCb) } : undefined);
