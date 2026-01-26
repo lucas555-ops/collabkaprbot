@@ -2112,7 +2112,7 @@ async function renderGwEntries(ctx, ownerUserId, gwId, page = 0) {
   const offset = p * pageSize;
   const rows = await db.listGiveawayEntriesPage(gwId, ownerUserId, pageSize, offset);
 
-  const lines = rows.map((r, i) => {
+  const lines = rows.map((r) => {
     const icon = r.is_eligible ? '✅' : (r.last_checked_at ? '⚠️' : '⏳');
     const who = r.tg_username ? `@${escapeHtml(String(r.tg_username))}` : `<code>${Number(r.tg_id)}</code>`;
     const chk = r.last_checked_at ? escapeHtml(fmtTs(r.last_checked_at)) : '—';
@@ -2124,12 +2124,33 @@ async function renderGwEntries(ctx, ownerUserId, gwId, page = 0) {
 
 Страница: <b>${p + 1}</b>/<b>${maxPage + 1}</b> · Всего: <b>${total}</b>
 
-${lines.length ? lines.join('\n') : 'Пока пусто.'}
+${lines.length ? lines.join('
+') : 'Пока пусто.'}
 
 Легенда: ✅ подтверждено · ⚠️ не подтверждено · ⏳ не проверяли
-💡 “Обновить статусы” использует кэш проверки подписок (быстро) и обновляет запись в базе.`;
+💡 Нажми на участника, чтобы открыть “почему не прошёл”.`;
 
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwEntriesKb(gwId, p, total, pageSize) });
+  const kb = new InlineKeyboard();
+
+  // Per-participant buttons (click to open detail)
+  for (const r of rows) {
+    const icon = r.is_eligible ? '✅' : (r.last_checked_at ? '⚠️' : '⏳');
+    const who = r.tg_username ? `@${String(r.tg_username)}` : String(r.tg_id);
+    const label = `${icon} ${who}`.slice(0, 60);
+    kb.text(label, `a:gw_entry|i:${gwId}|uid:${r.user_id}|u:${r.tg_id}|p:${p}`).row();
+  }
+
+  // Paging controls
+  if (p > 0) kb.text('⬅️ Назад', `a:gw_entries|i:${gwId}|p:${p - 1}`);
+  if (p < maxPage) kb.text('➡️ Вперёд', `a:gw_entries|i:${gwId}|p:${p + 1}`);
+  if (p > 0 || p < maxPage) kb.row();
+
+  kb
+    .text('🔄 Обновить статусы (страница)', `a:gw_entries_refresh|i:${gwId}|p:${p}`)
+    .row()
+    .text('⬅️ К статистике', `a:gw_stats|i:${gwId}`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
 }
 
 async function renderGwLog(ctx, ownerUserIdOrNull, gwId) {
@@ -2197,6 +2218,111 @@ async function doEligibilityCheck(ctx, gwId, userTgId) {
 
   const isEligible = results.every(r => r.status === 'ok') && !unknown;
   return { isEligible, unknown, results };
+}
+
+async function getChatLabelCached(ctx, chatId) {
+  const id = String(chatId);
+  const cacheKey = k(['chatmeta', id]);
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) return String(cached);
+  } catch {}
+
+  try {
+    const chat = await ctx.api.getChat(id);
+    const label = chat?.username ? `@${chat.username}` : (chat?.title ? String(chat.title) : id);
+    try { await redis.set(cacheKey, label, { ex: 24 * 3600 }); } catch {}
+    return label;
+  } catch {
+    // If bot has no access to the chat, just show the raw id / @username.
+    return id;
+  }
+}
+
+function gwEntryDetailKb(gwId, page, entryUserId, entryTgId) {
+  const kb = new InlineKeyboard()
+    .text('🔄 Проверить сейчас', `a:gw_entry_check|i:${gwId}|uid:${entryUserId}|u:${entryTgId}|p:${page}`)
+    .row()
+    .text('⬅️ К участникам', `a:gw_entries|i:${gwId}|p:${page}`)
+    .row()
+    .text('⬅️ К статистике', `a:gw_stats|i:${gwId}`);
+  return kb;
+}
+
+async function renderGwEntryDetail(ctx, ownerUserId, gwId, entryUserId, entryTgId, page = 0) {
+  const gOwner = await db.getGiveawayForOwner(gwId, ownerUserId);
+  if (!gOwner) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const userMeta = await db.getUserTgIdByUserId(Number(entryUserId));
+  const who = userMeta?.tg_username ? `@${escapeHtml(String(userMeta.tg_username))}` : `<code>${Number(entryTgId)}</code>`;
+
+  const entry = await db.getEntryStatus(gwId, Number(entryUserId));
+  const lastChk = entry?.last_checked_at ? escapeHtml(fmtTs(entry.last_checked_at)) : '—';
+  const stored =
+    !entry ? '⛔ не участвует'
+      : entry.is_eligible ? '✅ подтверждено (в базе)'
+      : entry.last_checked_at ? '⚠️ не подтверждено (в базе)'
+      : '⏳ не проверяли (в базе)';
+
+  // Build ordered list of required channels: main first, then sponsors
+  let mainChat = null;
+  try {
+    const gPublic = await db.getGiveawayInfoForUser(gwId);
+    mainChat = gPublic?.published_chat_id ?? gPublic?.published_chat ?? gPublic?.channel_id ?? null;
+  } catch {}
+
+  const sponsors = await db.listGiveawaySponsors(gwId);
+  const sponsorPairs = sponsors
+    .map(s => ({ text: String(s.sponsor_text || '').trim(), chat: sponsorToChatId(s.sponsor_text) }))
+    .filter(x => x.chat);
+
+  const required = [];
+  if (mainChat) required.push({ kind: 'main', chat: String(mainChat), text: null });
+  for (const sp of sponsorPairs) required.push({ kind: 'sponsor', chat: String(sp.chat), text: sp.text });
+
+  // Run check (uses Redis cache for getChatMember results)
+  const check = await doEligibilityCheck(ctx, gwId, Number(entryTgId));
+  const statusByChat = new Map(check.results.map(r => [String(r.chat), String(r.status)]));
+
+  const rows = [];
+  for (const item of required) {
+    const st = statusByChat.get(String(item.chat)) || 'unknown';
+    const icon = st === 'ok' ? '✅' : (st === 'no' ? '❌' : '❔');
+    let label = '';
+    if (item.kind === 'main') {
+      const nm = await getChatLabelCached(ctx, item.chat);
+      label = `Основной канал: ${escapeHtml(nm)}`;
+    } else {
+      label = `Спонсор: ${escapeHtml(item.text || item.chat)}`;
+    }
+    const reason = st === 'ok' ? 'подписан' : (st === 'no' ? 'нет подписки' : 'не могу проверить');
+    rows.push(`${icon} ${label} — <i>${reason}</i>`);
+  }
+
+  const hasUnknown = check.unknown || rows.some(x => x.includes('❔'));
+  const headline = check.isEligible && !hasUnknown ? '✅ <b>Проходит условия</b>' : (hasUnknown ? '⚠️ <b>Не могу проверить все каналы</b>' : '⚠️ <b>Не проходит условия</b>');
+
+  const tips = hasUnknown
+    ? `
+
+💡 <b>Что делать:</b>
+• Добавь бота в админы проблемных каналов/спонсоров
+• Затем нажми “🔄 Проверить сейчас”`
+    : '';
+
+  const text =
+`👤 <b>Участник</b>: ${who}
+🎁 Конкурс: <b>#${gwId}</b>
+
+${headline}
+🕒 Последняя проверка (в базе): <b>${lastChk}</b>
+📌 Статус (в базе): <b>${stored}</b>
+
+<b>Проверка по каналам:</b>
+${rows.length ? rows.join('
+') : '—'}${tips}`;
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwEntryDetailKb(gwId, Number(page || 0), Number(entryUserId), Number(entryTgId)) });
 }
 
 async function renderSetupInstructions(ctx) {
@@ -5356,6 +5482,32 @@ if (p.a === 'a:bx_cat') {
       await renderGwEntries(ctx, u.id, Number(p.i), Number(p.p || 0));
       return;
     }
+
+    if (p.a === 'a:gw_entry') {
+      await ctx.answerCallbackQuery();
+      await renderGwEntryDetail(ctx, u.id, Number(p.i), Number(p.uid), Number(p.u), Number(p.p || 0));
+      return;
+    }
+    if (p.a === 'a:gw_entry_check') {
+      const gwId = Number(p.i);
+      const entryUserId = Number(p.uid);
+      const entryTgId = Number(p.u);
+      const page = Number(p.p || 0);
+
+      // Owner-only
+      const g = await db.getGiveawayForOwner(gwId, u.id);
+      if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      await ctx.answerCallbackQuery({ text: 'Проверяю…' });
+
+      const check = await doEligibilityCheck(ctx, gwId, entryTgId);
+      await db.setEntryEligibility(gwId, entryUserId, check.isEligible);
+      await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.owner_check_one', { entryUserId, entryTgId, isEligible: check.isEligible, unknown: check.unknown });
+
+      await renderGwEntryDetail(ctx, u.id, gwId, entryUserId, entryTgId, page);
+      return;
+    }
+
     if (p.a === 'a:gw_entries_refresh') {
       const gwId = Number(p.i);
       const page = Number(p.p || 0);
