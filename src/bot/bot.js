@@ -2137,7 +2137,7 @@ ${lines.length ? lines.join('
     const icon = r.is_eligible ? '✅' : (r.last_checked_at ? '⚠️' : '⏳');
     const who = r.tg_username ? `@${String(r.tg_username)}` : String(r.tg_id);
     const label = `${icon} ${who}`.slice(0, 60);
-    kb.text(label, `a:gw_entry|i:${gwId}|uid:${r.user_id}|u:${r.tg_id}|p:${p}`).row();
+    kb.text(label, `a:ge|i:${gwId}|uid:${r.user_id}|p:${p}`).row();
   }
 
   // Paging controls
@@ -2239,9 +2239,9 @@ async function getChatLabelCached(ctx, chatId) {
   }
 }
 
-function gwEntryDetailKb(gwId, page, entryUserId, entryTgId) {
+function gwEntryDetailKb(gwId, page, entryUserId) {
   const kb = new InlineKeyboard()
-    .text('🔄 Проверить сейчас', `a:gw_entry_check|i:${gwId}|uid:${entryUserId}|u:${entryTgId}|p:${page}`)
+    .text('🔄 Проверить сейчас', `a:gec|i:${gwId}|uid:${entryUserId}|p:${page}`)
     .row()
     .text('⬅️ К участникам', `a:gw_entries|i:${gwId}|p:${page}`)
     .row()
@@ -2249,12 +2249,13 @@ function gwEntryDetailKb(gwId, page, entryUserId, entryTgId) {
   return kb;
 }
 
-async function renderGwEntryDetail(ctx, ownerUserId, gwId, entryUserId, entryTgId, page = 0) {
+async function renderGwEntryDetail(ctx, ownerUserId, gwId, entryUserId, page = 0) {
   const gOwner = await db.getGiveawayForOwner(gwId, ownerUserId);
   if (!gOwner) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
 
   const userMeta = await db.getUserTgIdByUserId(Number(entryUserId));
-  const who = userMeta?.tg_username ? `@${escapeHtml(String(userMeta.tg_username))}` : `<code>${Number(entryTgId)}</code>`;
+  const entryTgId = userMeta?.tg_id ? Number(userMeta.tg_id) : null;
+  const who = userMeta?.tg_username ? `@${escapeHtml(String(userMeta.tg_username))}` : (entryTgId ? `<code>${Number(entryTgId)}</code>` : `<code>user:${Number(entryUserId)}</code>`);
 
   const entry = await db.getEntryStatus(gwId, Number(entryUserId));
   const lastChk = entry?.last_checked_at ? escapeHtml(fmtTs(entry.last_checked_at)) : '—';
@@ -2281,7 +2282,7 @@ async function renderGwEntryDetail(ctx, ownerUserId, gwId, entryUserId, entryTgI
   for (const sp of sponsorPairs) required.push({ kind: 'sponsor', chat: String(sp.chat), text: sp.text });
 
   // Run check (uses Redis cache for getChatMember results)
-  const check = await doEligibilityCheck(ctx, gwId, Number(entryTgId));
+  const check = entryTgId ? await doEligibilityCheck(ctx, gwId, Number(entryTgId)) : { isEligible: false, unknown: true, results: [] };
   const statusByChat = new Map(check.results.map(r => [String(r.chat), String(r.status)]));
 
   const rows = [];
@@ -5483,20 +5484,23 @@ if (p.a === 'a:bx_cat') {
       return;
     }
 
-    if (p.a === 'a:gw_entry') {
+    if (p.a === 'a:ge') {
       await ctx.answerCallbackQuery();
-      await renderGwEntryDetail(ctx, u.id, Number(p.i), Number(p.uid), Number(p.u), Number(p.p || 0));
+      await renderGwEntryDetail(ctx, u.id, Number(p.i), Number(p.uid), Number(p.p || 0));
       return;
     }
-    if (p.a === 'a:gw_entry_check') {
+    if (p.a === 'a:gec') {
       const gwId = Number(p.i);
       const entryUserId = Number(p.uid);
-      const entryTgId = Number(p.u);
       const page = Number(p.p || 0);
 
       // Owner-only
       const g = await db.getGiveawayForOwner(gwId, u.id);
       if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      const userMeta = await db.getUserTgIdByUserId(entryUserId);
+      const entryTgId = userMeta?.tg_id ? Number(userMeta.tg_id) : null;
+      if (!entryTgId) return ctx.answerCallbackQuery({ text: 'Не вижу TG ID участника.' });
 
       await ctx.answerCallbackQuery({ text: 'Проверяю…' });
 
@@ -5504,11 +5508,11 @@ if (p.a === 'a:bx_cat') {
       await db.setEntryEligibility(gwId, entryUserId, check.isEligible);
       await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.owner_check_one', { entryUserId, entryTgId, isEligible: check.isEligible, unknown: check.unknown });
 
-      await renderGwEntryDetail(ctx, u.id, gwId, entryUserId, entryTgId, page);
+      await renderGwEntryDetail(ctx, u.id, gwId, entryUserId, page);
       return;
     }
 
-    if (p.a === 'a:gw_entries_refresh') {
+    if (p.a === 'a:gw_entries_refresh') { {
       const gwId = Number(p.i);
       const page = Number(p.p || 0);
 
