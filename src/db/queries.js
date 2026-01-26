@@ -115,6 +115,68 @@ export async function getAnalyticsDaily(days = 14) {
 }
 
 
+// -----------------------------
+// Admin metrics snapshot (works even when analytics disabled)
+// -----------------------------
+export async function getAdminMetricsSnapshot(windowDays = 14) {
+  const wd = Math.max(1, Math.min(90, Number(windowDays) || 14));
+
+  // Base entity counts
+  const out = { window_days: wd };
+
+  try {
+    const r = await pool.query(`
+      select
+        (select count(*)::int from users) as users_total,
+        (select count(*)::int from workspaces) as workspaces_total,
+        (select count(*)::int from giveaways) as giveaways_total,
+        (select count(*)::int from giveaways where status in ('DRAFT','PUBLISHED','ACTIVE')) as giveaways_active,
+        (select count(*)::int from barter_offers) as offers_total,
+        (select count(*)::int from barter_offers where status not in ('CLOSED','DELETED')) as offers_active
+    `);
+    Object.assign(out, r.rows[0] || {});
+  } catch {
+    // ignore
+  }
+
+  // Payments summary in the window
+  try {
+    const r = await pool.query(
+      `select
+         status,
+         currency,
+         count(*)::int as cnt,
+         coalesce(sum(total_amount), 0)::int as amount_sum
+       from payments
+       where created_at >= now() - ($1::int || ' days')::interval
+       group by status, currency
+       order by status asc, currency asc`,
+      [wd]
+    );
+    out.payments = r.rows || [];
+  } catch {
+    out.payments = [];
+  }
+
+  // Activity summary: relies on optional analytics/events table. Safe to call.
+  try {
+    const topline = await getAnalyticsTopline({ windowDays: wd });
+    out.analytics_topline = topline;
+  } catch {
+    out.analytics_topline = null;
+  }
+
+  try {
+    const daily = await getAnalyticsDaily(wd);
+    out.analytics_daily = daily;
+  } catch {
+    out.analytics_daily = [];
+  }
+
+  return out;
+}
+
+
 export async function findUserByUsername(username) {
   const u = String(username || '').replace(/^@/, '').toLowerCase();
   const r = await pool.query(`select id, tg_id, tg_username from users where lower(tg_username)= $1 limit 1`, [u]);
