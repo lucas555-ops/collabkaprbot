@@ -106,25 +106,41 @@ async function sendStarsInvoice(ctx, { title, description, payload, amount, back
   const prices = [{ label: title, amount: Number(amount) }];
 
   try {
-    // Add quick navigation so users don't get "stuck" with an unpaid invoice message.
-    const invKb = new InlineKeyboard();
-    if (backCb) invKb.text('⬅️ Назад', backCb);
-    invKb.text('📋 Меню', 'a:menu');
+    // IMPORTANT: For sendInvoice, if reply_markup is present and non-empty,
+    // the FIRST button MUST be a Pay button (otherwise Telegram returns REPLY_MARKUP_BUY_EMPTY).
+    // We'll include a Pay button + navigation.
+    const invoiceMarkup = {
+      inline_keyboard: [
+        [{ text: `⭐️ Оплатить (${Number(amount)} Stars)`, pay: true }],
+        backCb
+          ? [
+              { text: '⬅️ Назад', callback_data: backCb },
+              { text: '📋 Меню', callback_data: 'a:menu' },
+            ]
+          : [{ text: '📋 Меню', callback_data: 'a:menu' }],
+      ],
+    };
 
-    // Use raw API to OMIT provider_token (Bot API 7.4+ allows it and some stacks break on empty string)
+    // Navigation keyboard for normal messages (NO pay button here)
+    const navKb = new InlineKeyboard();
+    if (backCb) navKb.text('⬅️ Назад', backCb);
+    navKb.text('📋 Меню', 'a:menu');
+
+    // Stars: currency XTR, provider_token must be empty string
     await ctx.api.raw.sendInvoice({
       chat_id: chatId,
       title,
       description,
       payload,
+      provider_token: '',
       currency: 'XTR',
       prices,
-      reply_markup: invKb,
+      reply_markup: invoiceMarkup,
     });
 
     // Extra helper message (only in private chats) so the last message isn't the invoice.
     if (ctx?.chat?.type === 'private') {
-      await ctx.reply('Счёт отправлен. Если передумал — жми «📋 Меню».', { reply_markup: invKb });
+      await ctx.reply('Счёт отправлен. Если передумал — жми «📋 Меню».', { reply_markup: navKb });
     }
 
     return true;
