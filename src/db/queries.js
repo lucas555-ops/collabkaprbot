@@ -358,7 +358,8 @@ export async function listWorkspaces(ownerUserId) {
   const r = await pool.query(
     `select ws.*, s.network_enabled, s.curator_enabled, s.auto_draw_default, s.auto_publish_default,
             s.plan, s.pro_until, s.pro_pinned_offer_id,
-            s.profile_title, s.profile_niche, s.profile_contact, s.profile_geo
+            s.profile_title, s.profile_niche, s.profile_contact, s.profile_geo,
+            s.profile_mode, s.profile_ig, s.profile_verticals, s.profile_formats, s.profile_portfolio_urls, s.profile_about
      from workspaces ws
      join workspace_settings s on s.workspace_id = ws.id
      where ws.owner_user_id=$1
@@ -372,7 +373,8 @@ export async function getWorkspace(ownerUserId, workspaceId) {
   const r = await pool.query(
     `select ws.*, s.network_enabled, s.curator_enabled, s.auto_draw_default, s.auto_publish_default,
             s.plan, s.pro_until, s.pro_pinned_offer_id,
-            s.profile_title, s.profile_niche, s.profile_contact, s.profile_geo
+            s.profile_title, s.profile_niche, s.profile_contact, s.profile_geo,
+            s.profile_mode, s.profile_ig, s.profile_verticals, s.profile_formats, s.profile_portfolio_urls, s.profile_about
      from workspaces ws
      join workspace_settings s on s.workspace_id = ws.id
      where ws.owner_user_id=$1 and ws.id=$2`,
@@ -388,7 +390,8 @@ export async function getWorkspaceAny(workspaceId) {
   const r = await pool.query(
     `select ws.*, s.network_enabled, s.curator_enabled, s.auto_draw_default, s.auto_publish_default,
             s.plan, s.pro_until, s.pro_pinned_offer_id,
-            s.profile_title, s.profile_niche, s.profile_contact, s.profile_geo
+            s.profile_title, s.profile_niche, s.profile_contact, s.profile_geo,
+            s.profile_mode, s.profile_ig, s.profile_verticals, s.profile_formats, s.profile_portfolio_urls, s.profile_about
      from workspaces ws
      join workspace_settings s on s.workspace_id = ws.id
      where ws.id=$1`,
@@ -402,7 +405,8 @@ export async function findWorkspaceByChannelUsername(channelUsername) {
   const r = await pool.query(
     `select ws.*, s.network_enabled, s.curator_enabled, s.auto_draw_default, s.auto_publish_default,
             s.plan, s.pro_until, s.pro_pinned_offer_id,
-            s.profile_title, s.profile_niche, s.profile_contact, s.profile_geo
+            s.profile_title, s.profile_niche, s.profile_contact, s.profile_geo,
+            s.profile_mode, s.profile_ig, s.profile_verticals, s.profile_formats, s.profile_portfolio_urls, s.profile_about
      from workspaces ws
      join workspace_settings s on s.workspace_id = ws.id
      where lower(ws.channel_username)= $1
@@ -1080,7 +1084,17 @@ export async function bumpBarterOffer(offerId) {
 export async function getBarterOfferPublic(offerId) {
   const r = await pool.query(
     `select o.*, w.title as ws_title, w.channel_username, w.channel_id, w.owner_user_id,
-            s.network_enabled
+            s.network_enabled,
+            s.profile_title as ws_profile_title,
+            s.profile_niche as ws_profile_niche,
+            s.profile_contact as ws_profile_contact,
+            s.profile_geo as ws_profile_geo,
+            s.profile_mode as ws_profile_mode,
+            s.profile_ig as ws_profile_ig,
+            s.profile_verticals as ws_profile_verticals,
+            s.profile_formats as ws_profile_formats,
+            s.profile_portfolio_urls as ws_profile_portfolio_urls,
+            s.profile_about as ws_profile_about
      from barter_offers o
      join workspaces w on w.id = o.workspace_id
      join workspace_settings s on s.workspace_id = w.id
@@ -2364,6 +2378,16 @@ export async function getBarterOfferPublicWithVerified(offerId) {
   const r = await pool.query(
     `select o.*, w.title as ws_title, w.channel_username, w.channel_id,
             s.network_enabled,
+            s.profile_title as ws_profile_title,
+            s.profile_niche as ws_profile_niche,
+            s.profile_contact as ws_profile_contact,
+            s.profile_geo as ws_profile_geo,
+            s.profile_mode as ws_profile_mode,
+            s.profile_ig as ws_profile_ig,
+            s.profile_verticals as ws_profile_verticals,
+            s.profile_formats as ws_profile_formats,
+            s.profile_portfolio_urls as ws_profile_portfolio_urls,
+            s.profile_about as ws_profile_about,
             (case when uv.status='APPROVED' then true else false end) as creator_verified
      from barter_offers o
      join workspaces w on w.id=o.workspace_id
