@@ -487,6 +487,21 @@ export async function getGiveawayForOwner(giveawayId, ownerUserId) {
   return r.rows[0] || null;
 }
 
+export async function deleteGiveawayForOwner(giveawayId, ownerUserId) {
+  // Hard delete (cascades: sponsors/entries/winners/audit).
+  // We owner-gate via workspaces join.
+  const r = await pool.query(
+    `delete from giveaways g
+     using workspaces ws
+     where g.id=$1
+       and g.workspace_id = ws.id
+       and ws.owner_user_id = $2
+     returning g.id, g.workspace_id`,
+    [Number(giveawayId), Number(ownerUserId)]
+  );
+  return r.rows[0] || null;
+}
+
 export async function getGiveawayPublic(giveawayId) {
   const r = await pool.query(
     `select id, workspace_id, status, ends_at, published_chat_id
@@ -904,11 +919,45 @@ export async function listBarterOffersForOwnerWorkspace(ownerUserId, workspaceId
     `select *
      from barter_offers
      where workspace_id=$1
+       and coalesce(status,'ACTIVE') <> 'CLOSED'
      order by created_at desc
      limit $2 offset $3`,
     [workspaceId, limit, offset]
   );
   return r.rows;
+}
+
+export async function listArchivedBarterOffersForOwnerWorkspace(ownerUserId, workspaceId, limit = 10, offset = 0) {
+  // owner gate
+  const ws = await pool.query(
+    `select id from workspaces where id=$1 and owner_user_id=$2`,
+    [workspaceId, ownerUserId]
+  );
+  if (!ws.rows.length) return [];
+  const r = await pool.query(
+    `select *
+     from barter_offers
+     where workspace_id=$1
+       and coalesce(status,'ACTIVE') = 'CLOSED'
+     order by updated_at desc, created_at desc
+     limit $2 offset $3`,
+    [workspaceId, limit, offset]
+  );
+  return r.rows;
+}
+
+export async function restoreBarterOfferForOwner(offerId, ownerUserId) {
+  const r = await pool.query(
+    `update barter_offers o
+     set status='ACTIVE', bump_at=now(), updated_at=now()
+     from workspaces w
+     where o.id=$1
+       and o.workspace_id = w.id
+       and w.owner_user_id = $2
+     returning o.*`,
+    [Number(offerId), Number(ownerUserId)]
+  );
+  return r.rows[0] || null;
 }
 
 export async function getBarterOfferForOwner(ownerUserId, offerId) {
