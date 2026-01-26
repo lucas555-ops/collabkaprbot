@@ -535,6 +535,17 @@ function gwSponsorsOptionalKb(wsId) {
 }
 
 
+
+function gwSponsorsReviewKb(wsId) {
+  return new InlineKeyboard()
+    .text('✍️ Изменить', `a:gw_sponsors_edit|ws:${wsId}`)
+    .text('🧹 Очистить', `a:gw_sponsors_clear|ws:${wsId}`)
+    .row()
+    .text('➡️ Дальше', `a:gw_sponsors_next|ws:${wsId}`)
+    .row()
+    .text('⬅️ Назад', `a:gw_step_sponsors|ws:${wsId}`);
+}
+
 function gwConfirmKb(wsId) {
   return new InlineKeyboard()
     .text('📣 Опубликовать', `a:gw_publish|ws:${wsId}`)
@@ -542,15 +553,15 @@ function gwConfirmKb(wsId) {
     .text('⬅️ Назад', `a:gw_step_deadline|ws:${wsId}`);
 }
 
-function gwOpenKb(g) {
+function gwOpenKb(g, flags = {}) {
+  const { isAdmin = false } = flags;
   const gwId = g.id;
   const kb = new InlineKeyboard()
     .text('📊 Статистика', `a:gw_stats|i:${gwId}`)
     .text('🧾 Лог', `a:gw_log|i:${gwId}`)
-    .row()
-    .text('🧩 Проверка доступа', `a:gw_access|i:${gwId}`)
-    .row()
-    .text('📣 Напомнить проверить', `a:gw_remind_q|i:${gwId}`)
+    .row();
+  if (isAdmin) kb.text('🧩 Проверка доступа', `a:gw_access|i:${gwId}`).row();
+  kb.text('📣 Напомнить проверить', `a:gw_remind_q|i:${gwId}`)
     .row()
     ;
 
@@ -2019,7 +2030,7 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
 Дедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>
 
 Спонсоры:\n${sponsorLines}`;
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g) });
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
 }
 
 async function renderGwStats(ctx, ownerUserId, gwId) {
@@ -2049,9 +2060,11 @@ async function renderGwStats(ctx, ownerUserId, gwId) {
     .text('📤 Экспорт eligible', `a:gw_export|i:${gwId}|t:eligible`)
     .row()
     .text('🏆 Экспорт winners', `a:gw_export|i:${gwId}|t:winners`)
-    .row()
-    .text('🧩 Проверка доступа', `a:gw_access|i:${gwId}`)
-    .row()
+    .row();
+
+  if (isSuperAdminTg(ctx.from?.id)) kb.text('🧩 Проверка доступа', `a:gw_access|i:${gwId}`).row();
+
+  kb
     .text('📣 Напомнить проверить', `a:gw_remind_q|i:${gwId}`)
     .row()
     .text('⬅️ Назад', `a:gw_open|i:${gwId}`);
@@ -2935,7 +2948,12 @@ ${reason}
       const draft = (await getDraft(ctx.from.id)) || {};
       draft.sponsors = sponsors;
       await setDraft(ctx.from.id, draft);
-      await ctx.reply('Ок. Выбери дедлайн:', { reply_markup: gwNewStepDeadlineKb(exp.wsId) });
+
+      const list = sponsors.map(x => `• ${escapeHtml(String(x))}`).join('\n');
+      await ctx.reply(
+        `✅ Спонсоры: <b>${sponsors.length}</b>\n${list}\n\nВыбери действие:`,
+        { parse_mode: 'HTML', reply_markup: gwSponsorsReviewKb(exp.wsId) }
+      );
       return;
     }
 
@@ -3026,7 +3044,7 @@ ${reason}
       const sponsors = await db.listGiveawaySponsors(payload.id);
       const sponsorLines = sponsors.map(s => `• ${escapeHtml(s.sponsor_text)}`).join('\n') || '—';
       const text = `🎁 <b>Конкурс #${g.id}</b>\n\nСтатус: <b>${escapeHtml(String(g.status).toUpperCase())}</b>\nПриз: <b>${escapeHtml(g.prize_value_text || '—')}</b>\nМест: <b>${g.winners_count}</b>\nДедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>\n\nСпонсоры:\n${sponsorLines}`;
-      return ctx.reply(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g) });
+      return ctx.reply(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
     }
     if (payload?.type === 'cur') {
       // curator invite flow
@@ -5143,6 +5161,60 @@ if (p.a === 'a:bx_cat') {
     }
 
 
+    // Giveaways: sponsors review (edit/clear/next)
+    if (p.a === 'a:gw_sponsors_edit') {
+      const wsId = Number(p.ws);
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      await clearExpectText(ctx.from.id);
+      await setExpectText(ctx.from.id, { type: 'gw_sponsors_text', wsId });
+
+      const isPro = await db.isWorkspacePro(wsId);
+      const max = isPro ? CFG.GIVEAWAY_SPONSORS_MAX_PRO : CFG.GIVEAWAY_SPONSORS_MAX_FREE;
+
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText(
+        `✍️ Пришли список спонсоров (до ${max}) — @каналы или ссылки t.me (через пробел/перенос строки).\n\nЕсли это соло — нажми «✅ Без спонсоров (соло)».`,
+        { reply_markup: gwSponsorsOptionalKb(wsId) }
+      );
+      return;
+    }
+
+    if (p.a === 'a:gw_sponsors_clear') {
+      const wsId = Number(p.ws);
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      const draft = (await getDraft(ctx.from.id)) || {};
+      draft.wsId = wsId;
+      draft.sponsors = [];
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.answerCallbackQuery({ text: 'Соло: без спонсоров ✅' });
+      await ctx.editMessageText('Ок. Выбери дедлайн:', { reply_markup: gwNewStepDeadlineKb(wsId) });
+      return;
+    }
+
+    if (p.a === 'a:gw_sponsors_next') {
+      const wsId = Number(p.ws);
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      const draft = (await getDraft(ctx.from.id)) || {};
+      draft.wsId = wsId;
+      if (!Array.isArray(draft.sponsors)) draft.sponsors = [];
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText('Ок. Выбери дедлайн:', { reply_markup: gwNewStepDeadlineKb(wsId) });
+      return;
+    }
+
+
+
 // Giveaways: load sponsors from folder
     if (p.a === 'a:gw_sponsors_from_folder') {
       const wsId = Number(p.ws);
@@ -5188,9 +5260,12 @@ if (p.a === 'a:bx_cat') {
       draft.sponsors = sponsors;
       await setDraft(ctx.from.id, draft);
 
-      // go next (deadline)
+      const list = sponsors.map(x => `• ${escapeHtml(String(x))}`).join('\n');
       await ctx.answerCallbackQuery({ text: 'Готово.' });
-      await ctx.editMessageText('Ок. Выбери дедлайн:', { reply_markup: gwNewStepDeadlineKb(wsId) });
+      await ctx.editMessageText(
+        `✅ Спонсоры: <b>${sponsors.length}</b>\n${list}\n\nВыбери действие:`,
+        { parse_mode: 'HTML', reply_markup: gwSponsorsReviewKb(wsId) }
+      );
       return;
     }
 
