@@ -591,35 +591,32 @@ export async function getGiveawayStats(giveawayId, ownerUserId) {
   return r.rows[0] || null;
 }
 
+
 export async function listGiveawayEntriesPage(giveawayId, ownerUserId, limit = 10, offset = 0) {
-  const lim = Math.max(1, Number(limit || 10));
+  const lim = Math.max(1, Math.min(50, Number(limit || 10)));
   const off = Math.max(0, Number(offset || 0));
+
   const r = await pool.query(
     `select
-        u.id as user_id,
+        e.user_id,
         u.tg_id,
         u.tg_username,
-        e.joined_at,
         e.is_eligible,
-        e.last_checked_at
+        e.last_checked_at,
+        e.joined_at
      from giveaway_entries e
      join giveaways g on g.id = e.giveaway_id
      join workspaces ws on ws.id = g.workspace_id
      join users u on u.id = e.user_id
      where g.id=$1 and ws.owner_user_id=$2
-     order by e.joined_at desc
+     order by e.joined_at desc nulls last, e.user_id desc
      limit $3 offset $4`,
     [giveawayId, ownerUserId, lim, off]
   );
-  return r.rows.map(x => ({
-    user_id: Number(x.user_id),
-    tg_id: Number(x.tg_id),
-    tg_username: x.tg_username ? String(x.tg_username) : null,
-    joined_at: x.joined_at,
-    is_eligible: !!x.is_eligible,
-    last_checked_at: x.last_checked_at
-  }));
+
+  return r.rows || [];
 }
+
 
 export async function exportGiveawayParticipantsUsernames(giveawayId, ownerUserId, onlyEligible = null) {
   const cond = onlyEligible === null ? '' : 'and e.is_eligible = ' + (onlyEligible ? 'true' : 'false');
