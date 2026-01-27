@@ -872,6 +872,121 @@ function fmtMatrix(keys, dict, empty = '—') {
   return titles.length ? titles.join(', ') : empty;
 }
 
+
+
+function wsIgHandleFromWs(ws) {
+  const h = ws?.profile_ig ? String(ws.profile_ig).replace(/^@/, '') : '';
+  return h ? h : null;
+}
+
+function wsIgUrlFromWs(ws) {
+  const h = wsIgHandleFromWs(ws);
+  return h ? `https://instagram.com/${h}` : null;
+}
+
+function wsTgUsernameFromContact(contact) {
+  const raw = String(contact || '').trim();
+  const m = raw.match(/^@([a-zA-Z0-9_]{5,})$/);
+  return m ? m[1] : null;
+}
+
+function wsTgUrlFromContact(contact) {
+  const un = wsTgUsernameFromContact(contact);
+  return un ? `https://t.me/${un}` : null;
+}
+
+function formatWsContactCard(ws, wsId) {
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
+  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : null;
+
+  const ig = wsIgHandleFromWs(ws);
+  const igUrl = wsIgUrlFromWs(ws);
+
+  const contact = ws.profile_contact ? String(ws.profile_contact) : null;
+  const contactTgUrl = wsTgUrlFromContact(contact);
+
+  const link = wsBrandLink(wsId);
+
+  const lines = [];
+  lines.push(`👤 <b>${escapeHtml(String(ws.profile_title || channel))}</b>`);
+  if (channelUrl) lines.push(`📣 TG канал: <a href="${escapeHtml(channelUrl)}">${escapeHtml(channel)}</a>`);
+  else lines.push(`📣 TG канал: <b>${escapeHtml(channel)}</b>`);
+  if (igUrl) lines.push(`📸 IG: <a href="${escapeHtml(igUrl)}">${escapeHtml(shortUrl(igUrl))}</a> <code>@${escapeHtml(ig)}</code>`);
+  if (contactTgUrl) lines.push(`✉️ Контакт: <a href="${escapeHtml(contactTgUrl)}">${escapeHtml(contact)}</a>`);
+  else if (contact) lines.push(`✉️ Контакт: <b>${escapeHtml(contact)}</b>`);
+  if (link) lines.push(`🔗 Витрина: <a href="${escapeHtml(link)}">${escapeHtml(shortUrl(link))}</a>`);
+
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls.filter(Boolean).slice(0, 3) : [];
+  if (ports.length) {
+    lines.push(`🗂 Портфолио:`);
+    for (const u of ports) {
+      lines.push(`• <a href="${escapeHtml(String(u))}">${escapeHtml(shortUrl(String(u)))}</a>`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function buildWsShareText(ws, wsId, variant = 'short') {
+  const link = wsBrandLink(wsId);
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
+  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : null;
+
+  const ig = wsIgHandleFromWs(ws);
+  const igUrl = wsIgUrlFromWs(ws);
+
+  const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
+  const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
+
+  const about = String(ws.profile_about || '').trim();
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls.filter(Boolean).slice(0, 3) : [];
+
+  if (String(variant) === 'long') {
+    let t =
+      `👋 Привет! Я беру коллабы / UGC.\n\n` +
+      `👤 <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
+      `📣 TG: ${channelUrl ? `<a href="${escapeHtml(channelUrl)}">${escapeHtml(channel)}</a>` : `<b>${escapeHtml(channel)}</b>`}\n` +
+      (igUrl ? `📸 IG: <a href="${escapeHtml(igUrl)}">${escapeHtml(shortUrl(igUrl))}</a> <code>@${escapeHtml(ig)}</code>\n` : '') +
+      (link ? `🔗 Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '\n') +
+      `🏷 Ниши: <b>${escapeHtml(verticals)}</b>\n` +
+      `🎬 Форматы: <b>${escapeHtml(formats)}</b>\n` +
+      (about ? `\n<b>Коротко:</b>\n${escapeHtml(about)}\n` : '') +
+      (ports.length ? `\n<b>Портфолио:</b>\n` + ports.map(u => `• ${escapeHtml(String(u))}`).join('\n') + '\n' : '\n') +
+      `\nЧтобы оставить заявку: открой витрину → «✉️ Заявка от бренда».`;
+    return t;
+  }
+
+  // short
+  let t =
+    `👋 Привет! Я беру коллабы / UGC.\n` +
+    (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+    (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
+    (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+    `Оставь заявку: открой витрину → «✉️ Заявка от бренда».`;
+  return escapeHtml(t).replace(/\n/g, '\n');
+}
+
+function buildLeadTemplateText(ws, lead, key = 'thanks') {
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : ws.title;
+  const to = String(ws.profile_title || channel);
+
+  const wants = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, 'UGC/интеграция');
+  const formatsShort = wants;
+
+  switch (String(key)) {
+    case 'need_tz':
+      return `Привет! Спасибо за заявку. Пришли, пожалуйста, ТЗ/референсы + дедлайн. Я отвечу быстро.`;
+    case 'budget':
+      return `Привет! Супер. Подскажи бюджет/бартер и дедлайн? Тогда предложу точный формат (UGC/интеграция).`;
+    case 'delivery':
+      return `Привет! Подскажи город/доставка и что за продукт. После этого скажу сроки и формат.`;
+    case 'format':
+      return `Привет! Уточни, пожалуйста, что нужно: UGC или интеграция? По форматам у меня: ${formatsShort}.`;
+    case 'thanks':
+    default:
+      return `Привет! Спасибо за заявку. Я на связи — уточни, пожалуйста, что за продукт, дедлайн и условия (бартер/бюджет).`;
+  }
+}
 function normalizeIgHandle(input) {
   const raw = String(input || '').trim();
   if (!raw) return null;
@@ -924,6 +1039,7 @@ function wsProfileKb(wsId, ws) {
     .text('🧩 Режим', `a:ws_prof_mode|ws:${wsId}`)
     .row()
     .text('📨 Заявки', `a:ws_leads|ws:${wsId}|s:new|p:0`)
+    .text('🔗 Поделиться', `a:ws_share|ws:${wsId}`)
     .row()
     .text('📸 Instagram', `a:ws_prof_edit|ws:${wsId}|f:ig`)
     .text(`🏷 Ниши (${vCount}/3)`, `a:ws_prof_verticals|ws:${wsId}`)
@@ -1003,6 +1119,44 @@ async function renderWsProfile(ctx, ownerUserId, wsId) {
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: wsProfileKb(wsId, ws), disable_web_page_preview: true });
 }
 
+
+async function renderWsShareMenu(ctx, ownerUserId, wsId) {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const link = wsBrandLink(wsId);
+
+  const text =
+    `🔗 <b>Поделиться витриной</b>\n\n` +
+    `Я отправлю отдельное сообщение с готовым текстом — ты сможешь скопировать или переслать бренду.\n\n` +
+    (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '') +
+    `Выбери вариант:`;
+
+  const kb = new InlineKeyboard()
+    .text('📤 Коротко', `a:ws_share_send|ws:${wsId}|v:short`)
+    .text('📤 Подробно', `a:ws_share_send|ws:${wsId}|v:long`)
+    .row()
+    .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short') {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const text = buildWsShareText(ws, wsId, variant);
+  await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true });
+  try { await ctx.answerCallbackQuery({ text: '✅ Отправил текст отдельным сообщением' }); } catch {}
+}
 async function renderWsProfileMode(ctx, ownerUserId, wsId) {
   const isAdmin = isSuperAdminTg(ctx.from?.id);
   const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
@@ -1142,40 +1296,50 @@ async function renderWsPublicProfile(ctx, wsId) {
 
 }
 
-async function renderWsLeadCompose(ctx, wsId) {
+async function renderWsLeadCompose(ctx, wsId, step = 1, draft = {}) {
   const ws = await db.getWorkspaceAny(wsId);
   if (!ws) return ctx.answerCallbackQuery({ text: 'Профиль не найден.' });
 
   const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
   const link = wsBrandLink(wsId);
 
-  const text =
+  const to = String(ws.profile_title || channel);
+
+  let text =
     `✉️ <b>Заявка от бренда</b>\n\n` +
-    `Кому: <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
+    `Кому: <b>${escapeHtml(to)}</b>\n` +
     `Канал: <b>${escapeHtml(channel)}</b>\n` +
-    (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : `\n`) +
-    `Напиши сообщение одним текстом (свободный формат):\n` +
-    `• что за бренд / продукт\n` +
-    `• что нужно (UGC / интеграция / серия)\n` +
-    `• сроки и условия (бартер/бюджет)\n` +
-    `• контакты/ссылка (можно Instagram)\n\n` +
-    `После отправки я мгновенно уведомлю владельца канала.`;
+    (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : `\n`);
+
+  if (Number(step) === 2) {
+    const contact = String(draft?.contact || '').trim();
+    text +=
+      `✅ <b>Шаг 2/2</b>\n` +
+      (contact ? `Контакт бренда: <b>${escapeHtml(contact)}</b>\n\n` : `\n`) +
+      `Опиши, что нужно:\n` +
+      `• UGC / интеграция / серия\n` +
+      `• бюджет или бартер\n` +
+      `• дедлайн\n` +
+      `• кратко: что за продукт\n\n` +
+      `После отправки я мгновенно уведомлю владельца канала.`;
+  } else {
+    text +=
+      `🧩 <b>Шаг 1/2</b>\n` +
+      `Пришли контакт бренда (IG / @username / ссылка / сайт).\n` +
+      `Пример: <code>@brand</code> или <code>https://instagram.com/brand</code>\n\n` +
+      `Дальше я спрошу детали (что нужно + условия + дедлайн).`;
+  }
 
   const kb = new InlineKeyboard()
     .text('⬅️ Назад', `a:wsp_open|ws:${wsId}`)
     .text('📋 Меню', 'a:menu');
 
   try {
-    try {
     await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
   } catch {
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
   }
-  } catch {
-    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
-  }
 }
-
 function leadListTabsKb(wsId, counts, active) {
   const kb = new InlineKeyboard()
     .text(`${LEAD_STATUSES.new.icon} ${counts.new ?? 0}`, `a:ws_leads|ws:${wsId}|s:new|p:0`)
@@ -1273,6 +1437,7 @@ async function renderLeadView(ctx, actorUserId, leadId, back = { wsId: null, sta
 
   const kb = new InlineKeyboard()
     .text('✍️ Ответить', `a:lead_reply|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .text('⚡ Шаблоны', `a:lead_tpls|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
     .text('💬 В работу', `a:lead_set|id:${lead.id}|st:in_progress|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .text('✅ Закрыть', `a:lead_set|id:${lead.id}|st:closed|ws:${wsId}|s:${back.status}|p:${back.page}`)
@@ -1292,6 +1457,88 @@ async function renderLeadView(ctx, actorUserId, leadId, back = { wsId: null, sta
   }
 }
 
+
+async function renderLeadTemplates(ctx, actorUserId, leadId, back) {
+  const lead = await db.getBrandLeadById(leadId);
+  if (!lead) return ctx.answerCallbackQuery({ text: 'Заявка не найдена.' });
+
+  const wsId = Number(lead.workspace_id);
+  const ws = await db.getWorkspaceAny(wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+
+  const isOwner = Number(ws.owner_user_id) === Number(actorUserId);
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  if (!isOwner && !isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const who = lead.brand_username ? '@' + String(lead.brand_username).replace(/^@/, '') : (lead.brand_name || 'brand');
+
+  const text =
+    `⚡ <b>Быстрые ответы</b>\n\n` +
+    `Заявка #${lead.id} от <b>${escapeHtml(String(who))}</b>\n\n` +
+    `Нажми кнопку — я отправлю бренду готовый ответ + добавлю твою контакт‑карточку (IG / TG / витрина).`;
+
+  const kb = new InlineKeyboard()
+    .text('✅ Спасибо, беру', `a:lead_tpl|id:${lead.id}|k:thanks|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('📦 Пришли ТЗ/реф', `a:lead_tpl|id:${lead.id}|k:need_tz|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('💰 Уточни бюджет', `a:lead_tpl|id:${lead.id}|k:budget|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('🚚 Город/доставка?', `a:lead_tpl|id:${lead.id}|k:delivery|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('🧩 UGC или интеграция?', `a:lead_tpl|id:${lead.id}|k:format|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('✍️ Ответить вручную', `a:lead_reply|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('⬅️ Назад', `a:lead_view|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+async function sendLeadTemplateReply(ctx, actorUserId, leadId, key, back) {
+  const lead = await db.getBrandLeadById(leadId);
+  if (!lead) return ctx.answerCallbackQuery({ text: 'Заявка не найдена.' });
+
+  const wsId = Number(lead.workspace_id);
+  const ws = await db.getWorkspaceAny(wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+
+  const isOwner = Number(ws.owner_user_id) === Number(actorUserId);
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  if (!isOwner && !isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const brandTgId = Number(lead.brand_tg_id || 0);
+  if (!brandTgId) return ctx.answerCallbackQuery({ text: 'У бренда нет TG id.' });
+
+  const replyText = buildLeadTemplateText(ws, lead, key);
+  const card = formatWsContactCard(ws, wsId);
+
+  const out =
+    `💬 <b>Ответ от ${escapeHtml(String(ws.profile_title || (ws.channel_username ? '@' + ws.channel_username : ws.title)))}</b>\n\n` +
+    `${escapeHtml(String(replyText))}\n\n` +
+    `<b>Контакты:</b>\n${card}`;
+
+  try {
+    await ctx.api.sendMessage(brandTgId, out, { parse_mode: 'HTML', disable_web_page_preview: true });
+  } catch (e) {
+    await ctx.reply('❌ Не удалось отправить сообщение бренду. Возможно, он не писал боту первым.', { reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:lead_view|id:${leadId}|ws:${wsId}|s:${back.status}|p:${back.page}`) });
+    return;
+  }
+
+  await db.markBrandLeadReplied(leadId, replyText, Number(actorUserId));
+
+  // auto move status to in_progress if it was new
+  if (normLeadStatus(lead.status) === 'new') {
+    await db.updateBrandLeadStatus(leadId, 'in_progress');
+  }
+
+  try { await ctx.answerCallbackQuery({ text: '✅ Отправлено' }); } catch {}
+  await renderLeadView(ctx, actorUserId, leadId, back);
+}
 async function renderWsPro(ctx, ownerUserId, wsId) {
   const isAdmin = isSuperAdminTg(ctx.from?.id);
   const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
@@ -3124,6 +3371,7 @@ export function getBot() {
     }
 
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+    const tgId = Number(ctx.from.id);
     await clearExpectText(ctx.from.id);
 
     // Add curator by username
@@ -3380,8 +3628,9 @@ export function getBot() {
 
 
 
-    // Brand lead from public profile (vitrina)
-    if (exp.type === 'wsp_lead_new') {
+    
+    // Brand lead from public profile (vitrina) — 2-step (contact -> request)
+    if (exp.type === 'wsp_lead_step1') {
       const wsId = Number(exp.wsId || 0);
       const ws = await db.getWorkspaceAny(wsId);
       if (!ws) {
@@ -3389,19 +3638,41 @@ export function getBot() {
         return;
       }
 
-      const rl = await rateLimit(k(['lead', wsId, tgId]), { limit: 1, windowSec: 120 });
+      const contact = String(ctx.message.text || '').trim();
+      if (!contact || contact.length < 2) {
+        await ctx.reply('Шаг 1/2: пришли контакт бренда (IG / @username / ссылка / сайт).\nПример: https://instagram.com/brand или @brand');
+        await setExpectText(ctx.from.id, exp);
+        return;
+      }
+
+      await setExpectText(ctx.from.id, { type: 'wsp_lead_step2', wsId, contact: contact.slice(0, 200) });
+      await renderWsLeadCompose(ctx, wsId, 2, { contact: contact.slice(0, 200) });
+      return;
+    }
+
+    if (exp.type === 'wsp_lead_step2') {
+      const wsId = Number(exp.wsId || 0);
+      const ws = await db.getWorkspaceAny(wsId);
+      if (!ws) {
+        await ctx.reply('Профиль не найден.');
+        return;
+      }
+
+      // Anti-spam: 1 lead per 10 min per (wsId + brand tg)
+      const rl = await rateLimit(k(['lead', wsId, tgId]), { limit: 1, windowSec: 600 });
       if (!rl.allowed) {
-        await ctx.reply('⏳ Слишком часто. Подожди пару минут и попробуй снова.');
+        await ctx.reply('⏳ Слишком часто. Подожди 10 минут и попробуй снова.');
         return;
       }
 
-      const text = String(ctx.message.text || '').trim();
-      if (!text || text.length < 3) {
-        await ctx.reply('Напиши сообщение чуть подробнее (1–2 предложения).');
+      const details = String(ctx.message.text || '').trim();
+      if (!details || details.length < 3) {
+        await ctx.reply('Шаг 2/2: опиши запрос чуть подробнее (UGC/интеграция, сроки, условия).');
+        await setExpectText(ctx.from.id, exp);
         return;
       }
 
-      const brandName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || null;
+      const brandName = String(exp.contact || '').trim() || ([ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || null);
 
       const lead = await db.createBrandLead({
         workspaceId: wsId,
@@ -3410,8 +3681,8 @@ export function getBot() {
         brandTgId: tgId,
         brandUsername: ctx.from.username || null,
         brandName,
-        message: text,
-        meta: { from: { tg_id: tgId, username: ctx.from.username || null } }
+        message: details,
+        meta: { contact: String(exp.contact || '').trim() || null, from: { tg_id: tgId, username: ctx.from.username || null } }
       });
 
       const owner = await db.getUserById(Number(ws.owner_user_id));
@@ -3423,9 +3694,12 @@ export function getBot() {
       const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
       const link = wsBrandLink(wsId);
 
-      const igUrl = ws.profile_instagram_url || (ws.profile_instagram_handle ? `https://instagram.com/${String(ws.profile_instagram_handle).replace(/^@/, '')}` : null);
+      const ig = ws.profile_ig ? String(ws.profile_ig).replace(/^@/, '') : null;
+      const igUrl = ig ? `https://instagram.com/${ig}` : null;
 
       const who = ctx.from.username ? '@' + ctx.from.username : (brandName || 'brand');
+
+      const contactLine = exp.contact ? `Контакт бренда: <b>${escapeHtml(String(exp.contact).slice(0, 200))}</b>\n` : '';
 
       const notif =
         `🆕 <b>Новая заявка от бренда</b>\n\n` +
@@ -3433,11 +3707,14 @@ export function getBot() {
         `Канал: <b>${escapeHtml(channel)}</b>\n` +
         (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n` : '') +
         (igUrl ? `IG: <a href="${escapeHtml(String(igUrl))}">${escapeHtml(shortUrl(String(igUrl)))}</a>\n` : '') +
+        contactLine +
         `От: <b>${escapeHtml(String(who))}</b> (<code>${tgId}</code>)\n\n` +
-        `<b>Текст:</b>\n${escapeHtml(text)}`;
+        `<b>Запрос:</b>\n${escapeHtml(details)}`;
 
       const kb = new InlineKeyboard()
         .text('🔎 Открыть', `a:lead_view|id:${lead.id}|ws:${wsId}|s:new|p:0`)
+        .text('⚡ Шаблоны', `a:lead_tpls|id:${lead.id}|ws:${wsId}|s:new|p:0`)
+        .row()
         .text('✍️ Ответить', `a:lead_reply|id:${lead.id}|ws:${wsId}|s:new|p:0`)
         .row()
         .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
@@ -3456,7 +3733,7 @@ export function getBot() {
       return;
     }
 
-    // Reply to brand lead (owner / SUPER_ADMIN)
+// Reply to brand lead (owner / SUPER_ADMIN)
     if (exp.type === 'lead_reply') {
       const leadId = Number(exp.leadId || 0);
       const lead = await db.getBrandLeadById(leadId);
@@ -3490,11 +3767,15 @@ export function getBot() {
       const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
       const link = wsBrandLink(Number(ws.id));
 
+      const card = formatWsContactCard(ws, wsId);
+
       const out =
         `💬 <b>Ответ по заявке #${leadId}</b>\n\n` +
-        `Канал: <b>${escapeHtml(channel)}</b>\n` +
-        (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '\n') +
-        `${escapeHtml(replyText)}`;
+        `Канал: <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
+        (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(shortUrl(link))}</a>\n\n` : `\n`) +
+        `${escapeHtml(replyText)}\n\n` +
+        `<b>Контакты:</b>\n${card}`;
+;
 
       try {
         await ctx.api.sendMessage(Number(lead.brand_tg_id), out, { parse_mode: 'HTML', disable_web_page_preview: true });
@@ -4555,8 +4836,8 @@ bot.on('message:successful_payment', async (ctx) => {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws || 0);
       if (!wsId) return;
-      await setExpectText(ctx.from.id, { type: 'wsp_lead_new', wsId });
-      await renderWsLeadCompose(ctx, wsId);
+      await setExpectText(ctx.from.id, { type: 'wsp_lead_step1', wsId });
+      await renderWsLeadCompose(ctx, wsId, 1);
       return;
     }
 
@@ -4577,7 +4858,25 @@ bot.on('message:successful_payment', async (ctx) => {
       return;
     }
 
-    if (p.a === 'a:lead_set') {
+    
+    if (p.a === 'a:lead_tpls') {
+      await ctx.answerCallbackQuery();
+      const leadId = Number(p.id || 0);
+      if (!leadId) return;
+      await renderLeadTemplates(ctx, u.id, leadId, { wsId: Number(p.ws || 0) || null, status: String(p.s || 'new'), page: Number(p.p || 0) });
+      return;
+    }
+
+    if (p.a === 'a:lead_tpl') {
+      await ctx.answerCallbackQuery();
+      const leadId = Number(p.id || 0);
+      if (!leadId) return;
+      const key = String(p.k || 'thanks');
+      await sendLeadTemplateReply(ctx, u.id, leadId, key, { wsId: Number(p.ws || 0) || null, status: String(p.s || 'new'), page: Number(p.p || 0) });
+      return;
+    }
+
+if (p.a === 'a:lead_set') {
       await ctx.answerCallbackQuery();
       const leadId = Number(p.id || 0);
       if (!leadId) return;
@@ -4727,7 +5026,25 @@ bot.on('message:successful_payment', async (ctx) => {
       return;
     }
 
-    if (p.a === 'a:ws_prof_mode') {
+    
+    if (p.a === 'a:ws_share') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return;
+      await renderWsShareMenu(ctx, u.id, wsId);
+      return;
+    }
+
+    if (p.a === 'a:ws_share_send') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return;
+      const v = String(p.v || 'short') === 'long' ? 'long' : 'short';
+      await sendWsShareTextMessage(ctx, u.id, wsId, v);
+      return;
+    }
+
+if (p.a === 'a:ws_prof_mode') {
       await ctx.answerCallbackQuery();
       await renderWsProfileMode(ctx, u.id, Number(p.ws));
       return;
