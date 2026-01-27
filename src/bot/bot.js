@@ -1041,6 +1041,8 @@ function wsProfileKb(wsId, ws) {
     .text('📨 Заявки', `a:ws_leads|ws:${wsId}|s:new|p:0`)
     .text('🔗 Поделиться', `a:ws_share|ws:${wsId}`)
     .row()
+    .text('📌 IG шаблоны', `a:ws_ig_templates|ws:${wsId}`)
+    .row()
     .text('📸 Instagram', `a:ws_prof_edit|ws:${wsId}|f:ig`)
     .text(`🏷 Ниши (${vCount}/3)`, `a:ws_prof_verticals|ws:${wsId}`)
     .row()
@@ -1206,6 +1208,157 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const text = buildWsShareText(ws, wsId, variant);
   await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true });
   try { await ctx.answerCallbackQuery({ text: '✅ Отправил текст отдельным сообщением' }); } catch {}
+}
+
+
+async function renderWsIgTemplatesMenu(ctx, ownerUserId, wsId) {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const link = wsBrandLink(wsId);
+  const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+  const to = String(ws.profile_title || channel);
+
+  const text =
+    `📌 <b>Шаблоны для Instagram</b>\n\n` +
+    `Скопируй текст ниже (я пришлю отдельным сообщением) и вставь в Stories/пост/DM.\n` +
+    `Ссылка ведёт бренда прямо в Telegram-воронку (витрина → заявка → сделка).\n\n` +
+    `Канал: <b>${escapeHtml(channel)}</b>\n` +
+    `Профиль: <b>${escapeHtml(to)}</b>\n` +
+    (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '\n') +
+    `Выбери формат:`;
+
+  const kb = new InlineKeyboard()
+    .text('📲 Stories', `a:ws_ig_templates_send|ws:${wsId}|t:story`)
+    .text('🖼️ Пост', `a:ws_ig_templates_send|ws:${wsId}|t:post`)
+    .row()
+    .text('💬 DM бренду', `a:ws_ig_templates_send|ws:${wsId}|t:dm`)
+    .text('🔖 Bio', `a:ws_ig_templates_send|ws:${wsId}|t:bio`)
+    .row()
+    .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+function buildWsIgTemplate(ws, wsId, type = 'story') {
+  const link = wsBrandLink(wsId) || '';
+  const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+  const title = String(ws.profile_title || channel);
+
+  const mode = String(ws.profile_mode || 'both');
+  const modeLine = PROFILE_MODE_LABELS[mode] || PROFILE_MODE_LABELS.both;
+
+  const verticalsTxt = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS);
+  const formatsTxt = fmtMatrix(ws.profile_formats, PROFILE_FORMATS);
+
+  const ig = ws.profile_ig ? String(ws.profile_ig).trim() : '';
+  const igCode = ig ? `@${ig.replace(/^@/, '')}` : '';
+  const igLink = ig ? `https://instagram.com/${ig.replace(/^@/, '')}` : '';
+
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls : [];
+  const port1 = ports[0] ? String(ports[0]) : '';
+
+  const contact = ws.profile_contact ? String(ws.profile_contact).trim() : '';
+
+  // Decide best "offer line" depending on mode
+  const offerLine = (() => {
+    if (mode === 'ugc') return 'UGC-контент для брендов (видео/сторис/распаковки) + материалы для рекламы.';
+    if (mode === 'channel') return 'Интеграции в Telegram-канале + конкурсы/розыгрыши.';
+    return 'UGC + интеграции в Telegram-канале + конкурсы/розыгрыши.';
+  })();
+
+  const common = {
+    title,
+    channel,
+    modeLine,
+    verticalsTxt,
+    formatsTxt,
+    link,
+    igCode,
+    igLink,
+    port1,
+    contact,
+    offerLine
+  };
+
+  const templates = {
+    story: [
+      `Бренды 🤝 открыта к коллабам`,
+      `${offerLine}`,
+      `Ниши: ${verticalsTxt}`,
+      `Форматы: ${formatsTxt}`,
+      link ? `ТЗ/заявка в TG: ${link}` : `ТЗ/заявка в TG: (ссылка из профиля)`,
+    ].join('\n'),
+    post: [
+      `Бренды, привет! Я ${title}.`,
+      offerLine,
+      `Ниши: ${verticalsTxt}`,
+      `Форматы: ${formatsTxt}`,
+      port1 ? `Портфолио: ${port1}` : `Портфолио: (ссылка в TG-профиле)`,
+      link ? `Чтобы быстро обсудить — заполните заявку в Telegram: ${link}` : `Заявка в Telegram: (ссылка из профиля)`,
+      igCode ? `IG: ${igCode}` : '',
+    ].filter(Boolean).join('\n'),
+    dm: [
+      `Привет! Я ${title}.`,
+      `Делаю: ${offerLine}`,
+      `Ниши: ${verticalsTxt}. Форматы: ${formatsTxt}.`,
+      port1 ? `Портфолио: ${port1}` : '',
+      link ? `Если актуально — оставьте заявку/ТЗ в TG (1 мин): ${link}` : `Если актуально — напишите, пришлю ссылку в TG.`,
+    ].filter(Boolean).join('\n'),
+    bio: [
+      `UGC + Collabs`,
+      `Ниши: ${verticalsTxt}`,
+      link ? `Заявка/ТЗ (TG): ${link}` : `Заявка/ТЗ (TG): (ссылка из профиля)`,
+    ].join(' | ')
+  };
+
+  const raw = templates[type] || templates.story;
+
+  // Wrapper message (HTML) with <pre> for easy copy
+  const typeTitle = ({ story: 'Stories', post: 'Пост (подпись)', dm: 'DM бренду', bio: 'Bio строка' }[type] || 'Stories');
+
+  const hint =
+    type === 'story'
+      ? `💡 В Stories добавь <b>стикер-ссылку</b> на витрину (Telegram).`
+      : type === 'bio'
+        ? `💡 Можно поставить в bio или в link-in-bio.`
+        : `💡 Скопируй и вставь, потом при желании подправь 1–2 строки под себя.`;
+
+  const extra =
+    (igLink || contact)
+      ? `\n\nКонтакты: ` +
+        [igLink ? `<a href="${escapeHtml(igLink)}">${escapeHtml(igCode || igLink)}</a>` : null,
+         contact ? escapeHtml(contact) : null]
+        .filter(Boolean).join(' • ')
+      : '';
+
+  return (
+    `📌 <b>Шаблон IG — ${escapeHtml(typeTitle)}</b>\n` +
+    `${hint}\n\n` +
+    `<pre>${escapeHtml(raw)}</pre>` +
+    extra
+  );
+}
+
+async function sendWsIgTemplateMessage(ctx, ownerUserId, wsId, type = 'story') {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const t = String(type || 'story');
+  const allowed = ['story', 'post', 'dm', 'bio'];
+  const tt = allowed.includes(t) ? t : 'story';
+
+  const msg = buildWsIgTemplate(ws, wsId, tt);
+  await ctx.reply(msg, { parse_mode: 'HTML', disable_web_page_preview: true });
+  try { await ctx.answerCallbackQuery({ text: '✅ Отправил шаблон отдельным сообщением' }); } catch {}
 }
 async function renderWsProfileMode(ctx, ownerUserId, wsId) {
   const isAdmin = isSuperAdminTg(ctx.from?.id);
@@ -5119,6 +5272,24 @@ if (p.a === 'a:lead_set') {
       await sendWsShareTextMessage(ctx, u.id, wsId, v);
       return;
     }
+
+
+if (p.a === 'a:ws_ig_templates') {
+  await ctx.answerCallbackQuery();
+  const wsId = Number(p.ws || 0);
+  if (!wsId) return;
+  await renderWsIgTemplatesMenu(ctx, u.id, wsId);
+  return;
+}
+
+if (p.a === 'a:ws_ig_templates_send') {
+  await ctx.answerCallbackQuery();
+  const wsId = Number(p.ws || 0);
+  if (!wsId) return;
+  const t = String(p.t || 'story');
+  await sendWsIgTemplateMessage(ctx, u.id, wsId, t);
+  return;
+}
 
 if (p.a === 'a:ws_prof_mode') {
       await ctx.answerCallbackQuery();
