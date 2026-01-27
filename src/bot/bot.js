@@ -1057,6 +1057,50 @@ function wsProfileKb(wsId, ws) {
   return kb;
 }
 
+
+function hasText(v) {
+  return v !== null && v !== undefined && String(v).trim().length > 0 && String(v).trim() !== '—';
+}
+
+function calcWsProfileProgress(ws) {
+  // Core fields that most сильно влияют на конверсию
+  const igOk = hasText(ws.profile_ig);
+  const contactOk = hasText(ws.profile_contact);
+  const verticalsOk = Array.isArray(ws.profile_verticals) && ws.profile_verticals.length > 0;
+  const formatsOk = Array.isArray(ws.profile_formats) && ws.profile_formats.length > 0;
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls : [];
+  const portfolioOk = ports.length > 0;
+  const aboutOk = hasText(ws.profile_about);
+
+  const checks = [
+    { key: 'ig', ok: igOk },
+    { key: 'contact', ok: contactOk },
+    { key: 'verticals', ok: verticalsOk },
+    { key: 'formats', ok: formatsOk },
+    { key: 'portfolio', ok: portfolioOk },
+    { key: 'about', ok: aboutOk },
+  ];
+
+  const total = checks.length;
+  const done = checks.filter(x => x.ok).length;
+  const percent = Math.round((done / total) * 100);
+
+  const missing = [];
+  if (!portfolioOk) missing.push('🔗 Портфолио: добавь 1–3 ссылки — <b>самый сильный буст конверсии</b>');
+  if (!formatsOk) missing.push('🎬 Форматы: выбери 3–5 (брендам проще выбрать)');
+  if (!verticalsOk) missing.push('🏷 Ниши: выбери до 3 (точнее матчи)');
+  if (!igOk) missing.push('📸 Instagram: укажи @ или ссылку (доверие)');
+  if (!contactOk) missing.push('✉️ Контакт: @username / t.me/... (быстро договориться)');
+  if (!aboutOk) missing.push('📝 Описание: 1–2 строки, что именно ты снимаешь');
+
+  const nextHint = !portfolioOk
+    ? '💡 Добавь 1 ссылку портфолио — это обычно сильнее всего повышает конверсию.'
+    : '💡 Держи 1–3 лучших ссылок в портфолио — бренд решает по примерам.';
+
+  return { total, done, percent, missing, portfolioOk, igOk, contactOk, verticalsOk, formatsOk, aboutOk, nextHint };
+}
+
+
 async function renderWsProfile(ctx, ownerUserId, wsId) {
   const ws0 = await db.getWorkspace(ownerUserId, wsId);
   if (!ws0) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
@@ -1097,12 +1141,18 @@ async function renderWsProfile(ctx, ownerUserId, wsId) {
   const proLine = isPro ? '⭐️ PRO: <b>активен</b>' : '⭐️ PRO: <b>free</b>';
   const modeLine = PROFILE_MODE_LABELS[mode] || PROFILE_MODE_LABELS.both;
 
+  const prog = calcWsProfileProgress(ws);
+  const progressLine = `📈 Заполнено: <b>${prog.percent}%</b> (${prog.done}/${prog.total})`;
+  const improveBlock = prog.missing.length
+    ? (`\n\n⚡️ <b>Что добавить, чтобы заявки шли чаще</b>\n` + prog.missing.map(x => `• ${x}`).join('\n'))
+    : `\n\n✅ Профиль выглядит 🔥 — можно лить трафик из IG.`;
+
   const text =
     `👤 <b>Профиль (витрина)</b>\n\n` +
     `<b>IG leads → TG deals</b>\n` +
     `Бренды находят тебя в Instagram → по ссылке открывают этот профиль → дальше всё в Telegram.\n\n` +
     `Канал: <b>${escapeHtml(channel)}</b>\n` +
-    `${proLine}\n\n` +
+    `${proLine}\n${progressLine}${improveBlock}\n\n` +
     `Название/витрина: <b>${escapeHtml(name)}</b>\n` +
     `🧩 Режим: <b>${escapeHtml(modeLine)}</b>\n` +
     `📸 Instagram:\n${igLine}\n` +
@@ -1271,6 +1321,7 @@ async function renderWsPublicProfile(ctx, wsId) {
   }
 
   const modeLine = PROFILE_MODE_LABELS[mode] || PROFILE_MODE_LABELS.both;
+  const prog = isOwner ? calcWsProfileProgress(ws) : null;
 
   const text =
     `✨ <b>${escapeHtml(name)}</b>\n\n` +
@@ -1284,7 +1335,8 @@ async function renderWsPublicProfile(ctx, wsId) {
     `📝 Описание: <b>${escapeHtml(about)}</b>\n` +
     `✉️ Контакт: <b>${escapeHtml(contact)}</b>\n` +
     `📍 Гео: <b>${escapeHtml(geo)}</b>\n\n` +
-    `Если хочешь коллаб — нажми «📝 Оставить заявку» или «💬 Написать».`;
+    `Если хочешь коллаб — нажми «📝 Оставить заявку» или «💬 Написать».` +
+    (isOwner && prog ? `\n\n📈 <b>Твой профиль</b>: <b>${prog.percent}%</b>. ${prog.nextHint}` : '');
 
   const contactRaw = ws.profile_contact ? String(ws.profile_contact).trim() : '';
   const contactUrl = (() => {
