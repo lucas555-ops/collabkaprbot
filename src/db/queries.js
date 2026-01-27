@@ -2657,3 +2657,50 @@ export async function markBrandLeadReplied(leadId, replyText, repliedByUserId) {
   );
   return r.rows[0] || null;
 }
+
+
+// Profiles matching (matrix-based)
+export async function searchWorkspaceProfilesByMatrix(verticals = [], formats = [], offset = 0, limit = 6) {
+  const v = Array.isArray(verticals) ? verticals : [];
+  const f = Array.isArray(formats) ? formats : [];
+
+  const r = await pool.query(
+    `
+    select
+      ws.id,
+      ws.title as ws_title,
+      ws.channel_username,
+      ws.owner_user_id,
+      s.profile_title,
+      s.profile_mode,
+      s.profile_ig,
+      s.profile_verticals,
+      s.profile_formats,
+      s.profile_geo,
+      s.profile_contact,
+      s.profile_portfolio_urls,
+      s.profile_about,
+      (
+        (select count(*) from unnest(coalesce(s.profile_verticals,'{}'::text[])) v1 where v1 = any($1::text[])) * 100
+        +
+        (select count(*) from unnest(coalesce(s.profile_formats,'{}'::text[])) f1 where f1 = any($2::text[])) * 10
+      )::int as score
+    from workspaces ws
+    join workspace_settings s on s.workspace_id = ws.id
+    where
+      (cardinality($1::text[]) = 0 or coalesce(s.profile_verticals,'{}'::text[]) && $1::text[])
+      and
+      (cardinality($2::text[]) = 0 or coalesce(s.profile_formats,'{}'::text[]) && $2::text[])
+      and (
+        (s.profile_ig is not null and s.profile_ig <> '')
+        or (s.profile_contact is not null and s.profile_contact <> '')
+        or (s.profile_title is not null and s.profile_title <> '')
+      )
+    order by score desc, s.updated_at desc, ws.created_at desc
+    offset $3 limit $4
+    `,
+    [v, f, offset, limit]
+  );
+
+  return r.rows;
+}
