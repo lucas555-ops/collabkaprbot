@@ -1346,6 +1346,125 @@ function buildWsIgTemplate(ws, wsId, type = 'story') {
   );
 }
 
+function buildWsIgDmRaw(ws, wsId, tone = 'soft', variantIndex = 0) {
+  const link = wsBrandLink(wsId) || '';
+  const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+  const title = String(ws.profile_title || channel);
+
+  const mode = String(ws.profile_mode || 'both');
+  const verticalsTxt = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS);
+  const formatsTxt = fmtMatrix(ws.profile_formats, PROFILE_FORMATS);
+
+  const igHandle = normalizeIgHandle(ws.profile_ig);
+  const igCode = igHandle ? `@${igHandle}` : '';
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls : [];
+  const port1 = ports[0] ? String(ports[0]) : '';
+
+  const offerLine = (() => {
+    if (mode === 'ugc') return 'UGC-контент для брендов (видео/сторис/распаковки) + материалы для рекламы.';
+    if (mode === 'channel') return 'Интеграции в Telegram-канале + конкурсы/розыгрыши.';
+    return 'UGC + интеграции в Telegram-канале + конкурсы/розыгрыши.';
+  })();
+
+  const soft = [
+    [
+      `Привет! Я ${title} 👋`,
+      `Увидела ваш бренд и хочу предложить коллаб: ${offerLine}`,
+      `Ниши: ${verticalsTxt}. Форматы: ${formatsTxt}.`,
+      port1 ? `Портфолио: ${port1}` : '',
+      link ? `Если ок — можно быстро оставить ТЗ/заявку в TG (1 мин): ${link}` : '',
+      igCode ? `Мой IG: ${igCode}` : '',
+    ].filter(Boolean).join('\n'),
+    [
+      `Здравствуйте! Я ${title}.`,
+      `Делаю ${offerLine}`,
+      `Могу снять: ${formatsTxt} (ниши: ${verticalsTxt}).`,
+      port1 ? `Примеры: ${port1}` : '',
+      link ? `Чтобы не теряться — оставьте заявку в TG: ${link}` : '',
+    ].filter(Boolean).join('\n'),
+    [
+      `Добрый день! Я ${title}.`,
+      `Ищу коллабы с брендами в нишах: ${verticalsTxt}.`,
+      `Форматы: ${formatsTxt}. ${offerLine}`,
+      port1 ? `Портфолио: ${port1}` : '',
+      link ? `Если интересно — вот витрина/заявка в TG: ${link}` : '',
+    ].filter(Boolean).join('\n'),
+  ];
+
+  const hard = [
+    [
+      `Привет! Я ${title}.`,
+      `Снимаю ${formatsTxt} для брендов (ниши: ${verticalsTxt}).`,
+      `Могу сделать ${offerLine}`,
+      port1 ? `Портфолио: ${port1}` : '',
+      link ? `Если хотите обсудить быстро — ТЗ/заявка в TG: ${link}` : '',
+    ].filter(Boolean).join('\n'),
+    [
+      `Привет 👋 ${title} на связи.`,
+      `Нужно UGC/интеграция без долгих переписок?`,
+      `${offerLine}`,
+      `Ниши: ${verticalsTxt}. Форматы: ${formatsTxt}.`,
+      link ? `Киньте ТЗ сюда (TG, 1 мин): ${link}` : '',
+    ].filter(Boolean).join('\n'),
+    [
+      `Привет! Я ${title}.`,
+      `Делаю контент “под рекламу” + быстрые согласования.`,
+      `Форматы: ${formatsTxt}. Ниши: ${verticalsTxt}.`,
+      port1 ? `Примеры: ${port1}` : '',
+      link ? `Если актуально — заполните короткую заявку в TG: ${link}` : '',
+    ].filter(Boolean).join('\n'),
+  ];
+
+  const t = String(tone || 'soft').toLowerCase();
+  const pool = t === 'hard' ? hard : soft;
+  const idx = Math.abs(Number(variantIndex || 0)) % pool.length;
+  return { raw: pool[idx], idx, total: pool.length, tone: (t === 'hard' ? 'hard' : 'soft') };
+}
+
+function buildWsIgDmMessage(ws, wsId, tone = 'soft', variantIndex = 0) {
+  const t = String(tone || 'soft').toLowerCase();
+  const toneLabel = t === 'hard' ? '⚡ Директ' : '🤝 Мягкий';
+  const { raw, idx, total } = buildWsIgDmRaw(ws, wsId, t, variantIndex);
+
+  const hint =
+    `💡 Это варианты для аккуратного аутрича/АБ-теста. Персонализируй 1 строку под бренд — конверсия выше.`;
+
+  return (
+    `📌 <b>DM бренду — ${escapeHtml(toneLabel)}</b> (${idx + 1}/${total})\n` +
+    `${hint}\n\n` +
+    `<pre>${escapeHtml(raw)}</pre>`
+  );
+}
+
+async function renderWsIgDmTemplate(ctx, ownerUserId, wsId, tone = 'soft', variantIndex = 0) {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const t = String(tone || 'soft').toLowerCase();
+  const toneNorm = (t === 'hard' ? 'hard' : 'soft');
+  const i = Math.max(0, Number(variantIndex || 0));
+
+  const text = buildWsIgDmMessage(ws, wsId, toneNorm, i);
+
+  const kb = new InlineKeyboard()
+    .text(`${toneNorm === 'soft' ? '✅ ' : ''}🤝 Мягкий`, `a:ws_ig_dm|ws:${wsId}|tone:soft|i:${toneNorm === 'soft' ? i : 0}`)
+    .text(`${toneNorm === 'hard' ? '✅ ' : ''}⚡ Директ`, `a:ws_ig_dm|ws:${wsId}|tone:hard|i:${toneNorm === 'hard' ? i : 0}`)
+    .row()
+    .text('📤 Ещё вариант', `a:ws_ig_dm|ws:${wsId}|tone:${toneNorm}|i:${i + 1}`)
+    .row()
+    .text('⬅️ Назад', `a:ws_ig_templates|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+
+
 async function sendWsIgTemplateMessage(ctx, ownerUserId, wsId, type = 'story') {
   const isAdmin = isSuperAdminTg(ctx.from?.id);
   const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
@@ -1355,6 +1474,13 @@ async function sendWsIgTemplateMessage(ctx, ownerUserId, wsId, type = 'story') {
   const t = String(type || 'story');
   const allowed = ['story', 'post', 'dm', 'bio'];
   const tt = allowed.includes(t) ? t : 'story';
+
+  // DM templates are interactive (tone + variants) to avoid sending many messages.
+  if (tt === 'dm') {
+    await renderWsIgDmTemplate(ctx, ownerUserId, wsId, 'soft', 0);
+    try { await ctx.answerCallbackQuery({ text: '✅ DM шаблон открыт' }); } catch {}
+    return;
+  }
 
   const msg = buildWsIgTemplate(ws, wsId, tt);
   await ctx.reply(msg, { parse_mode: 'HTML', disable_web_page_preview: true });
@@ -5290,6 +5416,18 @@ if (p.a === 'a:ws_ig_templates_send') {
   await sendWsIgTemplateMessage(ctx, u.id, wsId, t);
   return;
 }
+
+
+if (p.a === 'a:ws_ig_dm') {
+  await ctx.answerCallbackQuery();
+  const wsId = Number(p.ws || 0);
+  if (!wsId) return;
+  const tone = String(p.tone || 'soft');
+  const i = Number(p.i || 0);
+  await renderWsIgDmTemplate(ctx, u.id, wsId, tone, i);
+  return;
+}
+
 
 if (p.a === 'a:ws_prof_mode') {
       await ctx.answerCallbackQuery();
