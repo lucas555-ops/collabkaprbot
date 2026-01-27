@@ -1354,7 +1354,7 @@ async function renderWsShareMenu(ctx, ownerUserId, wsId) {
 
   const text =
     `🔗 <b>Поделиться витриной</b>\n\n` +
-    `Я отправлю отдельное сообщение с готовым текстом — ты сможешь скопировать или переслать бренду.\n\n` +
+    `Покажу готовый текст в этом сообщении — ты сможешь скопировать и переслать бренду.\n\n` +
     (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '') +
     `Выбери вариант:`;
 
@@ -1378,8 +1378,19 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
 
   const text = buildWsShareText(ws, wsId, variant);
-  await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true });
-  try { await ctx.answerCallbackQuery({ text: '✅ Отправил текст отдельным сообщением' }); } catch {}
+
+  // Показываем текст в этом же сообщении (чтобы не оставлять "висящие" сообщения без кнопок)
+  const kb = new InlineKeyboard()
+    .text('⬅️ Назад', `a:ws_share|ws:${wsId}`)
+    .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+
+  try { await ctx.answerCallbackQuery({ text: '✅ Текст открыт' }); } catch {}
 }
 
 
@@ -1395,7 +1406,7 @@ async function renderWsIgTemplatesMenu(ctx, ownerUserId, wsId) {
 
   const text =
     `📌 <b>Шаблоны для Instagram</b>\n\n` +
-    `Скопируй текст ниже (я пришлю отдельным сообщением) и вставь в Stories/пост/DM.\n` +
+    `Скопируй текст ниже (покажу в этом сообщении) и вставь в Stories/пост/DM.\n` +
     `Ссылка ведёт бренда прямо в Telegram-воронку (витрина → заявка → сделка).\n\n` +
     `Канал: <b>${escapeHtml(channel)}</b>\n` +
     `Профиль: <b>${escapeHtml(to)}</b>\n` +
@@ -1655,8 +1666,19 @@ async function sendWsIgTemplateMessage(ctx, ownerUserId, wsId, type = 'story') {
   }
 
   const msg = buildWsIgTemplate(ws, wsId, tt);
-  await ctx.reply(msg, { parse_mode: 'HTML', disable_web_page_preview: true });
-  try { await ctx.answerCallbackQuery({ text: '✅ Отправил шаблон отдельным сообщением' }); } catch {}
+
+  // Показываем шаблон в этом же сообщении (без лишнего спама в чате)
+  const kb = new InlineKeyboard()
+    .text('⬅️ Назад', `a:ws_ig_templates|ws:${wsId}`)
+    .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(msg, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+
+  try { await ctx.answerCallbackQuery({ text: '✅ Шаблон открыт' }); } catch {}
 }
 async function renderWsProfileMode(ctx, ownerUserId, wsId) {
   const isAdmin = isSuperAdminTg(ctx.from?.id);
