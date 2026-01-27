@@ -2567,3 +2567,93 @@ export async function auditBarterThread(threadId, actorUserId, action, payload =
   );
 }
 
+
+
+// --- Brand Leads (requests from brands on public profile vitrina) ---
+
+export async function createBrandLead({
+  workspaceId,
+  ownerUserId,
+  brandUserId,
+  brandTgId,
+  brandUsername = null,
+  brandName = null,
+  message,
+  meta = null
+}) {
+  const r = await pool.query(
+    `insert into brand_leads
+      (workspace_id, owner_user_id, brand_user_id, brand_tg_id, brand_username, brand_name, message, meta)
+     values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+     returning *`,
+    [
+      Number(workspaceId),
+      Number(ownerUserId),
+      Number(brandUserId),
+      Number(brandTgId),
+      brandUsername ? String(brandUsername) : null,
+      brandName ? String(brandName) : null,
+      String(message || ''),
+      meta ? JSON.stringify(meta) : null
+    ]
+  );
+  return r.rows[0] || null;
+}
+
+export async function getBrandLeadById(leadId) {
+  const r = await pool.query(`select * from brand_leads where id=$1`, [Number(leadId)]);
+  return r.rows[0] || null;
+}
+
+export async function countBrandLeadsByStatus(workspaceId) {
+  const r = await pool.query(
+    `select status, count(*)::int as cnt
+     from brand_leads
+     where workspace_id=$1
+     group by status`,
+    [Number(workspaceId)]
+  );
+  const out = { new: 0, in_progress: 0, closed: 0, spam: 0 };
+  for (const row of r.rows) {
+    const k = String(row.status || '').toLowerCase();
+    if (out[k] !== undefined) out[k] = Number(row.cnt || 0);
+  }
+  return out;
+}
+
+export async function listBrandLeads(workspaceId, status, limit = 10, offset = 0) {
+  const r = await pool.query(
+    `select *
+     from brand_leads
+     where workspace_id=$1 and status=$2
+     order by created_at desc, id desc
+     limit $3 offset $4`,
+    [Number(workspaceId), String(status), Number(limit), Number(offset)]
+  );
+  return r.rows || [];
+}
+
+export async function updateBrandLeadStatus(leadId, status) {
+  const r = await pool.query(
+    `update brand_leads
+       set status=$2, updated_at=now()
+     where id=$1
+     returning *`,
+    [Number(leadId), String(status)]
+  );
+  return r.rows[0] || null;
+}
+
+export async function markBrandLeadReplied(leadId, replyText, repliedByUserId) {
+  const r = await pool.query(
+    `update brand_leads
+       set reply_text=$2,
+           replied_by_user_id=$3,
+           replied_at=now(),
+           updated_at=now()
+     where id=$1
+     returning *`,
+    [Number(leadId), String(replyText || ''), repliedByUserId ? Number(repliedByUserId) : null]
+  );
+  return r.rows[0] || null;
+}
