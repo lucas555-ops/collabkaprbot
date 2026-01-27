@@ -1240,6 +1240,9 @@ async function renderWsPublicProfile(ctx, wsId) {
   const ws = await db.getWorkspaceAny(wsId);
   if (!ws) return ctx.reply('Профиль не найден.');
 
+  const viewer = ctx?.from ? await db.upsertUser(ctx.from.id, ctx.from.username ?? null) : null;
+  const isOwner = viewer && Number(viewer.id) === Number(ws.owner_user_id);
+
   const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
   const name = ws.profile_title || channel;
   const mode = String(ws.profile_mode || 'both');
@@ -1281,11 +1284,32 @@ async function renderWsPublicProfile(ctx, wsId) {
     `📝 Описание: <b>${escapeHtml(about)}</b>\n` +
     `✉️ Контакт: <b>${escapeHtml(contact)}</b>\n` +
     `📍 Гео: <b>${escapeHtml(geo)}</b>\n\n` +
-    `Если хочешь коллаб — пиши по контакту или перейди в меню бота.`;
+    `Если хочешь коллаб — нажми «📝 Оставить заявку» или «💬 Написать».`;
 
-  const kb = new InlineKeyboard()
-    .text('✉️ Заявка от бренда', `a:wsp_lead_new|ws:${wsId}`)
-    .row();
+  const contactRaw = ws.profile_contact ? String(ws.profile_contact).trim() : '';
+  const contactUrl = (() => {
+    if (!contactRaw) return null;
+    const tg = wsTgUrlFromContact(contactRaw);
+    if (tg) return tg;
+    if (/^https?:\/\//i.test(contactRaw)) return contactRaw;
+    if (/^t\.me\//i.test(contactRaw)) return 'https://' + contactRaw;
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactRaw)) return 'mailto:' + contactRaw;
+    return null;
+  })();
+
+  const kb = new InlineKeyboard();
+
+  // CTA row
+  kb.text('📝 Оставить заявку', `a:wsp_lead_new|ws:${wsId}`);
+  if (contactUrl) kb.url('💬 Написать', contactUrl);
+  kb.row();
+
+  // Owner-only CTA
+  if (isOwner) {
+    kb.text('🔗 Поделиться', `a:ws_share|ws:${wsId}`).row();
+  }
+
+  // Links
   if (ws.channel_username) kb.url('📣 Telegram канал', `https://t.me/${String(ws.channel_username).replace(/^@/, '')}`);
   if (ig) kb.url('📸 Instagram', `https://instagram.com/${ig}`);
   kb.row().text('📋 Меню', 'a:menu');
