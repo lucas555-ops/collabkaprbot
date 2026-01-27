@@ -351,6 +351,8 @@ function bxBrandMenuKb(wsId, credits, plan, retry = 0) {
     .row()
     .text(`⭐️ Brand Plan: ${planLabel}`, `a:brand_plan|ws:${wsId}`)
     .row()
+    .text('🧭 Матчинг профилей', `a:pm_home|ws:${wsId}`)
+.row()
     .text('🎯 Smart Matching', `a:match_home|ws:${wsId}`)
     .text('🔥 Featured', `a:feat_home|ws:${wsId}`);
 
@@ -835,6 +837,176 @@ const PROFILE_MODE_LABELS = {
   ugc: 'UGC (контент без аудитории)',
   both: 'Оба (канал + UGC)'
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// №4 Матчинг профилей (каталог витрин по нишам/форматам) — минимальный UX
+// Brand → выбирает фильтры → получает список → открывает витрину → оставляет заявку
+// ─────────────────────────────────────────────────────────────────────────────
+const PM_LIMITS = { verticals: 3, formats: 5 };
+const PM_PAGE_SIZE = 5;
+
+function pmStateKey(tgId, wsId) {
+  return k(['pm_state', tgId, Number(wsId || 0)]);
+}
+
+async function pmGetState(tgId, wsId) {
+  const raw = await redis.get(pmStateKey(tgId, wsId));
+  const s = raw && typeof raw === 'object' ? raw : {};
+  return {
+    v: Array.isArray(s.v) ? s.v.filter(Boolean) : [],
+    f: Array.isArray(s.f) ? s.f.filter(Boolean) : []
+  };
+}
+
+async function pmSetState(tgId, wsId, state) {
+  await redis.set(pmStateKey(tgId, wsId), state, { ex: 60 * 60 }); // 1 час
+}
+
+async function pmResetState(tgId, wsId) {
+  await redis.del(pmStateKey(tgId, wsId));
+}
+
+function pmHumanList(keys, dict) {
+  if (!Array.isArray(keys) || !keys.length) return '—';
+  const map = new Map(dict.map(d => [d.key, d.title]));
+  return keys.map(k => map.get(k) || k).join(', ');
+}
+
+function contactUrlFromRaw(contactRaw) {
+  const c = contactRaw ? String(contactRaw).trim() : '';
+  if (!c) return null;
+  const tg = wsTgUrlFromContact(c);
+  if (tg) return tg;
+  if (/^https?:\/\//i.test(c)) return c;
+  if (/^t\.me\//i.test(c)) return 'https://' + c;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c)) return 'mailto:' + c;
+  return null;
+}
+
+async function pmAssertAccess(ctx, ownerUserId, wsId) {
+  const wsNum = Number(wsId || 0);
+  if (wsNum === 0) return true;
+  const ws = await db.getWorkspace(ownerUserId, wsNum);
+  if (!ws) {
+    await ctx.answerCallbackQuery({ text: 'Нет доступа к этому workspace.', show_alert: true });
+    return false;
+  }
+  return true;
+}
+
+async function renderProfileMatchingHome(ctx, ownerUserId, wsId) {
+  if (!(await pmAssertAccess(ctx, ownerUserId, wsId))) return;
+
+  const st = await pmGetState(ctx.from.id, wsId);
+
+  const text =
+    `🧭 <b>Матчинг профилей</b>\n\n` +
+    `Выбираешь ниши и форматы — бот показывает релевантные витрины.\n\n` +
+    `🏷 Ниши: <b>${escapeHtml(pmHumanList(st.v, PROFILE_VERTICALS))}</b>\n` +
+    `🎬 Форматы: <b>${escapeHtml(pmHumanList(st.f, PROFILE_FORMATS))}</b>\n\n` +
+    `Нажми «🔎 Найти», чтобы открыть список.\n` +
+    `Подсказка: 1–2 ниши + 2–3 формата обычно дают лучший результат.`;
+
+  const kb = new InlineKeyboard()
+    .text(`🏷 Ниши (${st.v.length}/${PM_LIMITS.verticals})`, `a:pm_pick|ws:${wsId}|t:v`)
+    .text(`🎬 Форматы (${st.f.length}/${PM_LIMITS.formats})`, `a:pm_pick|ws:${wsId}|t:f`)
+    .row()
+    .text('🔎 Найти', `a:pm_run|ws:${wsId}|p:0`)
+    .text('🗑 Сброс', `a:pm_reset|ws:${wsId}`)
+    .row()
+    .text('⬅️ Назад', `a:bx_open|ws:${wsId}`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+}
+
+async function renderProfileMatchingPick(ctx, ownerUserId, wsId, type) {
+  if (!(await pmAssertAccess(ctx, ownerUserId, wsId))) return;
+
+  const st = await pmGetState(ctx.from.id, wsId);
+  const isV = type === 'v';
+  const dict = isV ? PROFILE_VERTICALS : PROFILE_FORMATS;
+  const sel = isV ? st.v : st.f;
+  const max = isV ? PM_LIMITS.verticals : PM_LIMITS.formats;
+  const title = isV ? '🏷 Выбор ниш' : '🎬 Выбор форматов';
+
+  const kb = new InlineKeyboard();
+  for (const it of dict) {
+    const chosen = sel.includes(it.key);
+    kb.text(`${chosen ? '✅ ' : ''}${it.title}`, `a:pm_tog|ws:${wsId}|t:${type}|k:${it.key}`).row();
+  }
+  kb.text('✅ Готово', `a:pm_home|ws:${wsId}`).text('🗑 Сброс', `a:pm_reset|ws:${wsId}`);
+
+  const text =
+    `${title}\n\n` +
+    `Выбрано: <b>${sel.length}/${max}</b>\n` +
+    `Нажимай по пунктам, чтобы включать/выключать ✅.`;
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+}
+
+async function renderProfileMatchingResults(ctx, ownerUserId, wsId, page = 0) {
+  if (!(await pmAssertAccess(ctx, ownerUserId, wsId))) return;
+
+  const st = await pmGetState(ctx.from.id, wsId);
+  const p = Math.max(0, Number(page || 0));
+  const offset = p * PM_PAGE_SIZE;
+
+  const rows = await db.searchWorkspaceProfilesByMatrix(st.v, st.f, offset, PM_PAGE_SIZE + 1);
+  const hasNext = rows.length > PM_PAGE_SIZE;
+  const items = rows.slice(0, PM_PAGE_SIZE);
+
+  const head =
+    `🧭 <b>Результаты матчингa</b>\n\n` +
+    `🏷 Ниши: <b>${escapeHtml(pmHumanList(st.v, PROFILE_VERTICALS))}</b>\n` +
+    `🎬 Форматы: <b>${escapeHtml(pmHumanList(st.f, PROFILE_FORMATS))}</b>\n\n`;
+
+  if (!items.length) {
+    const kb = new InlineKeyboard()
+      .text('⚙️ Изменить фильтры', `a:pm_home|ws:${wsId}`)
+      .row()
+      .text('⬅️ Назад', `a:bx_open|ws:${wsId}`);
+    return ctx.editMessageText(
+      head + '😶 Ничего не нашёл по фильтрам.\n\nПопробуй упростить фильтр (меньше ниш/форматов).',
+      { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true }
+    );
+  }
+
+  const lines = items
+    .map((r, i) => {
+      const channel = r.channel_username ? '@' + String(r.channel_username).replace(/^@/, '') : (r.profile_title || r.ws_title || 'канал');
+      const name = r.profile_title || channel;
+      const mode = PROFILE_MODE_LABELS[String(r.profile_mode || 'both')] || PROFILE_MODE_LABELS.both;
+      const geo = r.profile_geo || '—';
+      return `${offset + i + 1}) <b>${escapeHtml(String(name))}</b> · ${escapeHtml(String(mode))} · ${escapeHtml(String(geo))}`;
+    })
+    .join('\n');
+
+  const text = head + lines + `\n\nНажми «👤 …», чтобы открыть витрину.`;
+
+  const kb = new InlineKeyboard();
+  for (const r of items) {
+    const channel = r.channel_username ? '@' + String(r.channel_username).replace(/^@/, '') : (r.profile_title || r.ws_title || 'канал');
+    const name = r.profile_title || channel;
+    const short = String(name).slice(0, 28);
+    const contactUrl = contactUrlFromRaw(r.profile_contact);
+
+    kb.text(`👤 ${short}`, `a:pm_view|ws:${wsId}|id:${r.id}|p:${p}`);
+    if (contactUrl) kb.url('💬', contactUrl);
+    kb.row();
+  }
+
+  if (p > 0 || hasNext) {
+    if (p > 0) kb.text('⬅️', `a:pm_run|ws:${wsId}|p:${p - 1}`);
+    if (hasNext) kb.text('➡️', `a:pm_run|ws:${wsId}|p:${p + 1}`);
+    kb.row();
+  }
+
+  kb.text('⚙️ Фильтры', `a:pm_home|ws:${wsId}`).text('⬅️ Назад', `a:bx_open|ws:${wsId}`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+}
+
+
 
 const LEAD_STATUSES = {
   new: { key: 'new', title: '🆕 Новые', icon: '🆕' },
@@ -1565,7 +1737,7 @@ async function renderWsProfileFormats(ctx, ownerUserId, wsId) {
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
 }
 
-async function renderWsPublicProfile(ctx, wsId) {
+async function renderWsPublicProfile(ctx, wsId, opts = {}) {
   const ws = await db.getWorkspaceAny(wsId);
   if (!ws) return ctx.reply('Профиль не найден.');
 
@@ -1643,6 +1815,7 @@ async function renderWsPublicProfile(ctx, wsId) {
   // Links
   if (ws.channel_username) kb.url('📣 Telegram канал', `https://t.me/${String(ws.channel_username).replace(/^@/, '')}`);
   if (ig) kb.url('📸 Instagram', `https://instagram.com/${ig}`);
+  if (opts?.backCb) kb.row().text('⬅️ Назад', opts.backCb);
   kb.row().text('📋 Меню', 'a:menu');
 
   const extra = { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true };
@@ -5649,7 +5822,74 @@ if (p.a === 'a:ws_prof_mode') {
       return;
     }
 
-    if (p.a === 'a:match_home') {
+    
+    // Profile Matching (pm_*)
+    if (p.a === 'a:pm_home') {
+      await ctx.answerCallbackQuery();
+      await renderProfileMatchingHome(ctx, u.id, Number(p.ws || 0));
+      return;
+    }
+
+    if (p.a === 'a:pm_reset') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      await pmResetState(ctx.from.id, wsId);
+      await renderProfileMatchingHome(ctx, u.id, wsId);
+      return;
+    }
+
+    if (p.a === 'a:pm_pick') {
+      await ctx.answerCallbackQuery();
+      await renderProfileMatchingPick(ctx, u.id, Number(p.ws || 0), String(p.t || 'v'));
+      return;
+    }
+
+    if (p.a === 'a:pm_tog') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const type = String(p.t || 'v');
+      const key = String(p.k || '');
+
+      const st = await pmGetState(ctx.from.id, wsId);
+      const sel = type === 'v' ? st.v : st.f;
+      const max = type === 'v' ? PM_LIMITS.verticals : PM_LIMITS.formats;
+
+      const has = sel.includes(key);
+      let next = has ? sel.filter(x => x !== key) : [...sel, key];
+
+      if (!has && next.length > max) {
+        await ctx.answerCallbackQuery({ text: `Лимит: максимум ${max}`, show_alert: true });
+        await renderProfileMatchingPick(ctx, u.id, wsId, type);
+        return;
+      }
+
+      next = Array.from(new Set(next));
+      if (type === 'v') st.v = next;
+      else st.f = next;
+
+      await pmSetState(ctx.from.id, wsId, st);
+      await renderProfileMatchingPick(ctx, u.id, wsId, type);
+      return;
+    }
+
+    if (p.a === 'a:pm_run') {
+      await ctx.answerCallbackQuery();
+      await renderProfileMatchingResults(ctx, u.id, Number(p.ws || 0), Number(p.p || 0));
+      return;
+    }
+
+    if (p.a === 'a:pm_view') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const target = Number(p.id || 0);
+      const page = Number(p.p || 0);
+      if (!target) return;
+      await renderWsPublicProfile(ctx, target, { backCb: `a:pm_run|ws:${wsId}|p:${page}` });
+      return;
+    }
+
+
+if (p.a === 'a:match_home') {
       await ctx.answerCallbackQuery();
       await renderMatchingHome(ctx, Number(p.ws || 0));
       return;
