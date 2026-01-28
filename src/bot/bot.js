@@ -247,6 +247,19 @@ async function safeUserVerifications(primaryFn, fallbackFn) {
 }
 
 
+
+async function safeBrandProfiles(primaryFn, fallbackFn) {
+  try {
+    return await primaryFn();
+  } catch (e) {
+    if (isMissingRelationError(e, 'brand_profiles')) {
+      return await fallbackFn();
+    }
+    throw e;
+  }
+}
+
+
 function mainMenuKb(flags = {}) {
   const { isModerator = false, isAdmin = false, isFolderEditor = false } = flags;
 
@@ -385,6 +398,8 @@ function bxBrandMenuKb(wsId, credits, plan, retry = 0) {
     .text('📨 Inbox', `a:bx_inbox|ws:${wsId}|p:0`)
     .text(`🎫 Brand Pass: ${credits}${retry ? ' · 🎟' + retry : ''}`, `a:brand_pass|ws:${wsId}`)
     .row()
+    .text('🏷 Профиль бренда', `a:brand_profile|ws:${wsId}|ret:brand`)
+    .row()
     .text(`⭐️ Plan: ${planLabel}`, `a:brand_plan|ws:${wsId}`)
     .text('🧭 Матчинг', `a:pm_home|ws:${wsId}`)
     .row()
@@ -395,6 +410,237 @@ function bxBrandMenuKb(wsId, credits, plan, retry = 0) {
 
   kb.row().text('⬅️ Назад', 'a:menu');
   return kb;
+}
+
+
+
+function isBrandBasicComplete(p) {
+  if (!p) return false;
+  return !!(String(p.brand_name || '').trim() && String(p.brand_link || '').trim() && String(p.contact || '').trim());
+}
+
+function isBrandExtendedComplete(p) {
+  if (!p) return false;
+  return isBrandBasicComplete(p) && !!(String(p.niche || '').trim() && String(p.geo || '').trim() && String(p.collab_types || '').trim());
+}
+
+function brandCbSuffix(params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand'); // brand | offer | verify
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+  let s = `|ws:${wsId}|ret:${ret}`;
+  if (bo) s += `|bo:${bo}|bp:${bp}`;
+  return s;
+}
+
+function brandBackCb(params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand');
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+  if (ret === 'offer' && bo) return `a:bx_pub|ws:${wsId}|o:${bo}|p:${bp}`;
+  if (ret === 'verify') return 'a:verify_home';
+  return `a:bx_open|ws:${wsId}`;
+}
+
+function brandFieldPrompt(field) {
+  const f = String(field || '');
+  if (f === 'brand_name') return `🏷 <b>Название бренда</b>
+
+Напиши название (как хочешь, чтобы видели креаторы).
+
+<i>Пример:</i> “Luna Beauty”`;
+  if (f === 'brand_link') return `🔗 <b>Ссылка на бренд</b>
+
+Пришли ссылку на сайт / IG / TG / X.
+Можно @username или t.me/...
+
+<i>Пример:</i> https://instagram.com/lunabeauty`;
+  if (f === 'contact') return `☎️ <b>Контакт для связи</b>
+
+Как креатору написать тебе быстро:
+@username / email / TG.
+
+<i>Пример:</i> @luna_manager`;
+  if (f === 'niche') return `🎯 <b>Ниша</b>
+
+Что продаёте / чем занимаетесь.
+
+<i>Пример:</i> косметика, уход за кожей, salon, fashion`;
+  if (f === 'geo') return `🌍 <b>Гео</b>
+
+Города/страны, где актуально сотрудничество.
+
+<i>Пример:</i> Алматы / Казахстан / СНГ`;
+  if (f === 'collab_types') return `🧩 <b>Форматы сотрудничества</b>
+
+Напиши через запятую.
+
+<i>Пример:</i> сторис, reels, обзор, бартер, UGC`;
+  if (f === 'budget') return `💰 <b>Бюджет</b>
+
+Диапазон или “по договорённости”.
+
+<i>Пример:</i> $100–300 / бартер + доплата`;
+  if (f === 'goals') return `🎬 <b>Цели</b>
+
+Что хотите получить от коллаборации.
+
+<i>Пример:</i> продажи, охваты, UGC-контент`;
+  if (f === 'requirements') return `📎 <b>Требования</b>
+
+Коротко: что важно (качество, сроки, тематика).
+
+<i>Пример:</i> 1 reels + 3 stories, дедлайн 7 дней`;
+  return `✏️ <b>Профиль бренда</b>
+
+Напиши значение:`;
+}
+
+function brandFieldPromptKb(params = {}) {
+  const suf = brandCbSuffix(params);
+  const kb = new InlineKeyboard()
+    .text('⬅️ Назад', `a:brand_profile${suf}`);
+  return kb;
+}
+
+async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+
+  if (!prof && CFG.BRAND_PROFILE_REQUIRED) {
+    // If migration missing — show a gentle hint
+    // (prof may also be null on first use; we handle both)
+  }
+
+  const p = prof || {};
+  const basic = [
+    { key: 'brand_name', label: 'Название' },
+    { key: 'brand_link', label: 'Ссылка' },
+    { key: 'contact', label: 'Контакт' }
+  ];
+  const ext = [
+    { key: 'niche', label: 'Ниша' },
+    { key: 'geo', label: 'Гео' },
+    { key: 'collab_types', label: 'Форматы' },
+    { key: 'budget', label: 'Бюджет' },
+    { key: 'goals', label: 'Цели' },
+    { key: 'requirements', label: 'Требования' }
+  ];
+
+  const basicDone = basic.filter(x => String(p[x.key] || '').trim()).length;
+  const extDone = ext.filter(x => String(p[x.key] || '').trim()).length;
+
+  const missingBasic = basic.filter(x => !String(p[x.key] || '').trim()).map(x => x.label);
+  const needBasic = missingBasic.length > 0;
+
+  const gateLine = needBasic && params.ret === 'offer'
+    ? `
+
+⚠️ Чтобы писать креаторам, заполни 3 поля: <b>${escapeHtml(missingBasic.join(', '))}</b>.`
+    : (needBasic ? `
+
+⚠️ Заполни 3 базовых поля, чтобы писать креаторам.` : '');
+
+  const verifyLine = (CFG.VERIFICATION_ENABLED && CFG.BRAND_VERIFY_REQUIRES_EXTENDED)
+    ? `
+
+Для <b>Brand-верификации</b> рекомендовано заполнить: нишу, гео и форматы.`
+    : '';
+
+  const txt =
+    `🏷 <b>Профиль бренда</b>
+
+` +
+    `<b>База</b> (${basicDone}/3):
+` +
+    `• Название: <b>${escapeHtml(p.brand_name || '—')}</b>
+` +
+    `• Ссылка: <b>${escapeHtml(p.brand_link || '—')}</b>
+` +
+    `• Контакт: <b>${escapeHtml(p.contact || '—')}</b>
+
+` +
+    `<b>Расширенный</b> (${extDone}/6):
+` +
+    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
+` +
+    `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
+` +
+    `• Форматы: <b>${escapeHtml(p.collab_types || '—')}</b>
+` +
+    `• Бюджет: <b>${escapeHtml(p.budget || '—')}</b>
+` +
+    `• Цели: <b>${escapeHtml(p.goals || '—')}</b>
+` +
+    `• Требования: <b>${escapeHtml(p.requirements || '—')}</b>` +
+    gateLine +
+    verifyLine;
+
+  const suf = brandCbSuffix(params);
+
+  const kb = new InlineKeyboard()
+    .text('✏️ Название', `a:brand_prof_set${suf}|f:bn`)
+    .text('🔗 Ссылка', `a:brand_prof_set${suf}|f:bl`)
+    .row()
+    .text('☎️ Контакт', `a:brand_prof_set${suf}|f:ct`)
+    .text('➕ Расширить', `a:brand_prof_more${suf}`)
+    .row();
+
+  if (CFG.VERIFICATION_ENABLED) kb.text('✅ Верификация', 'a:verify_home').row();
+
+  kb.text('⬅️ Назад', brandBackCb(params));
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (params.edit && ctx.callbackQuery?.message) {
+    await ctx.editMessageText(txt, opts);
+  } else {
+    await ctx.reply(txt, opts);
+  }
+}
+
+async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+  const p = prof || {};
+  const txt =
+    `➕ <b>Расширенный профиль бренда</b>
+
+` +
+    `Заполни детали — это повышает доверие и нужно для Brand-верификации.
+
+` +
+    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
+` +
+    `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
+` +
+    `• Форматы: <b>${escapeHtml(p.collab_types || '—')}</b>
+` +
+    `• Бюджет: <b>${escapeHtml(p.budget || '—')}</b>
+` +
+    `• Цели: <b>${escapeHtml(p.goals || '—')}</b>
+` +
+    `• Требования: <b>${escapeHtml(p.requirements || '—')}</b>`;
+
+  const suf = brandCbSuffix(params);
+  const kb = new InlineKeyboard()
+    .text('🎯 Ниша', `a:brand_prof_set${suf}|f:ni`)
+    .text('🌍 Гео', `a:brand_prof_set${suf}|f:ge`)
+    .row()
+    .text('🧩 Форматы', `a:brand_prof_set${suf}|f:ty`)
+    .row()
+    .text('💰 Бюджет', `a:brand_prof_set${suf}|f:bu`)
+    .text('🎬 Цели', `a:brand_prof_set${suf}|f:go`)
+    .row()
+    .text('📎 Требования', `a:brand_prof_set${suf}|f:rq`)
+    .row()
+    .text('⬅️ Назад', `a:brand_profile${suf}`);
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (params.edit && ctx.callbackQuery?.message) {
+    await ctx.editMessageText(txt, opts);
+  } else {
+    await ctx.reply(txt, opts);
+  }
 }
 
 
@@ -3047,16 +3293,10 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
   if (String(offer.status || '').toUpperCase() !== 'ACTIVE') throw new Error('Offer is not active');
   if (!offer.network_enabled) throw new Error('Offer is not in network');
 
-  const existing = await safeOfficialPosts(() => db.getOfficialPostByOfferId(offerId), async () => null);
-  const keepExpiry = Boolean(opts.keepExpiry);
-
-  // placementType: MANUAL / PAID; UPDATE means: keep existing placement_type
-  let placementType = String(opts.placementType || existing?.placement_type || 'MANUAL').toUpperCase();
-  if (placementType === 'UPDATE') placementType = String(existing?.placement_type || 'MANUAL').toUpperCase();
-  if (placementType !== 'PAID' && placementType !== 'MANUAL') placementType = 'MANUAL'
 
   const hasMedia = placementType === 'PAID' && offer.media_file_id && String(offer.media_type || '').trim();
   const { text, kb } = await buildOfficialOfferPost(offer, { forCaption: hasMedia });
+
 
 
   // Decide expiry
@@ -5002,7 +5242,68 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
       return;
     }
 
-    // Verification request submit
+    
+    // Brand profile edit (Brand Mode)
+    if (exp.type === 'brand_prof_field') {
+      const field = String(exp.field || '');
+      const raw = String(ctx.message.text || '').trim();
+
+      if (!field) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Ошибка: неизвестное поле профиля.');
+        return;
+      }
+
+      if (!raw) {
+        await ctx.reply('Пустое значение. Пришли текст.');
+        return;
+      }
+
+      let value = raw;
+
+      // Allow clearing a field with a simple token
+      if (/^(—|-|none|null|clear|удалить)$/i.test(value)) value = null;
+
+      // Basic validation
+      if (value !== null) {
+        const maxLen = field === 'requirements' ? 600 : 220;
+        if (value.length > maxLen) value = value.slice(0, maxLen).trim();
+
+        if (field === 'brand_name' && value.length < 2) {
+          await ctx.reply('Слишком короткое название. Пришли 2+ символа.');
+          return;
+        }
+        if ((field === 'brand_link' || field === 'contact') && value.length < 3) {
+          await ctx.reply('Слишком коротко. Пришли нормальный контакт/ссылку.');
+          return;
+        }
+      }
+
+      const patch = { [field]: value };
+      const saved = await safeBrandProfiles(
+        () => db.upsertBrandProfile(u.id, patch),
+        async () => ({ __missing_relation: true })
+      );
+
+      if (saved && saved.__missing_relation) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('⚠️ В базе нет таблицы brand_profiles. Применяй миграцию migrations/024_brand_profiles.sql в Neon и повтори.');
+        return;
+      }
+
+      await clearExpectText(ctx.from.id);
+      await ctx.reply('✅ Профиль обновлён.');
+      await renderBrandProfileHome(ctx, u.id, {
+        wsId: Number(exp.wsId || 0),
+        ret: String(exp.ret || 'brand'),
+        backOfferId: exp.backOfferId ? Number(exp.backOfferId) : null,
+        backPage: Number(exp.backPage || 0),
+        edit: false
+      });
+      return;
+    }
+
+// Verification request submit
     if (exp.type === 'verify_submit') {
       if (!CFG.VERIFICATION_ENABLED) {
         await ctx.reply('Верификация сейчас отключена.');
@@ -6087,6 +6388,32 @@ if (p.a === 'a:lead_set') {
       await ctx.answerCallbackQuery();
       if (!CFG.VERIFICATION_ENABLED) return ctx.answerCallbackQuery({ text: 'Верификация отключена.' });
       const kind = String(p.k || 'creator');
+
+
+      if (kind === 'brand' && CFG.BRAND_VERIFY_REQUIRES_EXTENDED) {
+        const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+        if (!isBrandExtendedComplete(prof)) {
+          await ctx.editMessageText(
+            `🏷 <b>Верификация Brand</b>
+
+Чтобы подать заявку как бренд, заполни расширенный профиль:
+• ниша
+• гео
+• форматы сотрудничества
+
+<i>Зачем:</i> модерации нужны факты, а креаторам — понятность.`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: new InlineKeyboard()
+                .text('🏷 Профиль бренда', 'a:brand_profile|ws:0|ret:verify')
+                .row()
+                .text('⬅️ Назад', 'a:verify_home')
+            }
+          );
+          return;
+        }
+      }
+
       await setExpectText(ctx.from.id, { type: 'verify_submit', kind });
       await ctx.editMessageText(
         `✅ <b>Заявка на верификацию</b>
@@ -6363,9 +6690,60 @@ if (p.a === 'a:ws_prof_mode') {
       return;
     }
 
-
-
     // Brand Mode tools
+
+    if (p.a === 'a:brand_profile') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand'); // brand | offer | verify
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandProfileHome(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_prof_more') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandProfileMore(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_prof_set') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      const field = String(p.f || '');
+      const map = {
+        bn: 'brand_name',
+        bl: 'brand_link',
+        ct: 'contact',
+        ni: 'niche',
+        ge: 'geo',
+        ty: 'collab_types',
+        bu: 'budget',
+        go: 'goals',
+        rq: 'requirements'
+      };
+      const realField = map[field] || null;
+      if (!realField) return;
+
+      await setExpectText(ctx.from.id, { type: 'brand_prof_field', field: realField, wsId, ret, backOfferId: bo, backPage: bp });
+      await ctx.editMessageText(brandFieldPrompt(realField), {
+        parse_mode: 'HTML',
+        reply_markup: brandFieldPromptKb({ wsId, ret, backOfferId: bo, backPage: bp })
+      });
+      return;
+    }
+
+
+
+
     if (p.a === 'a:brand_pass') {
       await ctx.answerCallbackQuery();
       await renderBrandPassTopup(ctx, u.id, Number(p.ws || 0));
@@ -6905,18 +7283,24 @@ if (p.a === 'a:match_home') {
       }
 
       const token = randomToken(16);
-      await redis.set(
-        k(['pay', 'offpub', token]),
-        JSON.stringify({
+      const __payKey = k(['pay', 'offpub', token]);
+      const __payTtlSec = 60 * 60;
+      const __payVal = JSON.stringify({
           tgId: ctx.from.id,
           userId: u.id,
           offerId,
           days: d.days,
           stars: d.price,
           createdAt: Date.now()
-        }),
-        { ex: 60 * 60 }
-      );
+        });
+      try {
+        await redis.set(__payKey, __payVal, { ex: __payTtlSec });
+      } catch (e) {
+        // Fallback for older Upstash client versions
+        try {
+          await redis.setex(__payKey, __payTtlSec, __payVal);
+        } catch {}
+      }
 
       const title = 'Размещение в официальном канале';
       const description = `${d.label} • оффер #${offerId}`;
@@ -7096,6 +7480,18 @@ if (p.a === 'a:match_home') {
     if (p.a === 'a:bx_msg') {
       const wsId = Number(p.ws);
       const offerId = Number(p.o);
+      // Brand profile gate (Brand Mode): require 3-step basic profile before messaging creators
+      if (wsId === 0 && CFG.BRAND_PROFILE_REQUIRED) {
+        const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+        if (!isBrandBasicComplete(prof)) {
+          await ctx.answerCallbackQuery({
+            text: '⚠️ Заполни профиль бренда (3 шага), чтобы писать креаторам.',
+            show_alert: true
+          });
+          await renderBrandProfileHome(ctx, u.id, { wsId, ret: 'offer', backOfferId: offerId, backPage: Number(p.p || 0), edit: true });
+          return;
+        }
+      }
 
       if (CFG.RATE_LIMIT_ENABLED) {
         try {
