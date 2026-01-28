@@ -3047,10 +3047,16 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
   if (String(offer.status || '').toUpperCase() !== 'ACTIVE') throw new Error('Offer is not active');
   if (!offer.network_enabled) throw new Error('Offer is not in network');
 
+  const existing = await safeOfficialPosts(() => db.getOfficialPostByOfferId(offerId), async () => null);
+  const keepExpiry = Boolean(opts.keepExpiry);
+
+  // placementType: MANUAL / PAID; UPDATE means: keep existing placement_type
+  let placementType = String(opts.placementType || existing?.placement_type || 'MANUAL').toUpperCase();
+  if (placementType === 'UPDATE') placementType = String(existing?.placement_type || 'MANUAL').toUpperCase();
+  if (placementType !== 'PAID' && placementType !== 'MANUAL') placementType = 'MANUAL'
 
   const hasMedia = placementType === 'PAID' && offer.media_file_id && String(offer.media_type || '').trim();
   const { text, kb } = await buildOfficialOfferPost(offer, { forCaption: hasMedia });
-
 
 
   // Decide expiry
@@ -6899,9 +6905,8 @@ if (p.a === 'a:match_home') {
       }
 
       const token = randomToken(16);
-      await redis.setEx(
+      await redis.set(
         k(['pay', 'offpub', token]),
-        60 * 60,
         JSON.stringify({
           tgId: ctx.from.id,
           userId: u.id,
@@ -6909,7 +6914,8 @@ if (p.a === 'a:match_home') {
           days: d.days,
           stars: d.price,
           createdAt: Date.now()
-        })
+        }),
+        { ex: 60 * 60 }
       );
 
       const title = 'Размещение в официальном канале';
