@@ -131,6 +131,10 @@ export const CFG = {
   INTRO_RATE_WINDOW_SEC: parseIntSafe(process.env.INTRO_RATE_WINDOW_SEC, 3600),
 
   VERIFICATION_ENABLED: parseBoolSafe(process.env.VERIFICATION_ENABLED, false),
+  // Brand profile (Brand Mode)
+  BRAND_PROFILE_REQUIRED: parseBoolSafe(process.env.BRAND_PROFILE_REQUIRED, true),
+  BRAND_VERIFY_REQUIRES_EXTENDED: parseBoolSafe(process.env.BRAND_VERIFY_REQUIRES_EXTENDED, true),
+
 
   // Moderation
   SUPER_ADMIN_TG_IDS: parseCsvNums(process.env.SUPER_ADMIN_TG_IDS || DEFAULT_SUPER_ADMINS),
