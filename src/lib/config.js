@@ -138,6 +138,15 @@ export const CFG = {
   // Upstash Redis REST
   UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || '',
   UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+
+
+  // UI banners (optional)
+  MENU_BANNER_FILE_ID: process.env.MENU_BANNER_FILE_ID || '',
+  GUIDE_BANNER_FILE_ID: process.env.GUIDE_BANNER_FILE_ID || '',
+  BRAND_BANNER_FILE_ID: process.env.BRAND_BANNER_FILE_ID || '',
+  GIVEAWAY_BANNER_FILE_ID: process.env.GIVEAWAY_BANNER_FILE_ID || '',
+  BANNER_COOLDOWN_HOURS: parseIntSafe(process.env.BANNER_COOLDOWN_HOURS, 24),
+
 };
 
 export function assertEnv() {
