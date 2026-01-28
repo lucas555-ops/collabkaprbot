@@ -71,6 +71,29 @@ const SYS_KEYS = {
   pay_auto_apply: k(['sys', 'pay_auto_apply'])
 };
 
+
+// UI banners (optional): send banner image no more than once per N hours per slot per user
+async function maybeSendBanner(ctx, slot, fileId) {
+  try {
+    const fid = String(fileId || '').trim();
+    if (!fid) return;
+    const uid = ctx?.from?.id ? Number(ctx.from.id) : 0;
+    if (!uid) return;
+
+    const hours = Number(CFG.BANNER_COOLDOWN_HOURS || 24);
+    const ttlSec = (Number.isFinite(hours) && hours > 0 ? hours : 24) * 3600;
+
+    const key = k(['ui_banner', slot || 'default', uid]);
+    const seen = await redis.get(key);
+    if (seen) return;
+
+    await redis.set(key, '1', { ex: ttlSec });
+    await ctx.replyWithPhoto(fid);
+  } catch (_) {
+    // ignore banner failures
+  }
+}
+
 async function getSysBool(key, defaultValue = false) {
   try {
     const v = await redis.get(key);
@@ -240,6 +263,9 @@ function mainMenuKb(flags = {}) {
   } else {
     kb.text('🏷 Brand Mode', 'a:bx_open|ws:0').row();
   }
+
+  kb.text('🧭 Гайд', 'a:guide').text('💬 Support', 'a:support').row();
+  kb.text('🔄 Обновить', 'a:menu').row();
 
   const extra = [];
   if (CFG.VERIFICATION_ENABLED) extra.push(['✅ Верификация', 'a:verify_home']);
@@ -657,9 +683,10 @@ function gwSponsorsReviewKb(wsId) {
 
 function gwConfirmKb(wsId) {
   return new InlineKeyboard()
+    .text('👁 Превью', `a:gw_preview|ws:${wsId}`)
     .text('📣 Опубликовать', `a:gw_publish|ws:${wsId}`)
-    .text('🖼 Медиа', `a:gw_media_step|ws:${wsId}`)
     .row()
+    .text('🖼 Медиа', `a:gw_media_step|ws:${wsId}`)
     .text('⬅️ Назад', `a:gw_step_deadline|ws:${wsId}`);
 }
 
@@ -667,6 +694,9 @@ function gwMediaKb(wsId, hasMedia = false) {
   const kb = new InlineKeyboard()
     .text('🖼 Фото', `a:gw_media_photo|ws:${wsId}`)
     .text('🎞 GIF', `a:gw_media_gif|ws:${wsId}`)
+    .row()
+    .text('🎥 Видео', `a:gw_media_video|ws:${wsId}`)
+    .text('👁 Превью', `a:gw_preview|ws:${wsId}`)
     .row();
 
   if (hasMedia) {
@@ -690,7 +720,7 @@ async function renderGwConfirm(ctx, wsId, opts = {}) {
   const ends = draft.ends_at ? fmtTs(draft.ends_at) : '—';
 
   const mediaLabel = draft.media_file_id
-    ? (draft.media_type === 'photo' ? '🖼 Фото' : '🎞 GIF')
+    ? (draft.media_type === 'photo' ? '🖼 Фото' : (draft.media_type === 'video' ? '🎥 Видео' : '🎞 GIF'))
     : '—';
 
   const sponsorLines = sponsors.length
@@ -720,12 +750,12 @@ async function renderGwMediaStep(ctx, wsId, opts = {}) {
   const hasMedia = !!draft.media_file_id;
 
   const current = hasMedia
-    ? (draft.media_type === 'photo' ? '🖼 Фото' : '🎞 GIF')
+    ? (draft.media_type === 'photo' ? '🖼 Фото' : (draft.media_type === 'video' ? '🎥 Видео' : '🎞 GIF'))
     : '—';
 
   const text = `🖼 <b>Медиа для поста</b> (необязательно)
 
-Можно прикрепить картинку или GIF — так пост в канале выглядит “живее”.
+Можно прикрепить фото, GIF или видео — так пост в канале выглядит “живее”.
 
 Сейчас: <b>${escapeHtml(current)}</b>
 
@@ -2676,6 +2706,85 @@ async function renderBxMyArchive(ctx, ownerUserId, wsId, page = 0) {
   );
 }
 
+
+function bxMediaLabel(mt) {
+  const t = String(mt || '').toLowerCase();
+  if (t === 'photo') return '🖼 Фото';
+  if (t === 'video') return '🎥 Видео';
+  if (t === 'animation') return '🎞 GIF';
+  return '—';
+}
+
+function bxMediaKb(wsId, offerId, back = 'my', hasMedia = false) {
+  const kb = new InlineKeyboard()
+    .text('🖼 Фото', `a:bx_media_photo|ws:${wsId}|o:${offerId}|back:${back}`)
+    .text('🎞 GIF', `a:bx_media_gif|ws:${wsId}|o:${offerId}|back:${back}`)
+    .row()
+    .text('🎥 Видео', `a:bx_media_video|ws:${wsId}|o:${offerId}|back:${back}`)
+    .text('👁 Превью', `a:bx_media_preview|ws:${wsId}|o:${offerId}|back:${back}`)
+    .row();
+
+  if (hasMedia) {
+    kb.text('🗑 Убрать', `a:bx_media_clear|ws:${wsId}|o:${offerId}|back:${back}`)
+      .text('✅ Готово', `a:bx_view|ws:${wsId}|o:${offerId}|back:${back}`);
+  } else {
+    kb.text('✅ Готово', `a:bx_view|ws:${wsId}|o:${offerId}|back:${back}`);
+  }
+
+  kb.row().text('⬅️ Назад', `a:bx_view|ws:${wsId}|o:${offerId}|back:${back}`);
+  return kb;
+}
+
+async function renderBxMediaStep(ctx, ownerUserId, wsId, offerId, back = 'my', opts = {}) {
+  const { edit = true } = opts;
+  const o = await db.getBarterOfferForOwner(ownerUserId, offerId);
+  if (!o) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+    return;
+  }
+
+  const hasMedia = !!(o.media_file_id && String(o.media_type || '').trim());
+  const text =
+`📎 <b>Медиа оффера #${o.id}</b>
+
+Текущее: <b>${escapeHtml(bxMediaLabel(o.media_type))}</b>
+
+ℹ️ Медиа появится в официальном канале только при <b>PAID-размещении</b>.
+(Внутри “Мои офферы” медиа не показываем — только в официальной публикации.)
+
+Выбери тип и пришли файл одним сообщением.`;
+
+  const kb = bxMediaKb(wsId, offerId, back, hasMedia);
+  const send = (edit && ctx.callbackQuery) ? ctx.editMessageText.bind(ctx) : ctx.reply.bind(ctx);
+  await send(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function sendBxPreview(ctx, ownerUserId, wsId, offerId, back = 'my') {
+  const o = await db.getBarterOfferForOwner(ownerUserId, offerId);
+  if (!o) return ctx.reply('Оффер не найден или нет доступа.');
+
+  const { text } = await buildOfficialOfferPost(o, { forCaption: true });
+  const note = `\n\n<i>Кнопки добавятся при публикации.</i>\n<i>Медиа попадёт в официальный канал только при PAID-размещении.</i>`;
+  const caption = `${text}${note}`;
+
+  try {
+    if (o.media_file_id && String(o.media_type) === 'photo') {
+      await ctx.replyWithPhoto(o.media_file_id, { caption, parse_mode: 'HTML' });
+    } else if (o.media_file_id && String(o.media_type) === 'animation') {
+      await ctx.replyWithAnimation(o.media_file_id, { caption, parse_mode: 'HTML' });
+    } else if (o.media_file_id && String(o.media_type) === 'video') {
+      await ctx.replyWithVideo(o.media_file_id, { caption, parse_mode: 'HTML' });
+    } else {
+      await ctx.reply(`${text}${note}`, { parse_mode: 'HTML', disable_web_page_preview: true });
+    }
+  } catch (_) {
+    await ctx.reply('Не удалось отправить превью. Попробуй ещё раз или убери медиа.');
+  }
+
+  // Return user to offer view
+  await renderBxView(ctx, ownerUserId, wsId, offerId, back);
+}
+
 async function renderBxView(ctx, ownerUserId, wsId, offerId, back = 'feed') {
   const o = await db.getBarterOfferForOwner(ownerUserId, offerId);
   if (!o) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
@@ -2710,6 +2819,7 @@ ${shown.map(x => escapeHtml(x)).join('\n')}${more}`;
 Категория: <b>${escapeHtml(bxCategoryLabel(o.category))}</b>
 Формат: <b>${escapeHtml(bxTypeLabel(o.offer_type))}</b>
 Оплата: <b>${escapeHtml(bxCompLabel(o.compensation_type))}</b>
+Медиа: <b>${escapeHtml(bxMediaLabel(o.media_type))}</b>
 
 <b>${escapeHtml(o.title)}</b>
 
@@ -2722,6 +2832,7 @@ ${contact ? `Контакт: <b>${escapeHtml(contact)}</b>` : ''}`;
     kb.text('⬆️ Поднять', `a:bx_bump|ws:${wsId}|o:${o.id}`).row();
 
     kb.text(partnerBtnLabel, `a:bx_partner_folder_pick|ws:${wsId}|o:${o.id}`).row();
+    kb.text('📎 Медиа', `a:bx_media_step|ws:${wsId}|o:${o.id}|back:${back}`).text('👁 Превью', `a:bx_media_preview|ws:${wsId}|o:${o.id}|back:${back}`).row();
 
     const wsInfo = await db.getWorkspace(ownerUserId, wsId);
     const isPro = await db.isWorkspacePro(wsId);
@@ -2881,14 +2992,16 @@ async function safeOfficialPosts(primaryFn, fallbackFn) {
   }
 }
 
-async function buildOfficialOfferPost(offerRow) {
+async function buildOfficialOfferPost(offerRow, opts = {}) {
+  const forCaption = Boolean(opts.forCaption);
+
   const offerId = Number(offerRow.id);
   const ch = offerRow.channel_username ? `@${offerRow.channel_username}` : (offerRow.ws_title || 'канал');
   const contact = (offerRow.contact || '').trim();
   const link = offerDeepLink(offerId);
 
   const title = escapeHtml(String(offerRow.title || ''));
-  const desc = escapeHtml(truncateText(offerRow.description || '', 900));
+  const desc = escapeHtml(truncateText(offerRow.description || '', forCaption ? 520 : 900));
   const cat = escapeHtml(bxCategoryLabel(offerRow.category));
   const fmt = escapeHtml(bxTypeLabel(offerRow.offer_type));
   const comp = escapeHtml(bxCompLabel(offerRow.compensation_type));
@@ -2934,11 +3047,11 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
   if (String(offer.status || '').toUpperCase() !== 'ACTIVE') throw new Error('Offer is not active');
   if (!offer.network_enabled) throw new Error('Offer is not in network');
 
-  const { text, kb } = await buildOfficialOfferPost(offer);
 
-  const existing = await safeOfficialPosts(() => db.getOfficialPostByOfferId(offerId), async () => null);
-  const keepExpiry = Boolean(opts.keepExpiry);
-  const placementType = String(opts.placementType || (existing?.placement_type || 'MANUAL')).toUpperCase();
+  const hasMedia = placementType === 'PAID' && offer.media_file_id && String(offer.media_type || '').trim();
+  const { text, kb } = await buildOfficialOfferPost(offer, { forCaption: hasMedia });
+
+
 
   // Decide expiry
   const days = Math.max(1, Number(opts.days || existing?.slot_days || CFG.OFFICIAL_MANUAL_DEFAULT_DAYS || 3));
@@ -2947,9 +3060,27 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
     : new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 
   let messageId = null;
-  if (existing && existing.message_id && Number(existing.channel_chat_id) === channelId && String(existing.status || '').toUpperCase() === 'ACTIVE') {
+  const existingActive = existing
+    && existing.message_id
+    && Number(existing.channel_chat_id) === channelId
+    && String(existing.status || '').toUpperCase() === 'ACTIVE';
+
+  if (existingActive) {
     try {
-      await api.editMessageText(channelId, Number(existing.message_id), text, { parse_mode: 'HTML', reply_markup: kb });
+      if (hasMedia) {
+        // Try to update caption first (works if existing post is media)
+        await api.editMessageCaption(channelId, Number(existing.message_id), {
+          caption: text,
+          parse_mode: 'HTML',
+          reply_markup: kb
+        });
+      } else {
+        await api.editMessageText(channelId, Number(existing.message_id), text, {
+          parse_mode: 'HTML',
+          reply_markup: kb,
+          disable_web_page_preview: true
+        });
+      }
       messageId = Number(existing.message_id);
     } catch (_) {
       messageId = null;
@@ -2957,9 +3088,27 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
   }
 
   if (!messageId) {
-    const msg = await api.sendMessage(channelId, text, { parse_mode: 'HTML', reply_markup: kb });
+    let msg;
+    if (hasMedia) {
+      const mt = String(offer.media_type || '').toLowerCase();
+      if (mt === 'photo') {
+        msg = await api.sendPhoto(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
+      } else if (mt === 'video') {
+        msg = await api.sendVideo(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
+      } else {
+        msg = await api.sendAnimation(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
+      }
+    } else {
+      msg = await api.sendMessage(channelId, text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+    }
     messageId = Number(msg.message_id);
+
+    // If we replaced the post type (text <-> media), try to delete the old one to avoid duplicates
+    if (existingActive && existing?.message_id && Number(existing.message_id) !== messageId) {
+      try { await api.deleteMessage(channelId, Number(existing.message_id)); } catch (_) {}
+    }
   }
+
 
   await safeOfficialPosts(
     () => db.setOfficialPostActive(offerId, {
@@ -2987,7 +3136,11 @@ async function removeOfficialOfferPost(api, offerId, reason = 'REMOVED') {
       const text = reason === 'EXPIRED'
         ? '⌛️ Размещение истекло.'
         : '📴 Размещение снято.';
-      await api.editMessageText(channelId, msgId, text, { parse_mode: 'HTML' });
+      try {
+        await api.editMessageText(channelId, msgId, text, { parse_mode: 'HTML' });
+      } catch (_) {
+        try { await api.editMessageCaption(channelId, msgId, { caption: text, parse_mode: 'HTML' }); } catch (_) {}
+      }
     } catch (_) {}
   }
 
@@ -5084,55 +5237,237 @@ ${reason}
       return;
     }
 
+
+    // Barter offer: attach photo to offer (media in official channel for PAID)
+    if (String(exp.type) === 'bx_media_photo') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      const photos = ctx.message.photo || [];
+      const last = photos.length ? photos[photos.length - 1] : null;
+      const fileId = last?.file_id;
+      if (!fileId) {
+        await ctx.reply('Не вижу фото. Пришли картинку как фото (не файл).');
+        return;
+      }
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'photo', media_file_id: fileId });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Картинка прикреплена. Продолжаем:', {
+        reply_markup: bxMediaKb(wsId, offerId, back, true)
+      });
+      return;
+    }
+
     return next();
   });
 
   // Giveaway media (GIF/animation)
   bot.on('message:animation', async (ctx, next) => {
     const exp = await getExpectText(ctx.from.id);
-    if (!exp || String(exp.type) !== 'gw_media_gif') return next();
+    if (!exp) return next();
 
-    const wsId = Number(exp.wsId);
     const fileId = ctx.message.animation?.file_id;
     if (!fileId) {
       await ctx.reply('Не вижу GIF/анимацию. Пришли GIF одним сообщением.');
       return;
     }
 
-    const draft = (await getDraft(ctx.from.id)) || { wsId };
-    draft.media_type = 'animation';
-    draft.media_file_id = fileId;
-    await setDraft(ctx.from.id, draft);
-    await clearExpectText(ctx.from.id);
+    // Giveaway: GIF
+    if (String(exp.type) === 'gw_media_gif') {
+      const wsId = Number(exp.wsId);
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'animation';
+      draft.media_file_id = fileId;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
 
-    await ctx.reply('✅ GIF прикреплён. Продолжаем:', {
-      reply_markup: gwMediaKb(wsId, true)
-    });
-  });
-
-  bot.on('message:document', async (ctx, next) => {
-    const exp = await getExpectText(ctx.from.id);
-    if (!exp || String(exp.type) !== 'gw_media_gif') return next();
-
-    const wsId = Number(exp.wsId);
-    const doc = ctx.message.document;
-    const mime = doc?.mime_type || '';
-
-    // Some clients send GIF as document
-    if (!doc?.file_id || (mime && mime !== 'image/gif')) {
-      await ctx.reply('Похоже, это не GIF. Пришли GIF как “анимацию” (или файл .gif).');
+      await ctx.reply('✅ GIF прикреплён. Продолжаем:', { reply_markup: gwMediaKb(wsId, true) });
       return;
     }
 
-    const draft = (await getDraft(ctx.from.id)) || { wsId };
-    draft.media_type = 'animation';
-    draft.media_file_id = doc.file_id;
-    await setDraft(ctx.from.id, draft);
-    await clearExpectText(ctx.from.id);
+    // Barter offer: GIF
+    if (String(exp.type) === 'bx_media_gif') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
 
-    await ctx.reply('✅ GIF прикреплён. Продолжаем:', {
-      reply_markup: gwMediaKb(wsId, true)
-    });
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'animation', media_file_id: fileId });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ GIF прикреплён. Продолжаем:', { reply_markup: bxMediaKb(wsId, offerId, back, true) });
+      return;
+    }
+
+    return next();
+  });
+
+  bot.on('message:video', async (ctx, next) => {
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp) return next();
+
+    // Giveaway: attach video to draft
+    if (String(exp.type) === 'gw_media_video') {
+      const wsId = Number(exp.wsId);
+      const fileId = ctx.message.video?.file_id;
+      if (!fileId) {
+        await ctx.reply('Не вижу видео. Пришли видео одним сообщением.');
+        return;
+      }
+
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'video';
+      draft.media_file_id = fileId;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Видео прикреплено. Продолжаем:', { reply_markup: gwMediaKb(wsId, true) });
+      return;
+    }
+
+    // Barter offer: attach video to offer (media in official channel for PAID)
+    if (String(exp.type) === 'bx_media_video') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      const fileId = ctx.message.video?.file_id;
+      if (!fileId) {
+        await ctx.reply('Не вижу видео. Пришли видео одним сообщением.');
+        return;
+      }
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'video', media_file_id: fileId });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Видео прикреплено. Продолжаем:', {
+        reply_markup: bxMediaKb(wsId, offerId, back, true)
+      });
+      return;
+    }
+
+    return next();
+  });
+
+
+  bot.on('message:document', async (ctx, next) => {
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp) return next();
+
+    const doc = ctx.message.document;
+    const mime = doc?.mime_type || '';
+
+    // Giveaway: GIF as document
+    if (String(exp.type) === 'gw_media_gif') {
+      const wsId = Number(exp.wsId);
+
+      if (!doc?.file_id || (mime && mime !== 'image/gif')) {
+        await ctx.reply('Похоже, это не GIF. Пришли GIF как “анимацию” (или файл .gif).');
+        return;
+      }
+
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'animation';
+      draft.media_file_id = doc.file_id;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ GIF прикреплён. Продолжаем:', { reply_markup: gwMediaKb(wsId, true) });
+      return;
+    }
+
+    // Giveaway: video can come as document
+    if (String(exp.type) === 'gw_media_video') {
+      const wsId = Number(exp.wsId);
+      if (!doc?.file_id || (mime && !String(mime).startsWith('video/'))) {
+        await ctx.reply('Похоже, это не видео. Пришли mp4 как “видео” или как файл.');
+        return;
+      }
+
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'video';
+      draft.media_file_id = doc.file_id;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Видео прикреплено. Продолжаем:', { reply_markup: gwMediaKb(wsId, true) });
+      return;
+    }
+
+    // Barter offer: GIF as document
+    if (String(exp.type) === 'bx_media_gif') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      if (!doc?.file_id || (mime && mime !== 'image/gif')) {
+        await ctx.reply('Похоже, это не GIF. Пришли GIF как “анимацию” (или файл .gif).');
+        return;
+      }
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'animation', media_file_id: doc.file_id });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ GIF прикреплён. Продолжаем:', { reply_markup: bxMediaKb(wsId, offerId, back, true) });
+      return;
+    }
+
+    // Barter offer: video can come as document
+    if (String(exp.type) === 'bx_media_video') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      if (!doc?.file_id || (mime && !String(mime).startsWith('video/'))) {
+        await ctx.reply('Похоже, это не видео. Пришли mp4 как “видео” или как файл.');
+        return;
+      }
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'video', media_file_id: doc.file_id });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Видео прикреплено. Продолжаем:', { reply_markup: bxMediaKb(wsId, offerId, back, true) });
+      return;
+    }
+
+    return next();
   });
 
   // --- Commands ---
@@ -5221,6 +5556,8 @@ if (payload?.type === 'bxo') {
       return;
     }
     await ctx.reply(`🏠 <b>Главное меню</b>\n\nЗдесь ты можешь:\n• 🚀 подключить канал (workspace)\n• 🎁 создавать и публиковать конкурсы в канал\n• 🤝 бартер‑биржа и заявки\n• 🏷 Brand Mode для брендов (Brand Pass = анти‑спам)\n\nВыбери действие:`, { parse_mode: 'HTML', reply_markup: mainMenuKb(flags) });
+    await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
+
   });
 
   bot.command('whoami', async (ctx) => {
@@ -5547,11 +5884,54 @@ bot.on('message:successful_payment', async (ctx) => {
 • 🏷 Brand Mode для брендов (Brand Pass = анти‑спам)
 
 Выбери действие:`, { parse_mode: 'HTML', reply_markup: mainMenuKb(flags) });
+      await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
       return;
     }
 
     
-    // Public profile (vitrina)
+    
+    if (p.a === 'a:guide') {
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+
+      const text =
+`🧭 <b>Гайд</b>
+
+1) 🚀 Подключи канал (workspace)
+2) Заполни профиль и выбери нишу/форматы
+3) 🎁 Создай конкурс или 🤝 оффер
+4) Опубликуй / получай заявки
+5) В Brand Mode бренды проходят через Brand Pass (анти-спам)
+
+Выбери раздел:`;
+
+      const kb = new InlineKeyboard()
+        .text('🚀 Подключить канал', 'a:setup')
+        .text('📣 Мои каналы', 'a:ws_list')
+        .row()
+        .text('🎁 Мои конкурсы', 'a:gw_list')
+        .text('🤝 Бартер-биржа', 'a:bx_home')
+        .row()
+        .text('⬅️ Меню', 'a:menu');
+
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+      await maybeSendBanner(ctx, 'guide', CFG.GUIDE_BANNER_FILE_ID);
+      return;
+    }
+
+    if (p.a === 'a:support') {
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+
+      const text = String(CFG.PAY_SUPPORT_TEXT || '').trim() ||
+        `💬 <b>Support</b>\n\nНапиши сюда: @collabka_support`;
+
+      const kb = new InlineKeyboard().text('⬅️ Меню', 'a:menu');
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+// Public profile (vitrina)
     if (p.a === 'a:wsp_open') {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws || 0);
@@ -7126,6 +7506,79 @@ if (p.a === 'a:bx_cat') {
       return;
     }
 
+
+    if (p.a === 'a:bx_media_step') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      await renderBxMediaStep(ctx, u.id, wsId, offerId, back, { edit: true });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_clear') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+
+      const o = await db.getBarterOfferForOwner(u.id, offerId);
+      if (!o) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      await db.updateBarterOffer(offerId, { media_type: null, media_file_id: null });
+      await ctx.answerCallbackQuery({ text: 'Убрано' });
+      await renderBxMediaStep(ctx, u.id, wsId, offerId, back, { edit: true });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_photo') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'bx_media_photo', wsId, offerId, back });
+
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:bx_media_step|ws:${wsId}|o:${offerId}|back:${back}`);
+      await ctx.editMessageText('🖼 Пришли <b>картинку</b> одним сообщением.', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_gif') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'bx_media_gif', wsId, offerId, back });
+
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:bx_media_step|ws:${wsId}|o:${offerId}|back:${back}`);
+      await ctx.editMessageText('🎞 Пришли <b>GIF</b> (анимацию) одним сообщением.\n\n(Можно отправить как анимацию или как файл .gif)', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_video') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'bx_media_video', wsId, offerId, back });
+
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:bx_media_step|ws:${wsId}|o:${offerId}|back:${back}`);
+      await ctx.editMessageText('🎥 Пришли <b>видео</b> одним сообщением.\n\n(Поддержка: mp4. Можно отправить как видео или как файл.)', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_preview') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      await sendBxPreview(ctx, u.id, wsId, offerId, back);
+      return;
+    }
+
     if (p.a === 'a:bx_pause') {
       const wsId = Number(p.ws);
       const offerId = Number(p.o);
@@ -8176,6 +8629,58 @@ if (p.a === 'a:gw_prize') {
       });
       return;
     }
+    if (p.a === 'a:gw_media_video') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'gw_media_video', wsId });
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:gw_media_step|ws:${wsId}`);
+      await ctx.editMessageText(`🎥 Пришли <b>видео</b> одним сообщением.\n\n(Поддержка: mp4. Можно отправить как видео или как файл.)`, {
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
+      return;
+    }
+
+    if (p.a === 'a:gw_preview') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+
+      const prize = (draft.prize_value_text || '').trim() || '—';
+      const winners = Number(draft.winners_count || 0) || 1;
+      const ends = draft.ends_at ? fmtTs(draft.ends_at) : '—';
+
+      const text =
+`🎀 <b>РОЗЫГРЫШ</b>
+
+🎁 Приз: <b>${escapeHtml(prize)}</b>
+🏆 Мест: <b>${winners}</b>
+⏳ Итоги: <b>${escapeHtml(String(ends))}</b>
+
+✅ Нажми “Участвовать”, затем “Проверить” в боте.
+
+<i>Кнопки добавятся при публикации.</i>`;
+
+      try {
+        if (draft.media_file_id && String(draft.media_type) === 'photo') {
+          await ctx.replyWithPhoto(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+        } else if (draft.media_file_id && String(draft.media_type) === 'animation') {
+          await ctx.replyWithAnimation(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+        } else if (draft.media_file_id && String(draft.media_type) === 'video') {
+          await ctx.replyWithVideo(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true });
+        }
+      } catch (_) {
+        await ctx.reply('Не удалось отправить превью. Попробуй ещё раз или убери медиа.');
+      }
+
+      // Keep user in confirm screen
+      await renderGwConfirm(ctx, wsId, { edit: true });
+      return;
+    }
+
+
 
     if (p.a === 'a:gw_publish') {
       const wsId = Number(p.ws);
@@ -8225,6 +8730,12 @@ if (p.a === 'a:gw_prize') {
           });
         } else if (draft.media_file_id && String(draft.media_type) === 'animation') {
           sent = await ctx.api.sendAnimation(ws.channel_id, draft.media_file_id, {
+            caption: text,
+            parse_mode: 'HTML',
+            reply_markup: kb
+          });
+        } else if (draft.media_file_id && String(draft.media_type) === 'video') {
+          sent = await ctx.api.sendVideo(ws.channel_id, draft.media_file_id, {
             caption: text,
             parse_mode: 'HTML',
             reply_markup: kb
