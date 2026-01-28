@@ -1045,7 +1045,7 @@ export async function updateBarterOffer(offerId, patch) {
   const vals = [];
   let idx = 1;
 
-  const allowed = ['status', 'title', 'description', 'contact', 'bump_at', 'partner_folder_id'];
+  const allowed = ['status', 'title', 'description', 'contact', 'bump_at', 'partner_folder_id', 'media_type', 'media_file_id'];
   for (const k2 of allowed) {
     if (patch[k2] === undefined) continue;
     fields.push(`${k2}=$${idx++}`);
