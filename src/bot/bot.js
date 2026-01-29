@@ -10285,3 +10285,4 @@ ${escapeHtml(v.submitted_text || '—')}`;
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
 }
+ 
