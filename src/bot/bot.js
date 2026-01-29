@@ -71,6 +71,29 @@ const SYS_KEYS = {
   pay_auto_apply: k(['sys', 'pay_auto_apply'])
 };
 
+
+// UI banners (optional): send banner image no more than once per N hours per slot per user
+async function maybeSendBanner(ctx, slot, fileId) {
+  try {
+    const fid = String(fileId || '').trim();
+    if (!fid) return;
+    const uid = ctx?.from?.id ? Number(ctx.from.id) : 0;
+    if (!uid) return;
+
+    const hours = Number(CFG.BANNER_COOLDOWN_HOURS || 24);
+    const ttlSec = (Number.isFinite(hours) && hours > 0 ? hours : 24) * 3600;
+
+    const key = k(['ui_banner', slot || 'default', uid]);
+    const seen = await redis.get(key);
+    if (seen) return;
+
+    await redis.set(key, '1', { ex: ttlSec });
+    await ctx.replyWithPhoto(fid);
+  } catch (_) {
+    // ignore banner failures
+  }
+}
+
 async function getSysBool(key, defaultValue = false) {
   try {
     const v = await redis.get(key);
@@ -224,25 +247,55 @@ async function safeUserVerifications(primaryFn, fallbackFn) {
 }
 
 
+
+async function safeBrandProfiles(primaryFn, fallbackFn) {
+  try {
+    return await primaryFn();
+  } catch (e) {
+    if (isMissingRelationError(e, 'brand_profiles')) {
+      return await fallbackFn();
+    }
+    throw e;
+  }
+}
+
+
 function mainMenuKb(flags = {}) {
   const { isModerator = false, isAdmin = false, isFolderEditor = false } = flags;
+
   const kb = new InlineKeyboard()
     .text('🚀 Подключить канал', 'a:setup')
-    .row()
     .text('📣 Мои каналы', 'a:ws_list')
-    .row();
-  if (isFolderEditor) kb.text('📁 Папки', 'a:folders_my').row();
-  kb
+    .row()
     .text('🎁 Мои конкурсы', 'a:gw_list')
-    .row()
     .text('🤝 Бартер-биржа', 'a:bx_home')
-    .row()
-    .text('🏷 Brand Mode', 'a:bx_open|ws:0');
-  if (CFG.VERIFICATION_ENABLED) kb.row().text('✅ Верификация', 'a:verify_home');
-  if (isModerator) kb.row().text('🛡 Модерация', 'a:mod_home');
-  if (isAdmin) kb.row().text('👑 Админка', 'a:admin_home');
+    .row();
+
+  if (isFolderEditor) {
+    kb.text('📁 Папки', 'a:folders_my').text('🏷 Brand Mode', 'a:bx_open|ws:0').row();
+  } else {
+    kb.text('🏷 Brand Mode', 'a:bx_open|ws:0').row();
+  }
+
+  kb.text('🧭 Гайд', 'a:guide').text('💬 Support', 'a:support').row();
+  kb.text('🔄 Обновить', 'a:menu').row();
+
+  const extra = [];
+  if (CFG.VERIFICATION_ENABLED) extra.push(['✅ Верификация', 'a:verify_home']);
+  if (isModerator) extra.push(['🛡 Модерация', 'a:mod_home']);
+  if (isAdmin) extra.push(['👑 Админка', 'a:admin_home']);
+
+  for (let i = 0; i < extra.length; i += 2) {
+    const a = extra[i];
+    const b = extra[i + 1];
+    kb.text(a[0], a[1]);
+    if (b) kb.text(b[0], b[1]);
+    kb.row();
+  }
+
   return kb;
 }
+
 
 function onboardingKb(flags = {}) {
   const { isModerator = false, isAdmin = false } = flags;
@@ -271,22 +324,20 @@ async function getActiveWorkspace(tgId) {
 function wsMenuKb(wsId) {
   return new InlineKeyboard()
     .text('➕ Новый конкурс', `a:gw_new|ws:${wsId}`)
-    .row()
-    .text('🎁 Конкурсы канала', `a:gw_list_ws|ws:${wsId}`)
+    .text('🎁 Конкурсы', `a:gw_list_ws|ws:${wsId}`)
     .row()
     .text('🤝 Бартер-биржа', `a:bx_open|ws:${wsId}`)
-    .row()
     .text('📁 Папки', `a:folders_home|ws:${wsId}`)
     .row()
     .text('👤 Профиль', `a:ws_profile|ws:${wsId}`)
     .text('⭐️ PRO', `a:ws_pro|ws:${wsId}`)
     .row()
     .text('⚙️ Настройки', `a:ws_settings|ws:${wsId}`)
-    .row()
     .text('🧾 История', `a:ws_history|ws:${wsId}`)
     .row()
     .text('⬅️ Назад', 'a:ws_list');
 }
+
 
 function wsSettingsKb(wsId, s) {
   const net = s.network_enabled ? '✅ Сеть: ВКЛ' : '🌐 Сеть: ВЫКЛ';
@@ -325,11 +376,9 @@ function bxMenuKb(wsId) {
     .text('🎛 Фильтры', `a:bx_filters|ws:${wsId}`)
     .row()
     .text('📨 Inbox', `a:bx_inbox|ws:${wsId}|p:0`)
-    .row()
-    .text('➕ Разместить оффер', `a:bx_new|ws:${wsId}`)
-    .row()
     .text('📦 Мои офферы', `a:bx_my|ws:${wsId}|p:0`)
     .row()
+    .text('➕ Разместить оффер', `a:bx_new|ws:${wsId}`)
     .text('🏷 Brand Mode', 'a:bx_open|ws:0');
 
   if (CFG.VERIFICATION_ENABLED) kb.row().text('✅ Верификация', 'a:verify_home');
@@ -339,6 +388,7 @@ function bxMenuKb(wsId) {
 }
 
 
+
 function bxBrandMenuKb(wsId, credits, plan, retry = 0) {
   const planLabel = plan?.active ? (plan.name === 'max' ? 'Max ✅' : 'Basic ✅') : 'OFF';
   const kb = new InlineKeyboard()
@@ -346,12 +396,14 @@ function bxBrandMenuKb(wsId, credits, plan, retry = 0) {
     .text('🎛 Фильтры', `a:bx_filters|ws:${wsId}`)
     .row()
     .text('📨 Inbox', `a:bx_inbox|ws:${wsId}|p:0`)
-    .row()
     .text(`🎫 Brand Pass: ${credits}${retry ? ' · 🎟' + retry : ''}`, `a:brand_pass|ws:${wsId}`)
     .row()
-    .text(`⭐️ Brand Plan: ${planLabel}`, `a:brand_plan|ws:${wsId}`)
+    .text('🏷 Профиль бренда', `a:brand_profile|ws:${wsId}|ret:brand`)
     .row()
-    .text('🎯 Smart Matching', `a:match_home|ws:${wsId}`)
+    .text(`⭐️ Plan: ${planLabel}`, `a:brand_plan|ws:${wsId}`)
+    .text('🧭 Матчинг', `a:pm_home|ws:${wsId}`)
+    .row()
+    .text('🎯 Smart', `a:match_home|ws:${wsId}`)
     .text('🔥 Featured', `a:feat_home|ws:${wsId}`);
 
   if (CFG.VERIFICATION_ENABLED) kb.row().text('✅ Верификация', 'a:verify_home');
@@ -359,6 +411,243 @@ function bxBrandMenuKb(wsId, credits, plan, retry = 0) {
   kb.row().text('⬅️ Назад', 'a:menu');
   return kb;
 }
+
+
+
+function isBrandBasicComplete(p) {
+  if (!p) return false;
+  return !!(String(p.brand_name || '').trim() && String(p.brand_link || '').trim() && String(p.contact || '').trim());
+}
+
+function isBrandExtendedComplete(p) {
+  if (!p) return false;
+  return isBrandBasicComplete(p) && !!(String(p.niche || '').trim() && String(p.geo || '').trim() && String(p.collab_types || '').trim());
+}
+
+function brandCbSuffix(params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand'); // brand | offer | lead | verify
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+  let s = `|ws:${wsId}|ret:${ret}`;
+  if (bo) s += `|bo:${bo}|bp:${bp}`;
+  return s;
+}
+
+function brandBackCb(params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand');
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+  if (ret === 'offer' && bo) return `a:bx_pub|ws:${wsId}|o:${bo}|p:${bp}`;
+  if (ret === 'lead' && wsId) return `a:wsp_open|ws:${wsId}`;
+  if (ret === 'verify') return 'a:verify_home';
+  return `a:bx_open|ws:${wsId}`;
+}
+
+function brandFieldPrompt(field) {
+  const f = String(field || '');
+  if (f === 'brand_name') return `🏷 <b>Название бренда</b>
+
+Напиши название (как хочешь, чтобы видели креаторы).
+
+<i>Пример:</i> “Luna Beauty”`;
+  if (f === 'brand_link') return `🔗 <b>Ссылка на бренд</b>
+
+Пришли ссылку на сайт / IG / TG / X.
+Можно @username или t.me/...
+
+<i>Пример:</i> https://instagram.com/lunabeauty`;
+  if (f === 'contact') return `☎️ <b>Контакт для связи</b>
+
+Как креатору написать тебе быстро:
+@username / email / TG.
+
+<i>Пример:</i> @luna_manager`;
+  if (f === 'niche') return `🎯 <b>Ниша</b>
+
+Что продаёте / чем занимаетесь.
+
+<i>Пример:</i> косметика, уход за кожей, salon, fashion`;
+  if (f === 'geo') return `🌍 <b>Гео</b>
+
+Города/страны, где актуально сотрудничество.
+
+<i>Пример:</i> Алматы / Казахстан / СНГ`;
+  if (f === 'collab_types') return `🧩 <b>Форматы сотрудничества</b>
+
+Напиши через запятую.
+
+<i>Пример:</i> сторис, reels, обзор, бартер, UGC`;
+  if (f === 'budget') return `💰 <b>Бюджет</b>
+
+Диапазон или “по договорённости”.
+
+<i>Пример:</i> $100–300 / бартер + доплата`;
+  if (f === 'goals') return `🎬 <b>Цели</b>
+
+Что хотите получить от коллаборации.
+
+<i>Пример:</i> продажи, охваты, UGC-контент`;
+  if (f === 'requirements') return `📎 <b>Требования</b>
+
+Коротко: что важно (качество, сроки, тематика).
+
+<i>Пример:</i> 1 reels + 3 stories, дедлайн 7 дней`;
+  return `✏️ <b>Профиль бренда</b>
+
+Напиши значение:`;
+}
+
+function brandFieldPromptKb(params = {}) {
+  const suf = brandCbSuffix(params);
+  const kb = new InlineKeyboard()
+    .text('⬅️ Назад', `a:brand_profile${suf}`);
+  return kb;
+}
+
+async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+
+  if (!prof && CFG.BRAND_PROFILE_REQUIRED) {
+    // If migration missing — show a gentle hint
+    // (prof may also be null on first use; we handle both)
+  }
+
+  const p = prof || {};
+  const basic = [
+    { key: 'brand_name', label: 'Название' },
+    { key: 'brand_link', label: 'Ссылка' },
+    { key: 'contact', label: 'Контакт' }
+  ];
+  const ext = [
+    { key: 'niche', label: 'Ниша' },
+    { key: 'geo', label: 'Гео' },
+    { key: 'collab_types', label: 'Форматы' },
+    { key: 'budget', label: 'Бюджет' },
+    { key: 'goals', label: 'Цели' },
+    { key: 'requirements', label: 'Требования' }
+  ];
+
+  const basicDone = basic.filter(x => String(p[x.key] || '').trim()).length;
+  const extDone = ext.filter(x => String(p[x.key] || '').trim()).length;
+
+  const missingBasic = basic.filter(x => !String(p[x.key] || '').trim()).map(x => x.label);
+  const needBasic = missingBasic.length > 0;
+
+  const gateLine = needBasic && (params.ret === 'offer' || params.ret === 'lead')
+    ? `
+
+⚠️ ${params.ret === 'lead' ? 'Чтобы оставить заявку, заполни 3 поля' : 'Чтобы писать креаторам, заполни 3 поля'}: <b>${escapeHtml(missingBasic.join(', '))}</b>.`
+    : (needBasic ? `
+
+⚠️ Заполни 3 базовых поля, чтобы писать креаторам.` : '');
+
+  const verifyLine = (CFG.VERIFICATION_ENABLED && CFG.BRAND_VERIFY_REQUIRES_EXTENDED)
+    ? `
+
+Для <b>Brand-верификации</b> рекомендовано заполнить: нишу, гео и форматы.`
+    : '';
+
+  const txt =
+    `🏷 <b>Профиль бренда</b>
+
+` +
+    `<b>База</b> (${basicDone}/3):
+` +
+    `• Название: <b>${escapeHtml(p.brand_name || '—')}</b>
+` +
+    `• Ссылка: <b>${escapeHtml(p.brand_link || '—')}</b>
+` +
+    `• Контакт: <b>${escapeHtml(p.contact || '—')}</b>
+
+` +
+    `<b>Расширенный</b> (${extDone}/6):
+` +
+    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
+` +
+    `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
+` +
+    `• Форматы: <b>${escapeHtml(p.collab_types || '—')}</b>
+` +
+    `• Бюджет: <b>${escapeHtml(p.budget || '—')}</b>
+` +
+    `• Цели: <b>${escapeHtml(p.goals || '—')}</b>
+` +
+    `• Требования: <b>${escapeHtml(p.requirements || '—')}</b>` +
+    gateLine +
+    verifyLine;
+
+  const suf = brandCbSuffix(params);
+
+  const kb = new InlineKeyboard()
+    .text('✏️ Название', `a:brand_prof_set${suf}|f:bn`)
+    .text('🔗 Ссылка', `a:brand_prof_set${suf}|f:bl`)
+    .row()
+    .text('☎️ Контакт', `a:brand_prof_set${suf}|f:ct`)
+    .text('➕ Расширить', `a:brand_prof_more${suf}`)
+    .row();
+
+  if (CFG.VERIFICATION_ENABLED) kb.text('✅ Верификация', 'a:verify_home').row();
+
+  if (params.ret === 'lead' && isBrandBasicComplete(p)) {
+    kb.text('✅ Продолжить → Заявка', `a:brand_continue${suf}`).row();
+  }
+
+  kb.text('⬅️ Назад', brandBackCb(params));
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (params.edit && ctx.callbackQuery?.message) {
+    await ctx.editMessageText(txt, opts);
+  } else {
+    await ctx.reply(txt, opts);
+  }
+}
+
+async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+  const p = prof || {};
+  const txt =
+    `➕ <b>Расширенный профиль бренда</b>
+
+` +
+    `Заполни детали — это повышает доверие и нужно для Brand-верификации.
+
+` +
+    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
+` +
+    `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
+` +
+    `• Форматы: <b>${escapeHtml(p.collab_types || '—')}</b>
+` +
+    `• Бюджет: <b>${escapeHtml(p.budget || '—')}</b>
+` +
+    `• Цели: <b>${escapeHtml(p.goals || '—')}</b>
+` +
+    `• Требования: <b>${escapeHtml(p.requirements || '—')}</b>`;
+
+  const suf = brandCbSuffix(params);
+  const kb = new InlineKeyboard()
+    .text('🎯 Ниша', `a:brand_prof_set${suf}|f:ni`)
+    .text('🌍 Гео', `a:brand_prof_set${suf}|f:ge`)
+    .row()
+    .text('🧩 Форматы', `a:brand_prof_set${suf}|f:ty`)
+    .row()
+    .text('💰 Бюджет', `a:brand_prof_set${suf}|f:bu`)
+    .text('🎬 Цели', `a:brand_prof_set${suf}|f:go`)
+    .row()
+    .text('📎 Требования', `a:brand_prof_set${suf}|f:rq`)
+    .row()
+    .text('⬅️ Назад', `a:brand_profile${suf}`);
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (params.edit && ctx.callbackQuery?.message) {
+    await ctx.editMessageText(txt, opts);
+  } else {
+    await ctx.reply(txt, opts);
+  }
+}
+
 
 function bxNeedNetworkKb(wsId) {
   return new InlineKeyboard()
@@ -645,10 +934,89 @@ function gwSponsorsReviewKb(wsId) {
 
 function gwConfirmKb(wsId) {
   return new InlineKeyboard()
+    .text('👁 Превью', `a:gw_preview|ws:${wsId}`)
     .text('📣 Опубликовать', `a:gw_publish|ws:${wsId}`)
     .row()
+    .text('🖼 Медиа', `a:gw_media_step|ws:${wsId}`)
     .text('⬅️ Назад', `a:gw_step_deadline|ws:${wsId}`);
 }
+
+function gwMediaKb(wsId, hasMedia = false) {
+  const kb = new InlineKeyboard()
+    .text('🖼 Фото', `a:gw_media_photo|ws:${wsId}`)
+    .text('🎞 GIF', `a:gw_media_gif|ws:${wsId}`)
+    .row()
+    .text('🎥 Видео', `a:gw_media_video|ws:${wsId}`)
+    .text('👁 Превью', `a:gw_preview|ws:${wsId}`)
+    .row();
+
+  if (hasMedia) {
+    kb.text('🗑 Убрать', `a:gw_media_clear|ws:${wsId}`)
+      .text('✅ Дальше', `a:gw_media_skip|ws:${wsId}`);
+  } else {
+    kb.text('⏭ Пропустить', `a:gw_media_skip|ws:${wsId}`);
+  }
+
+  kb.row().text('⬅️ Назад', `a:gw_step_deadline|ws:${wsId}`);
+  return kb;
+}
+
+async function renderGwConfirm(ctx, wsId, opts = {}) {
+  const { edit = true } = opts;
+  const draft = (await getDraft(ctx.from.id)) || {};
+
+  const prize = (draft.prize_value_text || '').trim() || '—';
+  const winners = Number(draft.winners_count || 0) || 1;
+  const sponsors = Array.isArray(draft.sponsors) ? draft.sponsors : [];
+  const ends = draft.ends_at ? fmtTs(draft.ends_at) : '—';
+
+  const mediaLabel = draft.media_file_id
+    ? (draft.media_type === 'photo' ? '🖼 Фото' : (draft.media_type === 'video' ? '🎥 Видео' : '🎞 GIF'))
+    : '—';
+
+  const sponsorLines = sponsors.length
+    ? sponsors.map(x => `• ${escapeHtml(String(x))}`).join('\n')
+    : '—';
+
+  const text = `✅ <b>Черновик конкурса</b>
+
+🎁 Приз: <b>${escapeHtml(prize)}</b>
+🏆 Мест: <b>${winners}</b>
+⏳ Итоги: <b>${escapeHtml(String(ends))}</b>
+🖼 Медиа: <b>${escapeHtml(mediaLabel)}</b>
+
+Спонсоры:
+${sponsorLines}
+
+Если всё ок — жми “📣 Опубликовать”.`;
+
+  const extra = { parse_mode: 'HTML', reply_markup: gwConfirmKb(wsId) };
+  if (edit) return ctx.editMessageText(text, extra);
+  return ctx.reply(text, extra);
+}
+
+async function renderGwMediaStep(ctx, wsId, opts = {}) {
+  const { edit = true } = opts;
+  const draft = (await getDraft(ctx.from.id)) || {};
+  const hasMedia = !!draft.media_file_id;
+
+  const current = hasMedia
+    ? (draft.media_type === 'photo' ? '🖼 Фото' : (draft.media_type === 'video' ? '🎥 Видео' : '🎞 GIF'))
+    : '—';
+
+  const text = `🖼 <b>Медиа для поста</b> (необязательно)
+
+Можно прикрепить фото, GIF или видео — так пост в канале выглядит “живее”.
+
+Сейчас: <b>${escapeHtml(current)}</b>
+
+Выбери действие:`;
+
+  const extra = { parse_mode: 'HTML', reply_markup: gwMediaKb(wsId, hasMedia) };
+  if (edit) return ctx.editMessageText(text, extra);
+  return ctx.reply(text, extra);
+}
+
 
 function gwOpenKb(g, flags = {}) {
   const { isAdmin = false } = flags;
@@ -751,10 +1119,18 @@ async function renderWsList(ctx, ownerUserId) {
     const label = w.channel_username ? `@${w.channel_username}` : w.title;
     kb.text(label, `a:ws_open|ws:${w.id}`).row();
   }
-  kb.text('⬅️ В меню', 'a:menu');
+  kb.text('🚀 Подключить ещё', 'a:setup').text('⬅️ В меню', 'a:menu');
   await ctx.editMessageText(`📣 <b>Мои каналы</b>
 
-Выбери канал:`, { parse_mode: 'HTML', reply_markup: kb });
+Это каналы, которые ты подключил к боту (workspace).
+
+Выбери канал — дальше можно:
+• ➕ создать новый конкурс
+• 🎁 смотреть активные/прошлые конкурсы
+• 🤝 бартер‑биржа и Inbox
+• 👤 профиль/витрина и настройки
+
+💡 Хочешь добавить ещё канал — жми «🚀 Подключить ещё».`, { parse_mode: 'HTML', reply_markup: kb });
 }
 
 async function renderWsOpen(ctx, ownerUserId, wsId) {
@@ -836,6 +1212,176 @@ const PROFILE_MODE_LABELS = {
   both: 'Оба (канал + UGC)'
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// №4 Матчинг профилей (каталог витрин по нишам/форматам) — минимальный UX
+// Brand → выбирает фильтры → получает список → открывает витрину → оставляет заявку
+// ─────────────────────────────────────────────────────────────────────────────
+const PM_LIMITS = { verticals: 3, formats: 5 };
+const PM_PAGE_SIZE = 5;
+
+function pmStateKey(tgId, wsId) {
+  return k(['pm_state', tgId, Number(wsId || 0)]);
+}
+
+async function pmGetState(tgId, wsId) {
+  const raw = await redis.get(pmStateKey(tgId, wsId));
+  const s = raw && typeof raw === 'object' ? raw : {};
+  return {
+    v: Array.isArray(s.v) ? s.v.filter(Boolean) : [],
+    f: Array.isArray(s.f) ? s.f.filter(Boolean) : []
+  };
+}
+
+async function pmSetState(tgId, wsId, state) {
+  await redis.set(pmStateKey(tgId, wsId), state, { ex: 60 * 60 }); // 1 час
+}
+
+async function pmResetState(tgId, wsId) {
+  await redis.del(pmStateKey(tgId, wsId));
+}
+
+function pmHumanList(keys, dict) {
+  if (!Array.isArray(keys) || !keys.length) return '—';
+  const map = new Map(dict.map(d => [d.key, d.title]));
+  return keys.map(k => map.get(k) || k).join(', ');
+}
+
+function contactUrlFromRaw(contactRaw) {
+  const c = contactRaw ? String(contactRaw).trim() : '';
+  if (!c) return null;
+  const tg = wsTgUrlFromContact(c);
+  if (tg) return tg;
+  if (/^https?:\/\//i.test(c)) return c;
+  if (/^t\.me\//i.test(c)) return 'https://' + c;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c)) return 'mailto:' + c;
+  return null;
+}
+
+async function pmAssertAccess(ctx, ownerUserId, wsId) {
+  const wsNum = Number(wsId || 0);
+  if (wsNum === 0) return true;
+  const ws = await db.getWorkspace(ownerUserId, wsNum);
+  if (!ws) {
+    await ctx.answerCallbackQuery({ text: 'Нет доступа к этому workspace.', show_alert: true });
+    return false;
+  }
+  return true;
+}
+
+async function renderProfileMatchingHome(ctx, ownerUserId, wsId) {
+  if (!(await pmAssertAccess(ctx, ownerUserId, wsId))) return;
+
+  const st = await pmGetState(ctx.from.id, wsId);
+
+  const text =
+    `🧭 <b>Матчинг профилей</b>\n\n` +
+    `Выбираешь ниши и форматы — бот показывает релевантные витрины.\n\n` +
+    `🏷 Ниши: <b>${escapeHtml(pmHumanList(st.v, PROFILE_VERTICALS))}</b>\n` +
+    `🎬 Форматы: <b>${escapeHtml(pmHumanList(st.f, PROFILE_FORMATS))}</b>\n\n` +
+    `Нажми «🔎 Найти», чтобы открыть список.\n` +
+    `Подсказка: 1–2 ниши + 2–3 формата обычно дают лучший результат.`;
+
+  const kb = new InlineKeyboard()
+    .text(`🏷 Ниши (${st.v.length}/${PM_LIMITS.verticals})`, `a:pm_pick|ws:${wsId}|t:v`)
+    .text(`🎬 Форматы (${st.f.length}/${PM_LIMITS.formats})`, `a:pm_pick|ws:${wsId}|t:f`)
+    .row()
+    .text('🔎 Найти', `a:pm_run|ws:${wsId}|p:0`)
+    .text('🗑 Сброс', `a:pm_reset|ws:${wsId}`)
+    .row()
+    .text('⬅️ Назад', `a:bx_open|ws:${wsId}`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+}
+
+async function renderProfileMatchingPick(ctx, ownerUserId, wsId, type) {
+  if (!(await pmAssertAccess(ctx, ownerUserId, wsId))) return;
+
+  const st = await pmGetState(ctx.from.id, wsId);
+  const isV = type === 'v';
+  const dict = isV ? PROFILE_VERTICALS : PROFILE_FORMATS;
+  const sel = isV ? st.v : st.f;
+  const max = isV ? PM_LIMITS.verticals : PM_LIMITS.formats;
+  const title = isV ? '🏷 Выбор ниш' : '🎬 Выбор форматов';
+
+  const kb = new InlineKeyboard();
+  for (const it of dict) {
+    const chosen = sel.includes(it.key);
+    kb.text(`${chosen ? '✅ ' : ''}${it.title}`, `a:pm_tog|ws:${wsId}|t:${type}|k:${it.key}`).row();
+  }
+  kb.text('✅ Готово', `a:pm_home|ws:${wsId}`).text('🗑 Сброс', `a:pm_reset|ws:${wsId}`);
+
+  const text =
+    `${title}\n\n` +
+    `Выбрано: <b>${sel.length}/${max}</b>\n` +
+    `Нажимай по пунктам, чтобы включать/выключать ✅.`;
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+}
+
+async function renderProfileMatchingResults(ctx, ownerUserId, wsId, page = 0) {
+  if (!(await pmAssertAccess(ctx, ownerUserId, wsId))) return;
+
+  const st = await pmGetState(ctx.from.id, wsId);
+  const p = Math.max(0, Number(page || 0));
+  const offset = p * PM_PAGE_SIZE;
+
+  const rows = await db.searchWorkspaceProfilesByMatrix(st.v, st.f, offset, PM_PAGE_SIZE + 1);
+  const hasNext = rows.length > PM_PAGE_SIZE;
+  const items = rows.slice(0, PM_PAGE_SIZE);
+
+  const head =
+    `🧭 <b>Результаты матчингa</b>\n\n` +
+    `🏷 Ниши: <b>${escapeHtml(pmHumanList(st.v, PROFILE_VERTICALS))}</b>\n` +
+    `🎬 Форматы: <b>${escapeHtml(pmHumanList(st.f, PROFILE_FORMATS))}</b>\n\n`;
+
+  if (!items.length) {
+    const kb = new InlineKeyboard()
+      .text('⚙️ Изменить фильтры', `a:pm_home|ws:${wsId}`)
+      .row()
+      .text('⬅️ Назад', `a:bx_open|ws:${wsId}`);
+    return ctx.editMessageText(
+      head + '😶 Ничего не нашёл по фильтрам.\n\nПопробуй упростить фильтр (меньше ниш/форматов).',
+      { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true }
+    );
+  }
+
+  const lines = items
+    .map((r, i) => {
+      const channel = r.channel_username ? '@' + String(r.channel_username).replace(/^@/, '') : (r.profile_title || r.ws_title || 'канал');
+      const name = r.profile_title || channel;
+      const mode = PROFILE_MODE_LABELS[String(r.profile_mode || 'both')] || PROFILE_MODE_LABELS.both;
+      const geo = r.profile_geo || '—';
+      return `${offset + i + 1}) <b>${escapeHtml(String(name))}</b> · ${escapeHtml(String(mode))} · ${escapeHtml(String(geo))}`;
+    })
+    .join('\n');
+
+  const text = head + lines + `\n\nНажми «👤 …», чтобы открыть витрину.`;
+
+  const kb = new InlineKeyboard();
+  for (const r of items) {
+    const channel = r.channel_username ? '@' + String(r.channel_username).replace(/^@/, '') : (r.profile_title || r.ws_title || 'канал');
+    const name = r.profile_title || channel;
+    const short = String(name).slice(0, 28);
+    const contactUrl = contactUrlFromRaw(r.profile_contact);
+
+    kb.text(`👤 ${short}`, `a:pm_view|ws:${wsId}|id:${r.id}|p:${p}`);
+    if (contactUrl) kb.url('💬', contactUrl);
+    kb.row();
+  }
+
+  if (p > 0 || hasNext) {
+    if (p > 0) kb.text('⬅️', `a:pm_run|ws:${wsId}|p:${p - 1}`);
+    if (hasNext) kb.text('➡️', `a:pm_run|ws:${wsId}|p:${p + 1}`);
+    kb.row();
+  }
+
+  kb.text('⚙️ Фильтры', `a:pm_home|ws:${wsId}`).text('⬅️ Назад', `a:bx_open|ws:${wsId}`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+}
+
+
+
 const LEAD_STATUSES = {
   new: { key: 'new', title: '🆕 Новые', icon: '🆕' },
   in_progress: { key: 'in_progress', title: '💬 В работе', icon: '💬' },
@@ -872,6 +1418,121 @@ function fmtMatrix(keys, dict, empty = '—') {
   return titles.length ? titles.join(', ') : empty;
 }
 
+
+
+function wsIgHandleFromWs(ws) {
+  const h = ws?.profile_ig ? String(ws.profile_ig).replace(/^@/, '') : '';
+  return h ? h : null;
+}
+
+function wsIgUrlFromWs(ws) {
+  const h = wsIgHandleFromWs(ws);
+  return h ? `https://instagram.com/${h}` : null;
+}
+
+function wsTgUsernameFromContact(contact) {
+  const raw = String(contact || '').trim();
+  const m = raw.match(/^@([a-zA-Z0-9_]{5,})$/);
+  return m ? m[1] : null;
+}
+
+function wsTgUrlFromContact(contact) {
+  const un = wsTgUsernameFromContact(contact);
+  return un ? `https://t.me/${un}` : null;
+}
+
+function formatWsContactCard(ws, wsId) {
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
+  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : null;
+
+  const ig = wsIgHandleFromWs(ws);
+  const igUrl = wsIgUrlFromWs(ws);
+
+  const contact = ws.profile_contact ? String(ws.profile_contact) : null;
+  const contactTgUrl = wsTgUrlFromContact(contact);
+
+  const link = wsBrandLink(wsId);
+
+  const lines = [];
+  lines.push(`👤 <b>${escapeHtml(String(ws.profile_title || channel))}</b>`);
+  if (channelUrl) lines.push(`📣 TG канал: <a href="${escapeHtml(channelUrl)}">${escapeHtml(channel)}</a>`);
+  else lines.push(`📣 TG канал: <b>${escapeHtml(channel)}</b>`);
+  if (igUrl) lines.push(`📸 IG: <a href="${escapeHtml(igUrl)}">${escapeHtml(shortUrl(igUrl))}</a> <code>@${escapeHtml(ig)}</code>`);
+  if (contactTgUrl) lines.push(`✉️ Контакт: <a href="${escapeHtml(contactTgUrl)}">${escapeHtml(contact)}</a>`);
+  else if (contact) lines.push(`✉️ Контакт: <b>${escapeHtml(contact)}</b>`);
+  if (link) lines.push(`🔗 Витрина: <a href="${escapeHtml(link)}">${escapeHtml(shortUrl(link))}</a>`);
+
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls.filter(Boolean).slice(0, 3) : [];
+  if (ports.length) {
+    lines.push(`🗂 Портфолио:`);
+    for (const u of ports) {
+      lines.push(`• <a href="${escapeHtml(String(u))}">${escapeHtml(shortUrl(String(u)))}</a>`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function buildWsShareText(ws, wsId, variant = 'short') {
+  const link = wsBrandLink(wsId);
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
+  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : null;
+
+  const ig = wsIgHandleFromWs(ws);
+  const igUrl = wsIgUrlFromWs(ws);
+
+  const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
+  const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
+
+  const about = String(ws.profile_about || '').trim();
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls.filter(Boolean).slice(0, 3) : [];
+
+  if (String(variant) === 'long') {
+    let t =
+      `👋 Привет! Я беру коллабы / UGC.\n\n` +
+      `👤 <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
+      `📣 TG: ${channelUrl ? `<a href="${escapeHtml(channelUrl)}">${escapeHtml(channel)}</a>` : `<b>${escapeHtml(channel)}</b>`}\n` +
+      (igUrl ? `📸 IG: <a href="${escapeHtml(igUrl)}">${escapeHtml(shortUrl(igUrl))}</a> <code>@${escapeHtml(ig)}</code>\n` : '') +
+      (link ? `🔗 Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '\n') +
+      `🏷 Ниши: <b>${escapeHtml(verticals)}</b>\n` +
+      `🎬 Форматы: <b>${escapeHtml(formats)}</b>\n` +
+      (about ? `\n<b>Коротко:</b>\n${escapeHtml(about)}\n` : '') +
+      (ports.length ? `\n<b>Портфолио:</b>\n` + ports.map(u => `• ${escapeHtml(String(u))}`).join('\n') + '\n' : '\n') +
+      `\nЧтобы оставить заявку: открой витрину → «✉️ Заявка от бренда».`;
+    return t;
+  }
+
+  // short
+  let t =
+    `👋 Привет! Я беру коллабы / UGC.\n` +
+    (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+    (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
+    (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+    `Оставь заявку: открой витрину → «✉️ Заявка от бренда».`;
+  return escapeHtml(t).replace(/\n/g, '\n');
+}
+
+function buildLeadTemplateText(ws, lead, key = 'thanks') {
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : ws.title;
+  const to = String(ws.profile_title || channel);
+
+  const wants = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, 'UGC/интеграция');
+  const formatsShort = wants;
+
+  switch (String(key)) {
+    case 'need_tz':
+      return `Привет! Спасибо за заявку. Пришли, пожалуйста, ТЗ/референсы + дедлайн. Я отвечу быстро.`;
+    case 'budget':
+      return `Привет! Супер. Подскажи бюджет/бартер и дедлайн? Тогда предложу точный формат (UGC/интеграция).`;
+    case 'delivery':
+      return `Привет! Подскажи город/доставка и что за продукт. После этого скажу сроки и формат.`;
+    case 'format':
+      return `Привет! Уточни, пожалуйста, что нужно: UGC или интеграция? По форматам у меня: ${formatsShort}.`;
+    case 'thanks':
+    default:
+      return `Привет! Спасибо за заявку. Я на связи — уточни, пожалуйста, что за продукт, дедлайн и условия (бартер/бюджет).`;
+  }
+}
 function normalizeIgHandle(input) {
   const raw = String(input || '').trim();
   if (!raw) return null;
@@ -924,6 +1585,9 @@ function wsProfileKb(wsId, ws) {
     .text('🧩 Режим', `a:ws_prof_mode|ws:${wsId}`)
     .row()
     .text('📨 Заявки', `a:ws_leads|ws:${wsId}|s:new|p:0`)
+    .text('🔗 Поделиться', `a:ws_share|ws:${wsId}`)
+    .row()
+    .text('📌 IG шаблоны', `a:ws_ig_templates|ws:${wsId}`)
     .row()
     .text('📸 Instagram', `a:ws_prof_edit|ws:${wsId}|f:ig`)
     .text(`🏷 Ниши (${vCount}/3)`, `a:ws_prof_verticals|ws:${wsId}`)
@@ -940,6 +1604,50 @@ function wsProfileKb(wsId, ws) {
 
   return kb;
 }
+
+
+function hasText(v) {
+  return v !== null && v !== undefined && String(v).trim().length > 0 && String(v).trim() !== '—';
+}
+
+function calcWsProfileProgress(ws) {
+  // Core fields that most сильно влияют на конверсию
+  const igOk = hasText(ws.profile_ig);
+  const contactOk = hasText(ws.profile_contact);
+  const verticalsOk = Array.isArray(ws.profile_verticals) && ws.profile_verticals.length > 0;
+  const formatsOk = Array.isArray(ws.profile_formats) && ws.profile_formats.length > 0;
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls : [];
+  const portfolioOk = ports.length > 0;
+  const aboutOk = hasText(ws.profile_about);
+
+  const checks = [
+    { key: 'ig', ok: igOk },
+    { key: 'contact', ok: contactOk },
+    { key: 'verticals', ok: verticalsOk },
+    { key: 'formats', ok: formatsOk },
+    { key: 'portfolio', ok: portfolioOk },
+    { key: 'about', ok: aboutOk },
+  ];
+
+  const total = checks.length;
+  const done = checks.filter(x => x.ok).length;
+  const percent = Math.round((done / total) * 100);
+
+  const missing = [];
+  if (!portfolioOk) missing.push('🔗 Портфолио: добавь 1–3 ссылки — <b>самый сильный буст конверсии</b>');
+  if (!formatsOk) missing.push('🎬 Форматы: выбери 3–5 (брендам проще выбрать)');
+  if (!verticalsOk) missing.push('🏷 Ниши: выбери до 3 (точнее матчи)');
+  if (!igOk) missing.push('📸 Instagram: укажи @ или ссылку (доверие)');
+  if (!contactOk) missing.push('✉️ Контакт: @username / t.me/... (быстро договориться)');
+  if (!aboutOk) missing.push('📝 Описание: 1–2 строки, что именно ты снимаешь');
+
+  const nextHint = !portfolioOk
+    ? '💡 Добавь 1 ссылку портфолио — это обычно сильнее всего повышает конверсию.'
+    : '💡 Держи 1–3 лучших ссылок в портфолио — бренд решает по примерам.';
+
+  return { total, done, percent, missing, portfolioOk, igOk, contactOk, verticalsOk, formatsOk, aboutOk, nextHint };
+}
+
 
 async function renderWsProfile(ctx, ownerUserId, wsId) {
   const ws0 = await db.getWorkspace(ownerUserId, wsId);
@@ -981,12 +1689,18 @@ async function renderWsProfile(ctx, ownerUserId, wsId) {
   const proLine = isPro ? '⭐️ PRO: <b>активен</b>' : '⭐️ PRO: <b>free</b>';
   const modeLine = PROFILE_MODE_LABELS[mode] || PROFILE_MODE_LABELS.both;
 
+  const prog = calcWsProfileProgress(ws);
+  const progressLine = `📈 Заполнено: <b>${prog.percent}%</b> (${prog.done}/${prog.total})`;
+  const improveBlock = prog.missing.length
+    ? (`\n\n⚡️ <b>Что добавить, чтобы заявки шли чаще</b>\n` + prog.missing.map(x => `• ${x}`).join('\n'))
+    : `\n\n✅ Профиль выглядит 🔥 — можно лить трафик из IG.`;
+
   const text =
     `👤 <b>Профиль (витрина)</b>\n\n` +
     `<b>IG leads → TG deals</b>\n` +
     `Бренды находят тебя в Instagram → по ссылке открывают этот профиль → дальше всё в Telegram.\n\n` +
     `Канал: <b>${escapeHtml(channel)}</b>\n` +
-    `${proLine}\n\n` +
+    `${proLine}\n${progressLine}${improveBlock}\n\n` +
     `Название/витрина: <b>${escapeHtml(name)}</b>\n` +
     `🧩 Режим: <b>${escapeHtml(modeLine)}</b>\n` +
     `📸 Instagram:\n${igLine}\n` +
@@ -1003,6 +1717,343 @@ async function renderWsProfile(ctx, ownerUserId, wsId) {
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: wsProfileKb(wsId, ws), disable_web_page_preview: true });
 }
 
+
+async function renderWsShareMenu(ctx, ownerUserId, wsId) {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const link = wsBrandLink(wsId);
+
+  const text =
+    `🔗 <b>Поделиться витриной</b>\n\n` +
+    `Покажу готовый текст в этом сообщении — ты сможешь скопировать и переслать бренду.\n\n` +
+    (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '') +
+    `Выбери вариант:`;
+
+  const kb = new InlineKeyboard()
+    .text('📤 Коротко', `a:ws_share_send|ws:${wsId}|v:short`)
+    .text('📤 Подробно', `a:ws_share_send|ws:${wsId}|v:long`)
+    .row()
+    .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short') {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const text = buildWsShareText(ws, wsId, variant);
+
+  // Показываем текст в этом же сообщении (чтобы не оставлять "висящие" сообщения без кнопок)
+  const kb = new InlineKeyboard()
+    .text('⬅️ Назад', `a:ws_share|ws:${wsId}`)
+    .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+
+  try { await ctx.answerCallbackQuery({ text: '✅ Текст открыт' }); } catch {}
+}
+
+
+async function renderWsIgTemplatesMenu(ctx, ownerUserId, wsId) {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const link = wsBrandLink(wsId);
+  const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+  const to = String(ws.profile_title || channel);
+
+  const text =
+    `📌 <b>Шаблоны для Instagram</b>\n\n` +
+    `Скопируй текст ниже (покажу в этом сообщении) и вставь в Stories/пост/DM.\n` +
+    `Ссылка ведёт бренда прямо в Telegram-воронку (витрина → заявка → сделка).\n\n` +
+    `Канал: <b>${escapeHtml(channel)}</b>\n` +
+    `Профиль: <b>${escapeHtml(to)}</b>\n` +
+    (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '\n') +
+    `Выбери формат:`;
+
+  const kb = new InlineKeyboard()
+    .text('📲 Stories', `a:ws_ig_templates_send|ws:${wsId}|t:story`)
+    .text('🖼️ Пост', `a:ws_ig_templates_send|ws:${wsId}|t:post`)
+    .row()
+    .text('💬 DM бренду', `a:ws_ig_templates_send|ws:${wsId}|t:dm`)
+    .text('🔖 Bio', `a:ws_ig_templates_send|ws:${wsId}|t:bio`)
+    .row()
+    .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+function buildWsIgTemplate(ws, wsId, type = 'story') {
+  const link = wsBrandLink(wsId) || '';
+  const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+  const title = String(ws.profile_title || channel);
+
+  const mode = String(ws.profile_mode || 'both');
+  const modeLine = PROFILE_MODE_LABELS[mode] || PROFILE_MODE_LABELS.both;
+
+  const verticalsTxt = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS);
+  const formatsTxt = fmtMatrix(ws.profile_formats, PROFILE_FORMATS);
+
+  const ig = ws.profile_ig ? String(ws.profile_ig).trim() : '';
+  const igCode = ig ? `@${ig.replace(/^@/, '')}` : '';
+  const igLink = ig ? `https://instagram.com/${ig.replace(/^@/, '')}` : '';
+
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls : [];
+  const port1 = ports[0] ? String(ports[0]) : '';
+
+  const contact = ws.profile_contact ? String(ws.profile_contact).trim() : '';
+
+  // Decide best "offer line" depending on mode
+  const offerLine = (() => {
+    if (mode === 'ugc') return 'UGC-контент для брендов (видео/сторис/распаковки) + материалы для рекламы.';
+    if (mode === 'channel') return 'Интеграции в Telegram-канале + конкурсы/розыгрыши.';
+    return 'UGC + интеграции в Telegram-канале + конкурсы/розыгрыши.';
+  })();
+
+  const common = {
+    title,
+    channel,
+    modeLine,
+    verticalsTxt,
+    formatsTxt,
+    link,
+    igCode,
+    igLink,
+    port1,
+    contact,
+    offerLine
+  };
+
+  const templates = {
+    story: [
+      `Бренды 🤝 открыта к коллабам`,
+      `${offerLine}`,
+      `Ниши: ${verticalsTxt}`,
+      `Форматы: ${formatsTxt}`,
+      link ? `ТЗ/заявка в TG: ${link}` : `ТЗ/заявка в TG: (ссылка из профиля)`,
+    ].join('\n'),
+    post: [
+      `Бренды, привет! Я ${title}.`,
+      offerLine,
+      `Ниши: ${verticalsTxt}`,
+      `Форматы: ${formatsTxt}`,
+      port1 ? `Портфолио: ${port1}` : `Портфолио: (ссылка в TG-профиле)`,
+      link ? `Чтобы быстро обсудить — заполните заявку в Telegram: ${link}` : `Заявка в Telegram: (ссылка из профиля)`,
+      igCode ? `IG: ${igCode}` : '',
+    ].filter(Boolean).join('\n'),
+    dm: [
+      `Привет! Я ${title}.`,
+      `Делаю: ${offerLine}`,
+      `Ниши: ${verticalsTxt}. Форматы: ${formatsTxt}.`,
+      port1 ? `Портфолио: ${port1}` : '',
+      link ? `Если актуально — оставьте заявку/ТЗ в TG (1 мин): ${link}` : `Если актуально — напишите, пришлю ссылку в TG.`,
+    ].filter(Boolean).join('\n'),
+    bio: [
+      `UGC + Collabs`,
+      `Ниши: ${verticalsTxt}`,
+      link ? `Заявка/ТЗ (TG): ${link}` : `Заявка/ТЗ (TG): (ссылка из профиля)`,
+    ].join(' | ')
+  };
+
+  const raw = templates[type] || templates.story;
+
+  // Wrapper message (HTML) with <pre> for easy copy
+  const typeTitle = ({ story: 'Stories', post: 'Пост (подпись)', dm: 'DM бренду', bio: 'Bio строка' }[type] || 'Stories');
+
+  const hint =
+    type === 'story'
+      ? `💡 В Stories добавь <b>стикер-ссылку</b> на витрину (Telegram).`
+      : type === 'bio'
+        ? `💡 Можно поставить в bio или в link-in-bio.`
+        : `💡 Скопируй и вставь, потом при желании подправь 1–2 строки под себя.`;
+
+  const extra =
+    (igLink || contact)
+      ? `\n\nКонтакты: ` +
+        [igLink ? `<a href="${escapeHtml(igLink)}">${escapeHtml(igCode || igLink)}</a>` : null,
+         contact ? escapeHtml(contact) : null]
+        .filter(Boolean).join(' • ')
+      : '';
+
+  return (
+    `📌 <b>Шаблон IG — ${escapeHtml(typeTitle)}</b>\n` +
+    `${hint}\n\n` +
+    `<pre>${escapeHtml(raw)}</pre>` +
+    extra
+  );
+}
+
+function buildWsIgDmRaw(ws, wsId, tone = 'soft', variantIndex = 0) {
+  const link = wsBrandLink(wsId) || '';
+  const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+  const title = String(ws.profile_title || channel);
+
+  const mode = String(ws.profile_mode || 'both');
+  const verticalsTxt = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS);
+  const formatsTxt = fmtMatrix(ws.profile_formats, PROFILE_FORMATS);
+
+  const igHandle = normalizeIgHandle(ws.profile_ig);
+  const igCode = igHandle ? `@${igHandle}` : '';
+  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls : [];
+  const port1 = ports[0] ? String(ports[0]) : '';
+
+  const offerLine = (() => {
+    if (mode === 'ugc') return 'UGC-контент для брендов (видео/сторис/распаковки) + материалы для рекламы.';
+    if (mode === 'channel') return 'Интеграции в Telegram-канале + конкурсы/розыгрыши.';
+    return 'UGC + интеграции в Telegram-канале + конкурсы/розыгрыши.';
+  })();
+
+  const soft = [
+    [
+      `Привет! Я ${title} 👋`,
+      `Увидела ваш бренд и хочу предложить коллаб: ${offerLine}`,
+      `Ниши: ${verticalsTxt}. Форматы: ${formatsTxt}.`,
+      port1 ? `Портфолио: ${port1}` : '',
+      link ? `Если ок — можно быстро оставить ТЗ/заявку в TG (1 мин): ${link}` : '',
+      igCode ? `Мой IG: ${igCode}` : '',
+    ].filter(Boolean).join('\n'),
+    [
+      `Здравствуйте! Я ${title}.`,
+      `Делаю ${offerLine}`,
+      `Могу снять: ${formatsTxt} (ниши: ${verticalsTxt}).`,
+      port1 ? `Примеры: ${port1}` : '',
+      link ? `Чтобы не теряться — оставьте заявку в TG: ${link}` : '',
+    ].filter(Boolean).join('\n'),
+    [
+      `Добрый день! Я ${title}.`,
+      `Ищу коллабы с брендами в нишах: ${verticalsTxt}.`,
+      `Форматы: ${formatsTxt}. ${offerLine}`,
+      port1 ? `Портфолио: ${port1}` : '',
+      link ? `Если интересно — вот витрина/заявка в TG: ${link}` : '',
+    ].filter(Boolean).join('\n'),
+  ];
+
+  const hard = [
+    [
+      `Привет! Я ${title}.`,
+      `Снимаю ${formatsTxt} для брендов (ниши: ${verticalsTxt}).`,
+      `Могу сделать ${offerLine}`,
+      port1 ? `Портфолио: ${port1}` : '',
+      link ? `Если хотите обсудить быстро — ТЗ/заявка в TG: ${link}` : '',
+    ].filter(Boolean).join('\n'),
+    [
+      `Привет 👋 ${title} на связи.`,
+      `Нужно UGC/интеграция без долгих переписок?`,
+      `${offerLine}`,
+      `Ниши: ${verticalsTxt}. Форматы: ${formatsTxt}.`,
+      link ? `Киньте ТЗ сюда (TG, 1 мин): ${link}` : '',
+    ].filter(Boolean).join('\n'),
+    [
+      `Привет! Я ${title}.`,
+      `Делаю контент “под рекламу” + быстрые согласования.`,
+      `Форматы: ${formatsTxt}. Ниши: ${verticalsTxt}.`,
+      port1 ? `Примеры: ${port1}` : '',
+      link ? `Если актуально — заполните короткую заявку в TG: ${link}` : '',
+    ].filter(Boolean).join('\n'),
+  ];
+
+  const t = String(tone || 'soft').toLowerCase();
+  const pool = t === 'hard' ? hard : soft;
+  const idx = Math.abs(Number(variantIndex || 0)) % pool.length;
+  return { raw: pool[idx], idx, total: pool.length, tone: (t === 'hard' ? 'hard' : 'soft') };
+}
+
+function buildWsIgDmMessage(ws, wsId, tone = 'soft', variantIndex = 0) {
+  const t = String(tone || 'soft').toLowerCase();
+  const toneLabel = t === 'hard' ? '⚡ Директ' : '🤝 Мягкий';
+  const { raw, idx, total } = buildWsIgDmRaw(ws, wsId, t, variantIndex);
+
+  const hint =
+    `💡 Это варианты для аккуратного аутрича/АБ-теста. Персонализируй 1 строку под бренд — конверсия выше.`;
+
+  return (
+    `📌 <b>DM бренду — ${escapeHtml(toneLabel)}</b> (${idx + 1}/${total})\n` +
+    `${hint}\n\n` +
+    `<pre>${escapeHtml(raw)}</pre>`
+  );
+}
+
+async function renderWsIgDmTemplate(ctx, ownerUserId, wsId, tone = 'soft', variantIndex = 0) {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const t = String(tone || 'soft').toLowerCase();
+  const toneNorm = (t === 'hard' ? 'hard' : 'soft');
+  const i = Math.max(0, Number(variantIndex || 0));
+
+  const text = buildWsIgDmMessage(ws, wsId, toneNorm, i);
+
+  const kb = new InlineKeyboard()
+    .text(`${toneNorm === 'soft' ? '✅ ' : ''}🤝 Мягкий`, `a:ws_ig_dm|ws:${wsId}|tone:soft|i:${toneNorm === 'soft' ? i : 0}`)
+    .text(`${toneNorm === 'hard' ? '✅ ' : ''}⚡ Директ`, `a:ws_ig_dm|ws:${wsId}|tone:hard|i:${toneNorm === 'hard' ? i : 0}`)
+    .row()
+    .text('📤 Ещё вариант', `a:ws_ig_dm|ws:${wsId}|tone:${toneNorm}|i:${i + 1}`)
+    .row()
+    .text('⬅️ Назад', `a:ws_ig_templates|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+
+
+async function sendWsIgTemplateMessage(ctx, ownerUserId, wsId, type = 'story') {
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+  if (!isAdmin && Number(ws.owner_user_id) !== Number(ownerUserId)) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const t = String(type || 'story');
+  const allowed = ['story', 'post', 'dm', 'bio'];
+  const tt = allowed.includes(t) ? t : 'story';
+
+  // DM templates are interactive (tone + variants) to avoid sending many messages.
+  if (tt === 'dm') {
+    await renderWsIgDmTemplate(ctx, ownerUserId, wsId, 'soft', 0);
+    try { await ctx.answerCallbackQuery({ text: '✅ DM шаблон открыт' }); } catch {}
+    return;
+  }
+
+  const msg = buildWsIgTemplate(ws, wsId, tt);
+
+  // Показываем шаблон в этом же сообщении (без лишнего спама в чате)
+  const kb = new InlineKeyboard()
+    .text('⬅️ Назад', `a:ws_ig_templates|ws:${wsId}`)
+    .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
+
+  try {
+    await ctx.editMessageText(msg, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+
+  try { await ctx.answerCallbackQuery({ text: '✅ Шаблон открыт' }); } catch {}
+}
 async function renderWsProfileMode(ctx, ownerUserId, wsId) {
   const isAdmin = isSuperAdminTg(ctx.from?.id);
   const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
@@ -1082,9 +2133,12 @@ async function renderWsProfileFormats(ctx, ownerUserId, wsId) {
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
 }
 
-async function renderWsPublicProfile(ctx, wsId) {
+async function renderWsPublicProfile(ctx, wsId, opts = {}) {
   const ws = await db.getWorkspaceAny(wsId);
   if (!ws) return ctx.reply('Профиль не найден.');
+
+  const viewer = ctx?.from ? await db.upsertUser(ctx.from.id, ctx.from.username ?? null) : null;
+  const isOwner = viewer && Number(viewer.id) === Number(ws.owner_user_id);
 
   const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
   const name = ws.profile_title || channel;
@@ -1114,6 +2168,7 @@ async function renderWsPublicProfile(ctx, wsId) {
   }
 
   const modeLine = PROFILE_MODE_LABELS[mode] || PROFILE_MODE_LABELS.both;
+  const prog = isOwner ? calcWsProfileProgress(ws) : null;
 
   const text =
     `✨ <b>${escapeHtml(name)}</b>\n\n` +
@@ -1127,13 +2182,36 @@ async function renderWsPublicProfile(ctx, wsId) {
     `📝 Описание: <b>${escapeHtml(about)}</b>\n` +
     `✉️ Контакт: <b>${escapeHtml(contact)}</b>\n` +
     `📍 Гео: <b>${escapeHtml(geo)}</b>\n\n` +
-    `Если хочешь коллаб — пиши по контакту или перейди в меню бота.`;
+    `Если хочешь коллаб — нажми «📝 Оставить заявку» или «💬 Написать».` +
+    (isOwner && prog ? `\n\n📈 <b>Твой профиль</b>: <b>${prog.percent}%</b>. ${prog.nextHint}` : '');
 
-  const kb = new InlineKeyboard()
-    .text('✉️ Заявка от бренда', `a:wsp_lead_new|ws:${wsId}`)
-    .row();
+  const contactRaw = ws.profile_contact ? String(ws.profile_contact).trim() : '';
+  const contactUrl = (() => {
+    if (!contactRaw) return null;
+    const tg = wsTgUrlFromContact(contactRaw);
+    if (tg) return tg;
+    if (/^https?:\/\//i.test(contactRaw)) return contactRaw;
+    if (/^t\.me\//i.test(contactRaw)) return 'https://' + contactRaw;
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactRaw)) return 'mailto:' + contactRaw;
+    return null;
+  })();
+
+  const kb = new InlineKeyboard();
+
+  // CTA row
+  kb.text('📝 Оставить заявку', `a:wsp_lead_new|ws:${wsId}`);
+  if (contactUrl) kb.url('💬 Написать', contactUrl);
+  kb.row();
+
+  // Owner-only CTA
+  if (isOwner) {
+    kb.text('🔗 Поделиться', `a:ws_share|ws:${wsId}`).row();
+  }
+
+  // Links
   if (ws.channel_username) kb.url('📣 Telegram канал', `https://t.me/${String(ws.channel_username).replace(/^@/, '')}`);
   if (ig) kb.url('📸 Instagram', `https://instagram.com/${ig}`);
+  if (opts?.backCb) kb.row().text('⬅️ Назад', opts.backCb);
   kb.row().text('📋 Меню', 'a:menu');
 
   const extra = { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true };
@@ -1142,40 +2220,50 @@ async function renderWsPublicProfile(ctx, wsId) {
 
 }
 
-async function renderWsLeadCompose(ctx, wsId) {
+async function renderWsLeadCompose(ctx, wsId, step = 1, draft = {}) {
   const ws = await db.getWorkspaceAny(wsId);
   if (!ws) return ctx.answerCallbackQuery({ text: 'Профиль не найден.' });
 
   const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
   const link = wsBrandLink(wsId);
 
-  const text =
+  const to = String(ws.profile_title || channel);
+
+  let text =
     `✉️ <b>Заявка от бренда</b>\n\n` +
-    `Кому: <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
+    `Кому: <b>${escapeHtml(to)}</b>\n` +
     `Канал: <b>${escapeHtml(channel)}</b>\n` +
-    (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : `\n`) +
-    `Напиши сообщение одним текстом (свободный формат):\n` +
-    `• что за бренд / продукт\n` +
-    `• что нужно (UGC / интеграция / серия)\n` +
-    `• сроки и условия (бартер/бюджет)\n` +
-    `• контакты/ссылка (можно Instagram)\n\n` +
-    `После отправки я мгновенно уведомлю владельца канала.`;
+    (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : `\n`);
+
+  if (Number(step) === 2) {
+    const contact = String(draft?.contact || '').trim();
+    text +=
+      `✅ <b>Шаг 2/2</b>\n` +
+      (contact ? `Контакт бренда: <b>${escapeHtml(contact)}</b>\n\n` : `\n`) +
+      `Опиши, что нужно:\n` +
+      `• UGC / интеграция / серия\n` +
+      `• бюджет или бартер\n` +
+      `• дедлайн\n` +
+      `• кратко: что за продукт\n\n` +
+      `После отправки я мгновенно уведомлю владельца канала.`;
+  } else {
+    text +=
+      `🧩 <b>Шаг 1/2</b>\n` +
+      `Пришли контакт бренда (IG / @username / ссылка / сайт).\n` +
+      `Пример: <code>@brand</code> или <code>https://instagram.com/brand</code>\n\n` +
+      `Дальше я спрошу детали (что нужно + условия + дедлайн).`;
+  }
 
   const kb = new InlineKeyboard()
     .text('⬅️ Назад', `a:wsp_open|ws:${wsId}`)
     .text('📋 Меню', 'a:menu');
 
   try {
-    try {
     await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
   } catch {
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
   }
-  } catch {
-    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
-  }
 }
-
 function leadListTabsKb(wsId, counts, active) {
   const kb = new InlineKeyboard()
     .text(`${LEAD_STATUSES.new.icon} ${counts.new ?? 0}`, `a:ws_leads|ws:${wsId}|s:new|p:0`)
@@ -1273,6 +2361,7 @@ async function renderLeadView(ctx, actorUserId, leadId, back = { wsId: null, sta
 
   const kb = new InlineKeyboard()
     .text('✍️ Ответить', `a:lead_reply|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .text('⚡ Шаблоны', `a:lead_tpls|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
     .text('💬 В работу', `a:lead_set|id:${lead.id}|st:in_progress|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .text('✅ Закрыть', `a:lead_set|id:${lead.id}|st:closed|ws:${wsId}|s:${back.status}|p:${back.page}`)
@@ -1292,6 +2381,88 @@ async function renderLeadView(ctx, actorUserId, leadId, back = { wsId: null, sta
   }
 }
 
+
+async function renderLeadTemplates(ctx, actorUserId, leadId, back) {
+  const lead = await db.getBrandLeadById(leadId);
+  if (!lead) return ctx.answerCallbackQuery({ text: 'Заявка не найдена.' });
+
+  const wsId = Number(lead.workspace_id);
+  const ws = await db.getWorkspaceAny(wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+
+  const isOwner = Number(ws.owner_user_id) === Number(actorUserId);
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  if (!isOwner && !isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const who = lead.brand_username ? '@' + String(lead.brand_username).replace(/^@/, '') : (lead.brand_name || 'brand');
+
+  const text =
+    `⚡ <b>Быстрые ответы</b>\n\n` +
+    `Заявка #${lead.id} от <b>${escapeHtml(String(who))}</b>\n\n` +
+    `Нажми кнопку — я отправлю бренду готовый ответ + добавлю твою контакт‑карточку (IG / TG / витрина).`;
+
+  const kb = new InlineKeyboard()
+    .text('✅ Спасибо, беру', `a:lead_tpl|id:${lead.id}|k:thanks|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('📦 Пришли ТЗ/реф', `a:lead_tpl|id:${lead.id}|k:need_tz|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('💰 Уточни бюджет', `a:lead_tpl|id:${lead.id}|k:budget|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('🚚 Город/доставка?', `a:lead_tpl|id:${lead.id}|k:delivery|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('🧩 UGC или интеграция?', `a:lead_tpl|id:${lead.id}|k:format|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('✍️ Ответить вручную', `a:lead_reply|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
+    .text('⬅️ Назад', `a:lead_view|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+async function sendLeadTemplateReply(ctx, actorUserId, leadId, key, back) {
+  const lead = await db.getBrandLeadById(leadId);
+  if (!lead) return ctx.answerCallbackQuery({ text: 'Заявка не найдена.' });
+
+  const wsId = Number(lead.workspace_id);
+  const ws = await db.getWorkspaceAny(wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+
+  const isOwner = Number(ws.owner_user_id) === Number(actorUserId);
+  const isAdmin = isSuperAdminTg(ctx.from?.id);
+  if (!isOwner && !isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const brandTgId = Number(lead.brand_tg_id || 0);
+  if (!brandTgId) return ctx.answerCallbackQuery({ text: 'У бренда нет TG id.' });
+
+  const replyText = buildLeadTemplateText(ws, lead, key);
+  const card = formatWsContactCard(ws, wsId);
+
+  const out =
+    `💬 <b>Ответ от ${escapeHtml(String(ws.profile_title || (ws.channel_username ? '@' + ws.channel_username : ws.title)))}</b>\n\n` +
+    `${escapeHtml(String(replyText))}\n\n` +
+    `<b>Контакты:</b>\n${card}`;
+
+  try {
+    await ctx.api.sendMessage(brandTgId, out, { parse_mode: 'HTML', disable_web_page_preview: true });
+  } catch (e) {
+    await ctx.reply('❌ Не удалось отправить сообщение бренду. Возможно, он не писал боту первым.', { reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:lead_view|id:${leadId}|ws:${wsId}|s:${back.status}|p:${back.page}`) });
+    return;
+  }
+
+  await db.markBrandLeadReplied(leadId, replyText, Number(actorUserId));
+
+  // auto move status to in_progress if it was new
+  if (normLeadStatus(lead.status) === 'new') {
+    await db.updateBrandLeadStatus(leadId, 'in_progress');
+  }
+
+  try { await ctx.answerCallbackQuery({ text: '✅ Отправлено' }); } catch {}
+  await renderLeadView(ctx, actorUserId, leadId, back);
+}
 async function renderWsPro(ctx, ownerUserId, wsId) {
   const isAdmin = isSuperAdminTg(ctx.from?.id);
   const ws = isAdmin ? await db.getWorkspaceAny(wsId) : await db.getWorkspace(ownerUserId, wsId);
@@ -1786,6 +2957,85 @@ async function renderBxMyArchive(ctx, ownerUserId, wsId, page = 0) {
   );
 }
 
+
+function bxMediaLabel(mt) {
+  const t = String(mt || '').toLowerCase();
+  if (t === 'photo') return '🖼 Фото';
+  if (t === 'video') return '🎥 Видео';
+  if (t === 'animation') return '🎞 GIF';
+  return '—';
+}
+
+function bxMediaKb(wsId, offerId, back = 'my', hasMedia = false) {
+  const kb = new InlineKeyboard()
+    .text('🖼 Фото', `a:bx_media_photo|ws:${wsId}|o:${offerId}|back:${back}`)
+    .text('🎞 GIF', `a:bx_media_gif|ws:${wsId}|o:${offerId}|back:${back}`)
+    .row()
+    .text('🎥 Видео', `a:bx_media_video|ws:${wsId}|o:${offerId}|back:${back}`)
+    .text('👁 Превью', `a:bx_media_preview|ws:${wsId}|o:${offerId}|back:${back}`)
+    .row();
+
+  if (hasMedia) {
+    kb.text('🗑 Убрать', `a:bx_media_clear|ws:${wsId}|o:${offerId}|back:${back}`)
+      .text('✅ Готово', `a:bx_view|ws:${wsId}|o:${offerId}|back:${back}`);
+  } else {
+    kb.text('✅ Готово', `a:bx_view|ws:${wsId}|o:${offerId}|back:${back}`);
+  }
+
+  kb.row().text('⬅️ Назад', `a:bx_view|ws:${wsId}|o:${offerId}|back:${back}`);
+  return kb;
+}
+
+async function renderBxMediaStep(ctx, ownerUserId, wsId, offerId, back = 'my', opts = {}) {
+  const { edit = true } = opts;
+  const o = await db.getBarterOfferForOwner(ownerUserId, offerId);
+  if (!o) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+    return;
+  }
+
+  const hasMedia = !!(o.media_file_id && String(o.media_type || '').trim());
+  const text =
+`📎 <b>Медиа оффера #${o.id}</b>
+
+Текущее: <b>${escapeHtml(bxMediaLabel(o.media_type))}</b>
+
+ℹ️ Медиа появится в официальном канале только при <b>PAID-размещении</b>.
+(Внутри “Мои офферы” медиа не показываем — только в официальной публикации.)
+
+Выбери тип и пришли файл одним сообщением.`;
+
+  const kb = bxMediaKb(wsId, offerId, back, hasMedia);
+  const send = (edit && ctx.callbackQuery) ? ctx.editMessageText.bind(ctx) : ctx.reply.bind(ctx);
+  await send(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function sendBxPreview(ctx, ownerUserId, wsId, offerId, back = 'my') {
+  const o = await db.getBarterOfferForOwner(ownerUserId, offerId);
+  if (!o) return ctx.reply('Оффер не найден или нет доступа.');
+
+  const { text } = await buildOfficialOfferPost(o, { forCaption: true });
+  const note = `\n\n<i>Кнопки добавятся при публикации.</i>\n<i>Медиа попадёт в официальный канал только при PAID-размещении.</i>`;
+  const caption = `${text}${note}`;
+
+  try {
+    if (o.media_file_id && String(o.media_type) === 'photo') {
+      await ctx.replyWithPhoto(o.media_file_id, { caption, parse_mode: 'HTML' });
+    } else if (o.media_file_id && String(o.media_type) === 'animation') {
+      await ctx.replyWithAnimation(o.media_file_id, { caption, parse_mode: 'HTML' });
+    } else if (o.media_file_id && String(o.media_type) === 'video') {
+      await ctx.replyWithVideo(o.media_file_id, { caption, parse_mode: 'HTML' });
+    } else {
+      await ctx.reply(`${text}${note}`, { parse_mode: 'HTML', disable_web_page_preview: true });
+    }
+  } catch (_) {
+    await ctx.reply('Не удалось отправить превью. Попробуй ещё раз или убери медиа.');
+  }
+
+  // Return user to offer view
+  await renderBxView(ctx, ownerUserId, wsId, offerId, back);
+}
+
 async function renderBxView(ctx, ownerUserId, wsId, offerId, back = 'feed') {
   const o = await db.getBarterOfferForOwner(ownerUserId, offerId);
   if (!o) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
@@ -1820,6 +3070,7 @@ ${shown.map(x => escapeHtml(x)).join('\n')}${more}`;
 Категория: <b>${escapeHtml(bxCategoryLabel(o.category))}</b>
 Формат: <b>${escapeHtml(bxTypeLabel(o.offer_type))}</b>
 Оплата: <b>${escapeHtml(bxCompLabel(o.compensation_type))}</b>
+Медиа: <b>${escapeHtml(bxMediaLabel(o.media_type))}</b>
 
 <b>${escapeHtml(o.title)}</b>
 
@@ -1832,6 +3083,7 @@ ${contact ? `Контакт: <b>${escapeHtml(contact)}</b>` : ''}`;
     kb.text('⬆️ Поднять', `a:bx_bump|ws:${wsId}|o:${o.id}`).row();
 
     kb.text(partnerBtnLabel, `a:bx_partner_folder_pick|ws:${wsId}|o:${o.id}`).row();
+    kb.text('📎 Медиа', `a:bx_media_step|ws:${wsId}|o:${o.id}|back:${back}`).text('👁 Превью', `a:bx_media_preview|ws:${wsId}|o:${o.id}|back:${back}`).row();
 
     const wsInfo = await db.getWorkspace(ownerUserId, wsId);
     const isPro = await db.isWorkspacePro(wsId);
@@ -1991,14 +3243,16 @@ async function safeOfficialPosts(primaryFn, fallbackFn) {
   }
 }
 
-async function buildOfficialOfferPost(offerRow) {
+async function buildOfficialOfferPost(offerRow, opts = {}) {
+  const forCaption = Boolean(opts.forCaption);
+
   const offerId = Number(offerRow.id);
   const ch = offerRow.channel_username ? `@${offerRow.channel_username}` : (offerRow.ws_title || 'канал');
   const contact = (offerRow.contact || '').trim();
   const link = offerDeepLink(offerId);
 
   const title = escapeHtml(String(offerRow.title || ''));
-  const desc = escapeHtml(truncateText(offerRow.description || '', 900));
+  const desc = escapeHtml(truncateText(offerRow.description || '', forCaption ? 520 : 900));
   const cat = escapeHtml(bxCategoryLabel(offerRow.category));
   const fmt = escapeHtml(bxTypeLabel(offerRow.offer_type));
   const comp = escapeHtml(bxCompLabel(offerRow.compensation_type));
@@ -2044,11 +3298,11 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
   if (String(offer.status || '').toUpperCase() !== 'ACTIVE') throw new Error('Offer is not active');
   if (!offer.network_enabled) throw new Error('Offer is not in network');
 
-  const { text, kb } = await buildOfficialOfferPost(offer);
 
-  const existing = await safeOfficialPosts(() => db.getOfficialPostByOfferId(offerId), async () => null);
-  const keepExpiry = Boolean(opts.keepExpiry);
-  const placementType = String(opts.placementType || (existing?.placement_type || 'MANUAL')).toUpperCase();
+  const hasMedia = placementType === 'PAID' && offer.media_file_id && String(offer.media_type || '').trim();
+  const { text, kb } = await buildOfficialOfferPost(offer, { forCaption: hasMedia });
+
+
 
   // Decide expiry
   const days = Math.max(1, Number(opts.days || existing?.slot_days || CFG.OFFICIAL_MANUAL_DEFAULT_DAYS || 3));
@@ -2057,9 +3311,27 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
     : new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 
   let messageId = null;
-  if (existing && existing.message_id && Number(existing.channel_chat_id) === channelId && String(existing.status || '').toUpperCase() === 'ACTIVE') {
+  const existingActive = existing
+    && existing.message_id
+    && Number(existing.channel_chat_id) === channelId
+    && String(existing.status || '').toUpperCase() === 'ACTIVE';
+
+  if (existingActive) {
     try {
-      await api.editMessageText(channelId, Number(existing.message_id), text, { parse_mode: 'HTML', reply_markup: kb });
+      if (hasMedia) {
+        // Try to update caption first (works if existing post is media)
+        await api.editMessageCaption(channelId, Number(existing.message_id), {
+          caption: text,
+          parse_mode: 'HTML',
+          reply_markup: kb
+        });
+      } else {
+        await api.editMessageText(channelId, Number(existing.message_id), text, {
+          parse_mode: 'HTML',
+          reply_markup: kb,
+          disable_web_page_preview: true
+        });
+      }
       messageId = Number(existing.message_id);
     } catch (_) {
       messageId = null;
@@ -2067,9 +3339,27 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
   }
 
   if (!messageId) {
-    const msg = await api.sendMessage(channelId, text, { parse_mode: 'HTML', reply_markup: kb });
+    let msg;
+    if (hasMedia) {
+      const mt = String(offer.media_type || '').toLowerCase();
+      if (mt === 'photo') {
+        msg = await api.sendPhoto(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
+      } else if (mt === 'video') {
+        msg = await api.sendVideo(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
+      } else {
+        msg = await api.sendAnimation(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
+      }
+    } else {
+      msg = await api.sendMessage(channelId, text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+    }
     messageId = Number(msg.message_id);
+
+    // If we replaced the post type (text <-> media), try to delete the old one to avoid duplicates
+    if (existingActive && existing?.message_id && Number(existing.message_id) !== messageId) {
+      try { await api.deleteMessage(channelId, Number(existing.message_id)); } catch (_) {}
+    }
   }
+
 
   await safeOfficialPosts(
     () => db.setOfficialPostActive(offerId, {
@@ -2097,7 +3387,11 @@ async function removeOfficialOfferPost(api, offerId, reason = 'REMOVED') {
       const text = reason === 'EXPIRED'
         ? '⌛️ Размещение истекло.'
         : '📴 Размещение снято.';
-      await api.editMessageText(channelId, msgId, text, { parse_mode: 'HTML' });
+      try {
+        await api.editMessageText(channelId, msgId, text, { parse_mode: 'HTML' });
+      } catch (_) {
+        try { await api.editMessageCaption(channelId, msgId, { caption: text, parse_mode: 'HTML' }); } catch (_) {}
+      }
     } catch (_) {}
   }
 
@@ -3124,6 +4418,7 @@ export function getBot() {
     }
 
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+    const tgId = Number(ctx.from.id);
     await clearExpectText(ctx.from.id);
 
     // Add curator by username
@@ -3380,8 +4675,9 @@ export function getBot() {
 
 
 
-    // Brand lead from public profile (vitrina)
-    if (exp.type === 'wsp_lead_new') {
+    
+    // Brand lead from public profile (vitrina) — 2-step (contact -> request)
+    if (exp.type === 'wsp_lead_step1') {
       const wsId = Number(exp.wsId || 0);
       const ws = await db.getWorkspaceAny(wsId);
       if (!ws) {
@@ -3389,19 +4685,41 @@ export function getBot() {
         return;
       }
 
-      const rl = await rateLimit(k(['lead', wsId, tgId]), { limit: 1, windowSec: 120 });
+      const contact = String(ctx.message.text || '').trim();
+      if (!contact || contact.length < 2) {
+        await ctx.reply('Шаг 1/2: пришли контакт бренда (IG / @username / ссылка / сайт).\nПример: https://instagram.com/brand или @brand');
+        await setExpectText(ctx.from.id, exp);
+        return;
+      }
+
+      await setExpectText(ctx.from.id, { type: 'wsp_lead_step2', wsId, contact: contact.slice(0, 200) });
+      await renderWsLeadCompose(ctx, wsId, 2, { contact: contact.slice(0, 200) });
+      return;
+    }
+
+    if (exp.type === 'wsp_lead_step2') {
+      const wsId = Number(exp.wsId || 0);
+      const ws = await db.getWorkspaceAny(wsId);
+      if (!ws) {
+        await ctx.reply('Профиль не найден.');
+        return;
+      }
+
+      // Anti-spam: 1 lead per 10 min per (wsId + brand tg)
+      const rl = await rateLimit(k(['lead', wsId, tgId]), { limit: 1, windowSec: 600 });
       if (!rl.allowed) {
-        await ctx.reply('⏳ Слишком часто. Подожди пару минут и попробуй снова.');
+        await ctx.reply('⏳ Слишком часто. Подожди 10 минут и попробуй снова.');
         return;
       }
 
-      const text = String(ctx.message.text || '').trim();
-      if (!text || text.length < 3) {
-        await ctx.reply('Напиши сообщение чуть подробнее (1–2 предложения).');
+      const details = String(ctx.message.text || '').trim();
+      if (!details || details.length < 3) {
+        await ctx.reply('Шаг 2/2: опиши запрос чуть подробнее (UGC/интеграция, сроки, условия).');
+        await setExpectText(ctx.from.id, exp);
         return;
       }
 
-      const brandName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || null;
+      const brandName = String(exp.brandName || '').trim() || String(exp.contact || '').trim() || ([ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || null);
 
       const lead = await db.createBrandLead({
         workspaceId: wsId,
@@ -3410,8 +4728,8 @@ export function getBot() {
         brandTgId: tgId,
         brandUsername: ctx.from.username || null,
         brandName,
-        message: text,
-        meta: { from: { tg_id: tgId, username: ctx.from.username || null } }
+        message: details,
+        meta: { contact: String(exp.contact || '').trim() || null, brand_profile: (exp.brandName || exp.brandLink) ? { brand_name: exp.brandName || null, brand_link: exp.brandLink || null, contact: String(exp.contact || '').trim() || null } : null, from: { tg_id: tgId, username: ctx.from.username || null } }
       });
 
       const owner = await db.getUserById(Number(ws.owner_user_id));
@@ -3423,9 +4741,12 @@ export function getBot() {
       const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
       const link = wsBrandLink(wsId);
 
-      const igUrl = ws.profile_instagram_url || (ws.profile_instagram_handle ? `https://instagram.com/${String(ws.profile_instagram_handle).replace(/^@/, '')}` : null);
+      const ig = ws.profile_ig ? String(ws.profile_ig).replace(/^@/, '') : null;
+      const igUrl = ig ? `https://instagram.com/${ig}` : null;
 
       const who = ctx.from.username ? '@' + ctx.from.username : (brandName || 'brand');
+
+      const contactLine = exp.contact ? `Контакт бренда: <b>${escapeHtml(String(exp.contact).slice(0, 200))}</b>\n` : '';
 
       const notif =
         `🆕 <b>Новая заявка от бренда</b>\n\n` +
@@ -3433,11 +4754,14 @@ export function getBot() {
         `Канал: <b>${escapeHtml(channel)}</b>\n` +
         (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n` : '') +
         (igUrl ? `IG: <a href="${escapeHtml(String(igUrl))}">${escapeHtml(shortUrl(String(igUrl)))}</a>\n` : '') +
+        contactLine +
         `От: <b>${escapeHtml(String(who))}</b> (<code>${tgId}</code>)\n\n` +
-        `<b>Текст:</b>\n${escapeHtml(text)}`;
+        `<b>Запрос:</b>\n${escapeHtml(details)}`;
 
       const kb = new InlineKeyboard()
         .text('🔎 Открыть', `a:lead_view|id:${lead.id}|ws:${wsId}|s:new|p:0`)
+        .text('⚡ Шаблоны', `a:lead_tpls|id:${lead.id}|ws:${wsId}|s:new|p:0`)
+        .row()
         .text('✍️ Ответить', `a:lead_reply|id:${lead.id}|ws:${wsId}|s:new|p:0`)
         .row()
         .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
@@ -3456,7 +4780,7 @@ export function getBot() {
       return;
     }
 
-    // Reply to brand lead (owner / SUPER_ADMIN)
+// Reply to brand lead (owner / SUPER_ADMIN)
     if (exp.type === 'lead_reply') {
       const leadId = Number(exp.leadId || 0);
       const lead = await db.getBrandLeadById(leadId);
@@ -3490,11 +4814,15 @@ export function getBot() {
       const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
       const link = wsBrandLink(Number(ws.id));
 
+      const card = formatWsContactCard(ws, wsId);
+
       const out =
         `💬 <b>Ответ по заявке #${leadId}</b>\n\n` +
-        `Канал: <b>${escapeHtml(channel)}</b>\n` +
-        (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '\n') +
-        `${escapeHtml(replyText)}`;
+        `Канал: <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
+        (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(shortUrl(link))}</a>\n\n` : `\n`) +
+        `${escapeHtml(replyText)}\n\n` +
+        `<b>Контакты:</b>\n${card}`;
+;
 
       try {
         await ctx.api.sendMessage(Number(lead.brand_tg_id), out, { parse_mode: 'HTML', disable_web_page_preview: true });
@@ -3865,7 +5193,8 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
       // notify other side (best-effort)
       const otherUserId = Number(thread.buyer_user_id) == Number(u.id) ? Number(thread.seller_user_id) : Number(thread.buyer_user_id);
       try {
-        const otherTgId = await db.getUserTgIdByUserId(otherUserId);
+        const otherInfo = await db.getUserTgIdByUserId(otherUserId);
+        const otherTgId = otherInfo?.tg_id ? Number(otherInfo.tg_id) : null;
         if (otherTgId) {
           const link = `https://t.me/${CFG.BOT_USERNAME}?start=bxth_${threadId}`;
           await ctx.api.sendMessage(otherTgId, `📨 Новое сообщение по офферу #${thread.offer_id}
@@ -3919,7 +5248,68 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
       return;
     }
 
-    // Verification request submit
+    
+    // Brand profile edit (Brand Mode)
+    if (exp.type === 'brand_prof_field') {
+      const field = String(exp.field || '');
+      const raw = String(ctx.message.text || '').trim();
+
+      if (!field) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Ошибка: неизвестное поле профиля.');
+        return;
+      }
+
+      if (!raw) {
+        await ctx.reply('Пустое значение. Пришли текст.');
+        return;
+      }
+
+      let value = raw;
+
+      // Allow clearing a field with a simple token
+      if (/^(—|-|none|null|clear|удалить)$/i.test(value)) value = null;
+
+      // Basic validation
+      if (value !== null) {
+        const maxLen = field === 'requirements' ? 600 : 220;
+        if (value.length > maxLen) value = value.slice(0, maxLen).trim();
+
+        if (field === 'brand_name' && value.length < 2) {
+          await ctx.reply('Слишком короткое название. Пришли 2+ символа.');
+          return;
+        }
+        if ((field === 'brand_link' || field === 'contact') && value.length < 3) {
+          await ctx.reply('Слишком коротко. Пришли нормальный контакт/ссылку.');
+          return;
+        }
+      }
+
+      const patch = { [field]: value };
+      const saved = await safeBrandProfiles(
+        () => db.upsertBrandProfile(u.id, patch),
+        async () => ({ __missing_relation: true })
+      );
+
+      if (saved && saved.__missing_relation) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('⚠️ В базе нет таблицы brand_profiles. Применяй миграцию migrations/024_brand_profiles.sql в Neon и повтори.');
+        return;
+      }
+
+      await clearExpectText(ctx.from.id);
+      await ctx.reply('✅ Профиль обновлён.');
+      await renderBrandProfileHome(ctx, u.id, {
+        wsId: Number(exp.wsId || 0),
+        ret: String(exp.ret || 'brand'),
+        backOfferId: exp.backOfferId ? Number(exp.backOfferId) : null,
+        backPage: Number(exp.backPage || 0),
+        edit: false
+      });
+      return;
+    }
+
+// Verification request submit
     if (exp.type === 'verify_submit') {
       if (!CFG.VERIFICATION_ENABLED) {
         await ctx.reply('Верификация сейчас отключена.');
@@ -4089,49 +5479,308 @@ ${reason}
       const draft = (await getDraft(ctx.from.id)) || {};
       draft.ends_at = dt.toISOString();
       await setDraft(ctx.from.id, draft);
-      await ctx.reply('Проверь и опубликуй:', { reply_markup: gwConfirmKb(exp.wsId) });
+      await renderGwMediaStep(ctx, exp.wsId, { edit: false });
       return;
     }
   });
 
-  // Proofs: screenshot (photo)
+  // Proofs: screenshot (photo) + Giveaway media (photo)
   bot.on('message:photo', async (ctx, next) => {
     const exp = await getExpectText(ctx.from.id);
-    if (!exp || String(exp.type) !== 'bx_proof_photo') return next();
+    if (!exp) return next();
 
-    const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
-    await clearExpectText(ctx.from.id);
+    // Barter: screenshot proof
+    if (String(exp.type) === 'bx_proof_photo') {
+      const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+      await clearExpectText(ctx.from.id);
 
-    const wsId = Number(exp.wsId);
-    const threadId = Number(exp.threadId);
-    const back = exp.back ? String(exp.back) : 'inbox';
-    const offerId = exp.offerId ? Number(exp.offerId) : null;
-    const page = Number(exp.page || 0);
+      const wsId = Number(exp.wsId);
+      const threadId = Number(exp.threadId);
+      const back = exp.back ? String(exp.back) : 'inbox';
+      const offerId = exp.offerId ? Number(exp.offerId) : null;
+      const page = Number(exp.page || 0);
 
-    const photos = ctx.message.photo || [];
-    const last = photos.length ? photos[photos.length - 1] : null;
-    const fileId = last?.file_id;
-    if (!fileId) {
-      await ctx.reply('Не вижу фото. Пришли скрин как картинку (не файл).');
-      await setExpectText(ctx.from.id, { type: 'bx_proof_photo', wsId, threadId, back, offerId, page });
+      const photos = ctx.message.photo || [];
+      const last = photos.length ? photos[photos.length - 1] : null;
+      const fileId = last?.file_id;
+      if (!fileId) {
+        await ctx.reply('Не вижу фото. Пришли скрин как картинку (не файл).');
+        await setExpectText(ctx.from.id, { type: 'bx_proof_photo', wsId, threadId, back, offerId, page });
+        return;
+      }
+
+      try {
+        await db.addBarterThreadProofScreenshot(threadId, u.id, fileId);
+      } catch (e) {
+        if (String(e?.message || '') === 'NO_THREAD_ACCESS') {
+          await ctx.reply('Нет доступа к этому диалогу.');
+          return;
+        }
+        throw e;
+      }
+
+      const kb = new InlineKeyboard()
+        .text('🧾 Proofs', `a:bx_proofs|ws:${wsId}|t:${threadId}|p:${page}${offerId ? `|o:${offerId}` : ''}|b:${back}`)
+        .row()
+        .text('💬 Диалог', `a:bx_thread|ws:${wsId}|t:${threadId}|p:${page}${offerId ? `|o:${offerId}` : ''}|b:${back}`);
+      await ctx.reply('✅ Скрин добавлен.', { reply_markup: kb });
       return;
     }
 
-    try {
-      await db.addBarterThreadProofScreenshot(threadId, u.id, fileId);
-    } catch (e) {
-      if (String(e?.message || '') === 'NO_THREAD_ACCESS') {
-        await ctx.reply('Нет доступа к этому диалогу.');
+    // Giveaway: attach photo to draft
+    if (String(exp.type) === 'gw_media_photo') {
+      const wsId = Number(exp.wsId);
+      const photos = ctx.message.photo || [];
+      const last = photos.length ? photos[photos.length - 1] : null;
+      const fileId = last?.file_id;
+      if (!fileId) {
+        await ctx.reply('Не вижу фото. Пришли картинку как фото (не файл).');
         return;
       }
-      throw e;
+
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'photo';
+      draft.media_file_id = fileId;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Картинка прикреплена. Продолжаем:', {
+        reply_markup: gwMediaKb(wsId, true)
+      });
+      return;
     }
 
-    const kb = new InlineKeyboard()
-      .text('🧾 Proofs', `a:bx_proofs|ws:${wsId}|t:${threadId}|p:${page}${offerId ? `|o:${offerId}` : ''}|b:${back}`)
-      .row()
-      .text('💬 Диалог', `a:bx_thread|ws:${wsId}|t:${threadId}|p:${page}${offerId ? `|o:${offerId}` : ''}|b:${back}`);
-    await ctx.reply('✅ Скрин добавлен.', { reply_markup: kb });
+
+    // Barter offer: attach photo to offer (media in official channel for PAID)
+    if (String(exp.type) === 'bx_media_photo') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      const photos = ctx.message.photo || [];
+      const last = photos.length ? photos[photos.length - 1] : null;
+      const fileId = last?.file_id;
+      if (!fileId) {
+        await ctx.reply('Не вижу фото. Пришли картинку как фото (не файл).');
+        return;
+      }
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'photo', media_file_id: fileId });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Картинка прикреплена. Продолжаем:', {
+        reply_markup: bxMediaKb(wsId, offerId, back, true)
+      });
+      return;
+    }
+
+    return next();
+  });
+
+  // Giveaway media (GIF/animation)
+  bot.on('message:animation', async (ctx, next) => {
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp) return next();
+
+    const fileId = ctx.message.animation?.file_id;
+    if (!fileId) {
+      await ctx.reply('Не вижу GIF/анимацию. Пришли GIF одним сообщением.');
+      return;
+    }
+
+    // Giveaway: GIF
+    if (String(exp.type) === 'gw_media_gif') {
+      const wsId = Number(exp.wsId);
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'animation';
+      draft.media_file_id = fileId;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ GIF прикреплён. Продолжаем:', { reply_markup: gwMediaKb(wsId, true) });
+      return;
+    }
+
+    // Barter offer: GIF
+    if (String(exp.type) === 'bx_media_gif') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'animation', media_file_id: fileId });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ GIF прикреплён. Продолжаем:', { reply_markup: bxMediaKb(wsId, offerId, back, true) });
+      return;
+    }
+
+    return next();
+  });
+
+  bot.on('message:video', async (ctx, next) => {
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp) return next();
+
+    // Giveaway: attach video to draft
+    if (String(exp.type) === 'gw_media_video') {
+      const wsId = Number(exp.wsId);
+      const fileId = ctx.message.video?.file_id;
+      if (!fileId) {
+        await ctx.reply('Не вижу видео. Пришли видео одним сообщением.');
+        return;
+      }
+
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'video';
+      draft.media_file_id = fileId;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Видео прикреплено. Продолжаем:', { reply_markup: gwMediaKb(wsId, true) });
+      return;
+    }
+
+    // Barter offer: attach video to offer (media in official channel for PAID)
+    if (String(exp.type) === 'bx_media_video') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      const fileId = ctx.message.video?.file_id;
+      if (!fileId) {
+        await ctx.reply('Не вижу видео. Пришли видео одним сообщением.');
+        return;
+      }
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'video', media_file_id: fileId });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Видео прикреплено. Продолжаем:', {
+        reply_markup: bxMediaKb(wsId, offerId, back, true)
+      });
+      return;
+    }
+
+    return next();
+  });
+
+
+  bot.on('message:document', async (ctx, next) => {
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp) return next();
+
+    const doc = ctx.message.document;
+    const mime = doc?.mime_type || '';
+
+    // Giveaway: GIF as document
+    if (String(exp.type) === 'gw_media_gif') {
+      const wsId = Number(exp.wsId);
+
+      if (!doc?.file_id || (mime && mime !== 'image/gif')) {
+        await ctx.reply('Похоже, это не GIF. Пришли GIF как “анимацию” (или файл .gif).');
+        return;
+      }
+
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'animation';
+      draft.media_file_id = doc.file_id;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ GIF прикреплён. Продолжаем:', { reply_markup: gwMediaKb(wsId, true) });
+      return;
+    }
+
+    // Giveaway: video can come as document
+    if (String(exp.type) === 'gw_media_video') {
+      const wsId = Number(exp.wsId);
+      if (!doc?.file_id || (mime && !String(mime).startsWith('video/'))) {
+        await ctx.reply('Похоже, это не видео. Пришли mp4 как “видео” или как файл.');
+        return;
+      }
+
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      draft.media_type = 'video';
+      draft.media_file_id = doc.file_id;
+      await setDraft(ctx.from.id, draft);
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Видео прикреплено. Продолжаем:', { reply_markup: gwMediaKb(wsId, true) });
+      return;
+    }
+
+    // Barter offer: GIF as document
+    if (String(exp.type) === 'bx_media_gif') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      if (!doc?.file_id || (mime && mime !== 'image/gif')) {
+        await ctx.reply('Похоже, это не GIF. Пришли GIF как “анимацию” (или файл .gif).');
+        return;
+      }
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'animation', media_file_id: doc.file_id });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ GIF прикреплён. Продолжаем:', { reply_markup: bxMediaKb(wsId, offerId, back, true) });
+      return;
+    }
+
+    // Barter offer: video can come as document
+    if (String(exp.type) === 'bx_media_video') {
+      const wsId = Number(exp.wsId);
+      const offerId = Number(exp.offerId);
+      const back = exp.back ? String(exp.back) : 'my';
+
+      if (!doc?.file_id || (mime && !String(mime).startsWith('video/'))) {
+        await ctx.reply('Похоже, это не видео. Пришли mp4 как “видео” или как файл.');
+        return;
+      }
+
+      const o = await db.getBarterOfferForOwner(ctx.from.id, offerId);
+      if (!o) {
+        await clearExpectText(ctx.from.id);
+        await ctx.reply('Оффер не найден или нет доступа.');
+        return;
+      }
+
+      await db.updateBarterOffer(offerId, { media_type: 'video', media_file_id: doc.file_id });
+      await clearExpectText(ctx.from.id);
+
+      await ctx.reply('✅ Видео прикреплено. Продолжаем:', { reply_markup: bxMediaKb(wsId, offerId, back, true) });
+      return;
+    }
+
+    return next();
   });
 
   // --- Commands ---
@@ -4219,7 +5868,9 @@ if (payload?.type === 'bxo') {
       await ctx.reply('Привет! 👋\n\nВыбери роль — и я покажу быстрый старт:', { reply_markup: onboardingKb(flags) });
       return;
     }
-    await ctx.reply(`Привет! Это бот для конкурсов микроблогеров.\n\nВыбери действие:`, { reply_markup: mainMenuKb(flags) });
+    await ctx.reply(`🏠 <b>Главное меню</b>\n\nЗдесь ты можешь:\n• 🚀 подключить канал (workspace)\n• 🎁 создавать и публиковать конкурсы в канал\n• 🤝 бартер‑биржа и заявки\n• 🏷 Brand Mode для брендов (Brand Pass = анти‑спам)\n\nВыбери действие:`, { parse_mode: 'HTML', reply_markup: mainMenuKb(flags) });
+    await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
+
   });
 
   bot.command('whoami', async (ctx) => {
@@ -4537,12 +6188,63 @@ bot.on('message:successful_payment', async (ctx) => {
     if (p.a === 'a:menu') {
       await ctx.answerCallbackQuery();
       const flags = await getRoleFlags(u, ctx.from.id);
-      await ctx.editMessageText('Меню:', { reply_markup: mainMenuKb(flags) });
+      await ctx.editMessageText(`🏠 <b>Главное меню</b>
+
+Здесь ты можешь:
+• 🚀 подключить канал (workspace)
+• 🎁 создавать и публиковать конкурсы в канал
+• 🤝 бартер‑биржа и заявки
+• 🏷 Brand Mode для брендов (Brand Pass = анти‑спам)
+
+Выбери действие:`, { parse_mode: 'HTML', reply_markup: mainMenuKb(flags) });
+      await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
       return;
     }
 
     
-    // Public profile (vitrina)
+    
+    if (p.a === 'a:guide') {
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+
+      const text =
+`🧭 <b>Гайд</b>
+
+1) 🚀 Подключи канал (workspace)
+2) Заполни профиль и выбери нишу/форматы
+3) 🎁 Создай конкурс или 🤝 оффер
+4) Опубликуй / получай заявки
+5) В Brand Mode бренды проходят через Brand Pass (анти-спам)
+
+Выбери раздел:`;
+
+      const kb = new InlineKeyboard()
+        .text('🚀 Подключить канал', 'a:setup')
+        .text('📣 Мои каналы', 'a:ws_list')
+        .row()
+        .text('🎁 Мои конкурсы', 'a:gw_list')
+        .text('🤝 Бартер-биржа', 'a:bx_home')
+        .row()
+        .text('⬅️ Меню', 'a:menu');
+
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+      await maybeSendBanner(ctx, 'guide', CFG.GUIDE_BANNER_FILE_ID);
+      return;
+    }
+
+    if (p.a === 'a:support') {
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+
+      const text = String(CFG.PAY_SUPPORT_TEXT || '').trim() ||
+        `💬 <b>Support</b>\n\nНапиши сюда: @collabka_support`;
+
+      const kb = new InlineKeyboard().text('⬅️ Меню', 'a:menu');
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+// Public profile (vitrina)
     if (p.a === 'a:wsp_open') {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws || 0);
@@ -4552,11 +6254,34 @@ bot.on('message:successful_payment', async (ctx) => {
     }
 
     if (p.a === 'a:wsp_lead_new') {
-      await ctx.answerCallbackQuery();
       const wsId = Number(p.ws || 0);
       if (!wsId) return;
-      await setExpectText(ctx.from.id, { type: 'wsp_lead_new', wsId });
-      await renderWsLeadCompose(ctx, wsId);
+
+      // Gate by Brand Profile (basic 3 fields) and skip Step 1 when complete
+      if (CFG.BRAND_PROFILE_REQUIRED) {
+        const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+        if (!isBrandBasicComplete(prof)) {
+          await ctx.answerCallbackQuery({ text: 'Заполни профиль бренда (3 поля), чтобы оставить заявку.', show_alert: true });
+          await renderBrandProfileHome(ctx, u.id, { wsId, ret: 'lead', edit: true });
+          return;
+        }
+
+        const contact = String(prof.contact || '').trim().slice(0, 200);
+        await ctx.answerCallbackQuery();
+        await setExpectText(ctx.from.id, {
+          type: 'wsp_lead_step2',
+          wsId,
+          contact,
+          brandName: String(prof.brand_name || '').trim() || null,
+          brandLink: String(prof.brand_link || '').trim() || null,
+        });
+        await renderWsLeadCompose(ctx, wsId, 2, { contact });
+        return;
+      }
+
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'wsp_lead_step1', wsId });
+      await renderWsLeadCompose(ctx, wsId, 1);
       return;
     }
 
@@ -4577,7 +6302,25 @@ bot.on('message:successful_payment', async (ctx) => {
       return;
     }
 
-    if (p.a === 'a:lead_set') {
+    
+    if (p.a === 'a:lead_tpls') {
+      await ctx.answerCallbackQuery();
+      const leadId = Number(p.id || 0);
+      if (!leadId) return;
+      await renderLeadTemplates(ctx, u.id, leadId, { wsId: Number(p.ws || 0) || null, status: String(p.s || 'new'), page: Number(p.p || 0) });
+      return;
+    }
+
+    if (p.a === 'a:lead_tpl') {
+      await ctx.answerCallbackQuery();
+      const leadId = Number(p.id || 0);
+      if (!leadId) return;
+      const key = String(p.k || 'thanks');
+      await sendLeadTemplateReply(ctx, u.id, leadId, key, { wsId: Number(p.ws || 0) || null, status: String(p.s || 'new'), page: Number(p.p || 0) });
+      return;
+    }
+
+if (p.a === 'a:lead_set') {
       await ctx.answerCallbackQuery();
       const leadId = Number(p.id || 0);
       if (!leadId) return;
@@ -4674,6 +6417,32 @@ bot.on('message:successful_payment', async (ctx) => {
       await ctx.answerCallbackQuery();
       if (!CFG.VERIFICATION_ENABLED) return ctx.answerCallbackQuery({ text: 'Верификация отключена.' });
       const kind = String(p.k || 'creator');
+
+
+      if (kind === 'brand' && CFG.BRAND_VERIFY_REQUIRES_EXTENDED) {
+        const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+        if (!isBrandExtendedComplete(prof)) {
+          await ctx.editMessageText(
+            `🏷 <b>Верификация Brand</b>
+
+Чтобы подать заявку как бренд, заполни расширенный профиль:
+• ниша
+• гео
+• форматы сотрудничества
+
+<i>Зачем:</i> модерации нужны факты, а креаторам — понятность.`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: new InlineKeyboard()
+                .text('🏷 Профиль бренда', 'a:brand_profile|ws:0|ret:verify')
+                .row()
+                .text('⬅️ Назад', 'a:verify_home')
+            }
+          );
+          return;
+        }
+      }
+
       await setExpectText(ctx.from.id, { type: 'verify_submit', kind });
       await ctx.editMessageText(
         `✅ <b>Заявка на верификацию</b>
@@ -4727,7 +6496,55 @@ bot.on('message:successful_payment', async (ctx) => {
       return;
     }
 
-    if (p.a === 'a:ws_prof_mode') {
+    
+    if (p.a === 'a:ws_share') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return;
+      await renderWsShareMenu(ctx, u.id, wsId);
+      return;
+    }
+
+    if (p.a === 'a:ws_share_send') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return;
+      const v = String(p.v || 'short') === 'long' ? 'long' : 'short';
+      await sendWsShareTextMessage(ctx, u.id, wsId, v);
+      return;
+    }
+
+
+if (p.a === 'a:ws_ig_templates') {
+  await ctx.answerCallbackQuery();
+  const wsId = Number(p.ws || 0);
+  if (!wsId) return;
+  await renderWsIgTemplatesMenu(ctx, u.id, wsId);
+  return;
+}
+
+if (p.a === 'a:ws_ig_templates_send') {
+  await ctx.answerCallbackQuery();
+  const wsId = Number(p.ws || 0);
+  if (!wsId) return;
+  const t = String(p.t || 'story');
+  await sendWsIgTemplateMessage(ctx, u.id, wsId, t);
+  return;
+}
+
+
+if (p.a === 'a:ws_ig_dm') {
+  await ctx.answerCallbackQuery();
+  const wsId = Number(p.ws || 0);
+  if (!wsId) return;
+  const tone = String(p.tone || 'soft');
+  const i = Number(p.i || 0);
+  await renderWsIgDmTemplate(ctx, u.id, wsId, tone, i);
+  return;
+}
+
+
+if (p.a === 'a:ws_prof_mode') {
       await ctx.answerCallbackQuery();
       await renderWsProfileMode(ctx, u.id, Number(p.ws));
       return;
@@ -4902,9 +6719,83 @@ bot.on('message:successful_payment', async (ctx) => {
       return;
     }
 
-
-
     // Brand Mode tools
+
+    if (p.a === 'a:brand_profile') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand'); // brand | offer | lead | verify
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandProfileHome(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_continue') {
+      const wsId = Number(p.ws || 0);
+      if (String(p.ret || '') !== 'lead' || !wsId) {
+        await ctx.answerCallbackQuery();
+        await renderBrandProfileHome(ctx, u.id, { wsId, ret: String(p.ret || 'brand'), backOfferId: p.bo ? Number(p.bo) : null, backPage: p.bp ? Number(p.bp) : 0, edit: true });
+        return;
+      }
+
+      const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+      if (!isBrandBasicComplete(prof)) {
+        await ctx.answerCallbackQuery({ text: 'Заполни 3 поля профиля (Название, Ссылка, Контакт).', show_alert: true });
+        await renderBrandProfileHome(ctx, u.id, { wsId, ret: 'lead', edit: true });
+        return;
+      }
+
+      const contact = String(prof.contact || '').trim().slice(0, 200);
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'wsp_lead_step2', wsId, contact, brandName: String(prof.brand_name || '').trim() || null, brandLink: String(prof.brand_link || '').trim() || null });
+      await renderWsLeadCompose(ctx, wsId, 2, { contact });
+      return;
+    }
+
+
+    if (p.a === 'a:brand_prof_more') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandProfileMore(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_prof_set') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      const field = String(p.f || '');
+      const map = {
+        bn: 'brand_name',
+        bl: 'brand_link',
+        ct: 'contact',
+        ni: 'niche',
+        ge: 'geo',
+        ty: 'collab_types',
+        bu: 'budget',
+        go: 'goals',
+        rq: 'requirements'
+      };
+      const realField = map[field] || null;
+      if (!realField) return;
+
+      await setExpectText(ctx.from.id, { type: 'brand_prof_field', field: realField, wsId, ret, backOfferId: bo, backPage: bp });
+      await ctx.editMessageText(brandFieldPrompt(realField), {
+        parse_mode: 'HTML',
+        reply_markup: brandFieldPromptKb({ wsId, ret, backOfferId: bo, backPage: bp })
+      });
+      return;
+    }
+
+
+
+
     if (p.a === 'a:brand_pass') {
       await ctx.answerCallbackQuery();
       await renderBrandPassTopup(ctx, u.id, Number(p.ws || 0));
@@ -4947,7 +6838,74 @@ bot.on('message:successful_payment', async (ctx) => {
       return;
     }
 
-    if (p.a === 'a:match_home') {
+    
+    // Profile Matching (pm_*)
+    if (p.a === 'a:pm_home') {
+      await ctx.answerCallbackQuery();
+      await renderProfileMatchingHome(ctx, u.id, Number(p.ws || 0));
+      return;
+    }
+
+    if (p.a === 'a:pm_reset') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      await pmResetState(ctx.from.id, wsId);
+      await renderProfileMatchingHome(ctx, u.id, wsId);
+      return;
+    }
+
+    if (p.a === 'a:pm_pick') {
+      await ctx.answerCallbackQuery();
+      await renderProfileMatchingPick(ctx, u.id, Number(p.ws || 0), String(p.t || 'v'));
+      return;
+    }
+
+    if (p.a === 'a:pm_tog') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const type = String(p.t || 'v');
+      const key = String(p.k || '');
+
+      const st = await pmGetState(ctx.from.id, wsId);
+      const sel = type === 'v' ? st.v : st.f;
+      const max = type === 'v' ? PM_LIMITS.verticals : PM_LIMITS.formats;
+
+      const has = sel.includes(key);
+      let next = has ? sel.filter(x => x !== key) : [...sel, key];
+
+      if (!has && next.length > max) {
+        await ctx.answerCallbackQuery({ text: `Лимит: максимум ${max}`, show_alert: true });
+        await renderProfileMatchingPick(ctx, u.id, wsId, type);
+        return;
+      }
+
+      next = Array.from(new Set(next));
+      if (type === 'v') st.v = next;
+      else st.f = next;
+
+      await pmSetState(ctx.from.id, wsId, st);
+      await renderProfileMatchingPick(ctx, u.id, wsId, type);
+      return;
+    }
+
+    if (p.a === 'a:pm_run') {
+      await ctx.answerCallbackQuery();
+      await renderProfileMatchingResults(ctx, u.id, Number(p.ws || 0), Number(p.p || 0));
+      return;
+    }
+
+    if (p.a === 'a:pm_view') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const target = Number(p.id || 0);
+      const page = Number(p.p || 0);
+      if (!target) return;
+      await renderWsPublicProfile(ctx, target, { backCb: `a:pm_run|ws:${wsId}|p:${page}` });
+      return;
+    }
+
+
+if (p.a === 'a:match_home') {
       await ctx.answerCallbackQuery();
       await renderMatchingHome(ctx, Number(p.ws || 0));
       return;
@@ -5197,7 +7155,7 @@ bot.on('message:successful_payment', async (ctx) => {
       const rid = Number(p.r);
       const rep = await db.getBarterReport(rid);
       if (rep && rep.thread_id) {
-        await db.closeBarterThread(rep.thread_id, rep.owner_user_id || u.id);
+        await db.moderatorCloseBarterThread(rep.thread_id);
         await db.auditBarterThread(rep.thread_id, u.id, 'thread.closed_by_mod', { reportId: rid });
       }
       await renderModReportView(ctx, rid);
@@ -5264,8 +7222,10 @@ bot.on('message:successful_payment', async (ctx) => {
     }
 
     if (p.a === 'a:bx_open') {
+      const wsId = Number(p.ws);
       await ctx.answerCallbackQuery();
-      await renderBxOpen(ctx, u.id, Number(p.ws));
+      if (wsId === 0) await maybeSendBanner(ctx, 'brand', CFG.BRAND_BANNER_FILE_ID);
+      await renderBxOpen(ctx, u.id, wsId);
       return;
     }
 
@@ -5568,6 +7528,18 @@ bot.on('message:successful_payment', async (ctx) => {
     if (p.a === 'a:bx_msg') {
       const wsId = Number(p.ws);
       const offerId = Number(p.o);
+      // Brand profile gate (Brand Mode): require 3-step basic profile before messaging creators
+      if (wsId === 0 && CFG.BRAND_PROFILE_REQUIRED) {
+        const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+        if (!isBrandBasicComplete(prof)) {
+          await ctx.answerCallbackQuery({
+            text: '⚠️ Заполни профиль бренда (3 шага), чтобы писать креаторам.',
+            show_alert: true
+          });
+          await renderBrandProfileHome(ctx, u.id, { wsId, ret: 'offer', backOfferId: offerId, backPage: Number(p.p || 0), edit: true });
+          return;
+        }
+      }
 
       if (CFG.RATE_LIMIT_ENABLED) {
         try {
@@ -5981,6 +7953,79 @@ if (p.a === 'a:bx_cat') {
     if (p.a === 'a:bx_view') {
       await ctx.answerCallbackQuery();
       await renderBxView(ctx, u.id, Number(p.ws), Number(p.o), p.back || 'feed');
+      return;
+    }
+
+
+    if (p.a === 'a:bx_media_step') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      await renderBxMediaStep(ctx, u.id, wsId, offerId, back, { edit: true });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_clear') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+
+      const o = await db.getBarterOfferForOwner(u.id, offerId);
+      if (!o) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      await db.updateBarterOffer(offerId, { media_type: null, media_file_id: null });
+      await ctx.answerCallbackQuery({ text: 'Убрано' });
+      await renderBxMediaStep(ctx, u.id, wsId, offerId, back, { edit: true });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_photo') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'bx_media_photo', wsId, offerId, back });
+
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:bx_media_step|ws:${wsId}|o:${offerId}|back:${back}`);
+      await ctx.editMessageText('🖼 Пришли <b>картинку</b> одним сообщением.', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_gif') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'bx_media_gif', wsId, offerId, back });
+
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:bx_media_step|ws:${wsId}|o:${offerId}|back:${back}`);
+      await ctx.editMessageText('🎞 Пришли <b>GIF</b> (анимацию) одним сообщением.\n\n(Можно отправить как анимацию или как файл .gif)', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_video') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'bx_media_video', wsId, offerId, back });
+
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:bx_media_step|ws:${wsId}|o:${offerId}|back:${back}`);
+      await ctx.editMessageText('🎥 Пришли <b>видео</b> одним сообщением.\n\n(Поддержка: mp4. Можно отправить как видео или как файл.)', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    if (p.a === 'a:bx_media_preview') {
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const back = p.back || 'my';
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      await sendBxPreview(ctx, u.id, wsId, offerId, back);
       return;
     }
 
@@ -6589,6 +8634,7 @@ if (p.a === 'a:bx_cat') {
     // GIVEAWAYS list
     if (p.a === 'a:gw_list') {
       await ctx.answerCallbackQuery();
+      await maybeSendBanner(ctx, 'giveaway', CFG.GIVEAWAY_BANNER_FILE_ID);
       await renderGwList(ctx, u.id, null);
       return;
     }
@@ -6599,6 +8645,7 @@ if (p.a === 'a:bx_cat') {
     }
     if (p.a === 'a:gw_list_ws') {
       await ctx.answerCallbackQuery();
+      await maybeSendBanner(ctx, 'giveaway', CFG.GIVEAWAY_BANNER_FILE_ID);
       await renderGwList(ctx, u.id, Number(p.ws));
       return;
     }
@@ -6968,7 +9015,7 @@ if (p.a === 'a:gw_prize') {
       draft.ends_at = addMinutes(new Date(), mins).toISOString();
       await setDraft(ctx.from.id, draft);
       await ctx.answerCallbackQuery();
-      await ctx.editMessageText('Проверь и опубликуй:', { reply_markup: gwConfirmKb(wsId) });
+      await renderGwMediaStep(ctx, wsId, { edit: true });
       return;
     }
 
@@ -6981,6 +9028,111 @@ if (p.a === 'a:gw_prize') {
       await setExpectText(ctx.from.id, { type: 'gw_deadline_custom', wsId });
       return;
     }
+
+
+    if (p.a === 'a:gw_media_step') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      await renderGwMediaStep(ctx, wsId, { edit: true });
+      return;
+    }
+
+    if (p.a === 'a:gw_media_skip') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      await renderGwConfirm(ctx, wsId, { edit: true });
+      return;
+    }
+
+    if (p.a === 'a:gw_media_clear') {
+      const wsId = Number(p.ws);
+      await clearExpectText(ctx.from.id);
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+      delete draft.media_type;
+      delete draft.media_file_id;
+      await setDraft(ctx.from.id, draft);
+      await ctx.answerCallbackQuery({ text: 'Убрано' });
+      await renderGwMediaStep(ctx, wsId, { edit: true });
+      return;
+    }
+
+    if (p.a === 'a:gw_media_photo') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'gw_media_photo', wsId });
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:gw_media_step|ws:${wsId}`);
+      await ctx.editMessageText('🖼 Пришли <b>картинку</b> одним сообщением.\n\n(Можно пропустить этот шаг)', {
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
+      return;
+    }
+
+    if (p.a === 'a:gw_media_gif') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'gw_media_gif', wsId });
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:gw_media_step|ws:${wsId}`);
+      await ctx.editMessageText('🎞 Пришли <b>GIF</b> (анимацию) одним сообщением.\n\n(Можно пропустить этот шаг)', {
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
+      return;
+    }
+    if (p.a === 'a:gw_media_video') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'gw_media_video', wsId });
+      const kb = new InlineKeyboard().text('⬅️ Назад', `a:gw_media_step|ws:${wsId}`);
+      await ctx.editMessageText(`🎥 Пришли <b>видео</b> одним сообщением.\n\n(Поддержка: mp4. Можно отправить как видео или как файл.)`, {
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
+      return;
+    }
+
+    if (p.a === 'a:gw_preview') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      const draft = (await getDraft(ctx.from.id)) || { wsId };
+
+      const prize = (draft.prize_value_text || '').trim() || '—';
+      const winners = Number(draft.winners_count || 0) || 1;
+      const ends = draft.ends_at ? fmtTs(draft.ends_at) : '—';
+
+      const text =
+`🎀 <b>РОЗЫГРЫШ</b>
+
+🎁 Приз: <b>${escapeHtml(prize)}</b>
+🏆 Мест: <b>${winners}</b>
+⏳ Итоги: <b>${escapeHtml(String(ends))}</b>
+
+✅ Нажми “Участвовать”, затем “Проверить” в боте.
+
+<i>Кнопки добавятся при публикации.</i>`;
+
+      try {
+        if (draft.media_file_id && String(draft.media_type) === 'photo') {
+          await ctx.replyWithPhoto(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+        } else if (draft.media_file_id && String(draft.media_type) === 'animation') {
+          await ctx.replyWithAnimation(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+        } else if (draft.media_file_id && String(draft.media_type) === 'video') {
+          await ctx.replyWithVideo(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true });
+        }
+      } catch (_) {
+        await ctx.reply('Не удалось отправить превью. Попробуй ещё раз или убери медиа.');
+      }
+
+      // Keep user in confirm screen
+      await renderGwConfirm(ctx, wsId, { edit: true });
+      return;
+    }
+
+
 
     if (p.a === 'a:gw_publish') {
       const wsId = Number(p.ws);
@@ -7021,11 +9173,32 @@ if (p.a === 'a:gw_prize') {
       };
 
       try {
-        const sent = await ctx.api.sendMessage(ws.channel_id, text, {
-          parse_mode: 'HTML',
-          reply_markup: kb,
-          disable_web_page_preview: true
-        });
+        let sent;
+        if (draft.media_file_id && String(draft.media_type) === 'photo') {
+          sent = await ctx.api.sendPhoto(ws.channel_id, draft.media_file_id, {
+            caption: text,
+            parse_mode: 'HTML',
+            reply_markup: kb
+          });
+        } else if (draft.media_file_id && String(draft.media_type) === 'animation') {
+          sent = await ctx.api.sendAnimation(ws.channel_id, draft.media_file_id, {
+            caption: text,
+            parse_mode: 'HTML',
+            reply_markup: kb
+          });
+        } else if (draft.media_file_id && String(draft.media_type) === 'video') {
+          sent = await ctx.api.sendVideo(ws.channel_id, draft.media_file_id, {
+            caption: text,
+            parse_mode: 'HTML',
+            reply_markup: kb
+          });
+        } else {
+          sent = await ctx.api.sendMessage(ws.channel_id, text, {
+            parse_mode: 'HTML',
+            reply_markup: kb,
+            disable_web_page_preview: true
+          });
+        }
 
         await db.updateGiveaway(created.id, {
           status: 'ACTIVE',
