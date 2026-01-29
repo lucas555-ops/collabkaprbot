@@ -2115,41 +2115,50 @@ export async function getBrandProfile(userId) {
 }
 
 export async function upsertBrandProfile(userId, patch = {}) {
-  const meta = patch.meta !== undefined ? (patch.meta === null ? null : JSON.stringify(patch.meta)) : null;
+  userId = Number(userId);
+  if (!userId) throw new Error('userId required');
 
-  const r = await pool.query(
-    `insert into brand_profiles
-      (user_id, brand_name, brand_link, contact, niche, geo, collab_types, budget, goals, requirements, meta)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-     on conflict (user_id)
-     do update set
-       brand_name = coalesce(excluded.brand_name, brand_profiles.brand_name),
-       brand_link = coalesce(excluded.brand_link, brand_profiles.brand_link),
-       contact = coalesce(excluded.contact, brand_profiles.contact),
-       niche = coalesce(excluded.niche, brand_profiles.niche),
-       geo = coalesce(excluded.geo, brand_profiles.geo),
-       collab_types = coalesce(excluded.collab_types, brand_profiles.collab_types),
-       budget = coalesce(excluded.budget, brand_profiles.budget),
-       goals = coalesce(excluded.goals, brand_profiles.goals),
-       requirements = coalesce(excluded.requirements, brand_profiles.requirements),
-       meta = coalesce(excluded.meta, brand_profiles.meta),
-       updated_at = now()
-     returning *`,
-    [
-      Number(userId),
-      patch.brand_name !== undefined ? (patch.brand_name === null ? null : String(patch.brand_name)) : null,
-      patch.brand_link !== undefined ? (patch.brand_link === null ? null : String(patch.brand_link)) : null,
-      patch.contact !== undefined ? (patch.contact === null ? null : String(patch.contact)) : null,
-      patch.niche !== undefined ? (patch.niche === null ? null : String(patch.niche)) : null,
-      patch.geo !== undefined ? (patch.geo === null ? null : String(patch.geo)) : null,
-      patch.collab_types !== undefined ? (patch.collab_types === null ? null : String(patch.collab_types)) : null,
-      patch.budget !== undefined ? (patch.budget === null ? null : String(patch.budget)) : null,
-      patch.goals !== undefined ? (patch.goals === null ? null : String(patch.goals)) : null,
-      patch.requirements !== undefined ? (patch.requirements === null ? null : String(patch.requirements)) : null,
-      meta
-    ]
+  // Ensure a row exists so we can do simple partial updates
+  await pool.query(
+    `insert into brand_profiles (user_id) values ($1)
+     on conflict (user_id) do nothing`,
+    [userId]
   );
-  return r.rows[0] || null;
+
+  const allowed = [
+    'brand_name',
+    'brand_link',
+    'contact',
+    'niche',
+    'geo',
+    'collab_types',
+    'budget',
+    'goals',
+    'requirements',
+    'meta'
+  ];
+
+  const keys = allowed.filter((k) => Object.prototype.hasOwnProperty.call(patch, k));
+  if (keys.length) {
+    const set = keys.map((k, i) => `${k} = $${i + 2}`).join(', ');
+    const values = keys.map((k) => (patch[k] === undefined ? null : patch[k]));
+
+    await pool.query(
+      `update brand_profiles
+       set ${set}, updated_at = now()
+       where user_id = $1`,
+      [userId, ...values]
+    );
+  }
+
+  return getBrandProfile(userId);
+}
+
+export async function deleteBrandProfile(userId) {
+  userId = Number(userId);
+  if (!userId) throw new Error('userId required');
+  await pool.query(`delete from brand_profiles where user_id = $1`, [userId]);
+  return true;
 }
 
 
