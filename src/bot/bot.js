@@ -1231,25 +1231,42 @@ function gwOpenKb(g, flags = {}) {
   return kb;
 }
 
-function participantKb(gwId) {
-  return new InlineKeyboard()
-    .text('🔄 Проверить', `a:gw_check|i:${gwId}`)
-    .row()
-    .text('✅ Участвовать', `a:gw_join|i:${gwId}`)
-    .row()
-    .text('🧾 Лог конкурса', `a:gw_log|i:${gwId}`);
+function participantKb(gwId, entry, opts = {}) {
+  const pub = opts.pub ? '|pub:1' : '';
+  const kb = new InlineKeyboard();
+
+  // Jobs-style: do not show "Участвовать" if the user is already in.
+  if (!entry) {
+    kb.text('✅ Участвовать', `a:gw_join|i:${gwId}${pub}`).row();
+  }
+
+  const checkLabel = entry?.is_eligible ? '🔄 Проверить ещё раз' : '🔄 Проверить';
+  kb.text(checkLabel, `a:gw_check|i:${gwId}${pub}`).row();
+
+  kb.text('🧾 Лог конкурса', `a:gw_log|i:${gwId}${pub}`);
+  return kb;
 }
 
-function renderParticipantScreen(g, entry) {
+function renderParticipantScreen(g, entry, opts = {}) {
   const prize = (g.prize_value_text || '').trim() || '—';
   const ends = g.ends_at ? fmtTs(g.ends_at) : '—';
   const stLabel = gwStatusLabel(g.status);
 
+  // Status line
   let stLine;
-  if (!entry) stLine = 'Статус: ⛔ <b>не участвуешь</b>';
+  if (opts.checking) stLine = 'Статус: ⏳ <b>проверяю подписки…</b>';
+  else if (!entry) stLine = 'Статус: ⛔ <b>не участвуешь</b>';
   else if (entry.is_eligible === true) stLine = 'Статус: ✅ <b>участие подтверждено</b>';
   else if (!entry.last_checked_at) stLine = 'Статус: ⏳ <b>нужно проверить</b>';
   else stLine = 'Статус: ⚠️ <b>пока не подтверждено</b>';
+
+  // One-line hint (Jobs-style)
+  let hint = '';
+  if (opts.hint) {
+    if (!entry) hint = '👉 Шаги: 1) ✅ Участвовать  2) 🔄 Проверить';
+    else hint = '👉 Действие: жми 🔄 Проверить, чтобы подтвердить подписки';
+  }
+  if (opts.checking) hint = '⏳ Это может занять 5–10 сек. Подожди…';
 
   return (
 `🎁 <b>Конкурс #${g.id}</b>
@@ -1260,8 +1277,9 @@ function renderParticipantScreen(g, entry) {
 
 ${stLine}
 Статус конкурса: <b>${escapeHtml(stLabel)}</b>
+${hint ? `
 
-Нажми “🔄 Проверить”, чтобы подтвердить подписки на каналы.
+${hint}` : ''}
 
 💡 Если бот не может проверить каналы — попроси админа добавить бота в канал-спонсор.`
   );
@@ -4251,8 +4269,8 @@ async function renderGwOpenPublic(ctx, gwId, userId) {
   const g = await db.getGiveawayInfoForUser(gwId);
   if (!g) return ctx.answerCallbackQuery({ text: 'Конкурс не найден.' });
   const entry = await db.getEntryStatus(gwId, userId);
-  const text = renderParticipantScreen(g, entry);
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: participantKb(gwId) });
+  const text = renderParticipantScreen(g, entry, { hint: true });
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry, { pub: true }) });
 }
 
 // ----------------------
@@ -6336,35 +6354,65 @@ ${reason}
   // --- Commands ---
   bot.command('start', async (ctx) => {
     try {
-    const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
-    const payload = parseStartPayload(ctx.message?.text || '');
-    db.trackEvent('start', { userId: u.id, meta: { payloadType: payload?.type || null, hasPayload: !!payload } });
+      const payload = parseStartPayload(ctx.message?.text || '');
+
+      // Early feedback for giveaway deep-links (Jobs-style)
+      let preMsg = null;
+      if (payload?.type === 'gw') preMsg = await ctx.reply('⏳ Открываю конкурс…');
+      else if (payload?.type === 'gwj') preMsg = await ctx.reply('⏳ Записываю участие…');
+      else if (payload?.type === 'gwc') preMsg = await ctx.reply('⏳ Проверяю подписки…');
+
+      const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+      db.trackEvent('start', { userId: u.id, meta: { payloadType: payload?.type || null, hasPayload: !!payload } });
     if (payload?.type === 'gwj') {
+      const loading = preMsg || await ctx.reply('⏳ Записываю участие…');
       const g = await db.getGiveawayInfoForUser(payload.id);
-      if (!g) return ctx.reply('Конкурс не найден.');
+      if (!g) return ctx.api.editMessageText(ctx.chat.id, loading.message_id, 'Конкурс не найден.');
       await db.upsertGiveawayEntry(payload.id, u.id);
       await db.auditGiveaway(payload.id, g.workspace_id, u.id, 'gw.joined', { from: 'start_link' });
       const entry = await db.getEntryStatus(payload.id, u.id);
-      const text = renderParticipantScreen(g, entry);
-      return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id) });
+      const text = renderParticipantScreen(g, entry, { hint: true });
+      try {
+        return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
+      } catch {
+        return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
+      }
     }
     if (payload?.type === 'gwc') {
+      const loading = preMsg || await ctx.reply('⏳ Проверяю подписки…');
       const g = await db.getGiveawayInfoForUser(payload.id);
-      if (!g) return ctx.reply('Конкурс не найден.');
+      if (!g) return ctx.api.editMessageText(ctx.chat.id, loading.message_id, 'Конкурс не найден.');
       await db.upsertGiveawayEntry(payload.id, u.id);
+      const entry0 = await db.getEntryStatus(payload.id, u.id);
+      try {
+        const t0 = renderParticipantScreen(g, entry0, { checking: true });
+        await ctx.api.editMessageText(ctx.chat.id, loading.message_id, t0, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry0, { pub: true }) });
+      } catch {
+        // ignore
+      }
+
       const check = await doEligibilityCheck(ctx, payload.id, ctx.from.id);
       await db.setEntryEligibility(payload.id, u.id, check.isEligible);
       await db.auditGiveaway(payload.id, g.workspace_id, u.id, 'gw.checked', { from: 'start_link', isEligible: check.isEligible, unknown: check.unknown, results: check.results });
       const entry = await db.getEntryStatus(payload.id, u.id);
-      const text = renderParticipantScreen(g, entry);
-      return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id) });
+      const text = renderParticipantScreen(g, entry, { hint: true });
+      try {
+        return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
+      } catch {
+        return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
+      }
     }
     if (payload?.type === 'gw') {
+      const loading = preMsg || await ctx.reply('⏳ Открываю конкурс…');
       const g = await db.getGiveawayInfoForUser(payload.id);
-      if (!g) return ctx.reply('Конкурс не найден.');
+      if (!g) return ctx.api.editMessageText(ctx.chat.id, loading.message_id, 'Конкурс не найден.');
       const entry = await db.getEntryStatus(payload.id, u.id);
-      const text = renderParticipantScreen(g, entry);
-      return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id) });
+      const text = renderParticipantScreen(g, entry, { hint: true });
+      try {
+        return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
+      } catch {
+        return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
+      }
     }
     if (payload?.type === 'gwo') {
       const g = await db.getGiveawayForOwner(payload.id, u.id);
@@ -9685,7 +9733,9 @@ ${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
     }
     if (p.a === 'a:gw_log') {
       await ctx.answerCallbackQuery();
-      await renderGwLog(ctx, u.id, Number(p.i));
+      const gwId = Number(p.i);
+      const isPub = String(p.pub || '') === '1';
+      await renderGwLog(ctx, isPub ? null : u.id, gwId);
       return;
     }
 
@@ -10261,13 +10311,16 @@ if (p.a === 'a:gw_prize') {
     // Join / Check
     if (p.a === 'a:gw_join') {
       const gwId = Number(p.i);
+      const pub = String(p.pub || '') === '1';
       const g = await db.getGiveawayPublic(gwId);
       if (!g) return ctx.answerCallbackQuery({ text: 'Конкурс не найден.' });
       await db.upsertGiveawayEntry(gwId, u.id);
       await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.joined', { from: 'button' });
 
+      const entryNow = await db.getEntryStatus(gwId, u.id);
+
       const dmText = `✅ Ты участвуешь в конкурсе #${gwId}.\n\nНажми “Проверить”, чтобы подтвердить подписки.`;
-      const ok = await sendSafeDM(ctx, ctx.from.id, dmText, { reply_markup: participantKb(gwId) });
+      const ok = await sendSafeDM(ctx, ctx.from.id, dmText, { reply_markup: participantKb(gwId, entryNow, { pub }) });
 
       if (!ok) {
         const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${gwId}`;
@@ -10281,26 +10334,34 @@ if (p.a === 'a:gw_prize') {
 
     if (p.a === 'a:gw_check') {
       const gwId = Number(p.i);
+      const isPub = String(p.pub || '') === '1';
       const g = await db.getGiveawayInfoForUser(gwId);
       if (!g) return ctx.answerCallbackQuery({ text: 'Конкурс не найден.' });
+
+      // Ensure entry exists
       await db.upsertGiveawayEntry(gwId, u.id);
+      const entry0 = await db.getEntryStatus(gwId, u.id);
+
+      // Instant feedback (perceived speed)
+      await ctx.answerCallbackQuery({ text: '⏳ Проверяю…' });
+      try {
+        const text0 = renderParticipantScreen(g, entry0, { checking: true });
+        await ctx.editMessageText(text0, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry0, { pub: isPub }) });
+      } catch {
+        // ignore edit errors
+      }
 
       const check = await doEligibilityCheck(ctx, gwId, ctx.from.id);
       await db.setEntryEligibility(gwId, u.id, check.isEligible);
       await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.checked', { isEligible: check.isEligible, unknown: check.unknown, results: check.results });
 
-      let msg = check.isEligible ? '✅ Участие подтверждено!' : '⚠️ Пока не подтверждено.';
-      if (check.unknown) {
-        msg += '\n\n💡 Если бот не может проверить — попроси админа добавить бота в канал-спонсор.';
-      }
-
-      await ctx.answerCallbackQuery({ text: check.isEligible ? '✅ Eligible' : 'Проверь подписки' });
       try {
         const entry = await db.getEntryStatus(gwId, u.id);
-        const text = renderParticipantScreen(g, entry);
-        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: participantKb(gwId) });
+        const text = renderParticipantScreen(g, entry, { hint: true });
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry, { pub: isPub }) });
       } catch {
-        await ctx.reply(msg);
+        const msg = check.isEligible ? '✅ Участие подтверждено!' : '⚠️ Пока не подтверждено.';
+        await ctx.reply(msg + (check.unknown ? '\n\n💡 Если бот не может проверить — попроси админа добавить бота в канал-спонсор.' : ''));
       }
       return;
     }
