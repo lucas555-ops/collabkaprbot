@@ -65,6 +65,37 @@ function fmtWait(sec) {
   return `${Math.ceil(s / 3600)} ч.`;
 }
 
+// Sponsors helpers (Jobs-style clarity)
+function fmtSponsorHandle(raw) {
+  const handle = sponsorToChatId(raw);
+  return handle || String(raw || '').trim();
+}
+
+function sponsorUrlFromHandle(handle) {
+  const h = String(handle || '').trim();
+  if (!h) return null;
+  if (h.startsWith('@') && h.length > 1) return `https://t.me/${h.slice(1)}`;
+  if (/^https?:\/\//i.test(h)) return h;
+  return null;
+}
+
+function sponsorsInlineText(rawSponsors, max = 3) {
+  const handles = (rawSponsors || []).map(fmtSponsorHandle).filter(Boolean);
+  if (!handles.length) return '';
+  const shown = handles.slice(0, max);
+  const rest = handles.length - shown.length;
+  const inline = shown.join(', ');
+  return rest > 0 ? `${inline} (+${rest})` : inline;
+}
+
+function sponsorStateIcon(state) {
+  if (state === 'ok') return '✅';
+  if (state === 'no') return '❌';
+  if (state === 'unknown') return '⚠️';
+  return '⚪';
+}
+
+
 // Runtime toggles (stored in Redis, editable from Admin)
 const SYS_KEYS = {
   pay_accept: k(['sys', 'pay_accept']),
@@ -1060,6 +1091,35 @@ const GW_PRESETS = [
   }
 ];
 
+function gwPrizePrompt(prizeType) {
+  switch (String(prizeType)) {
+    case 'barter':
+      return `🤝 <b>Бартер</b>
+
+✍️ Опиши приз одним сообщением.
+Пример: <i>"Бьюти-бокс (1 победитель), доставка по РФ"</i>`;
+    case 'cert':
+      return `🎟 <b>Сертификат / скидка</b>
+
+✍️ Укажи номинал и условия.
+Пример: <i>"Сертификат 3 000₽ в @shopname (1 победитель)"</i>`;
+    case 'rub':
+      return `💸 <b>Денежный приз (₽)</b>
+
+✍️ Укажи сумму и способ выплаты.
+Пример: <i>"2 000₽ на карту/СБП (1 победитель)"</i>`;
+    case 'stars':
+      return `⭐️ <b>Приз в Stars</b>
+
+✍️ Укажи количество Stars и условия.
+Пример: <i>"500 Stars (1 победитель)"</i>`;
+    case 'other':
+    default:
+      return `✍️ Опиши приз одним сообщением (коротко и понятно).
+Пример: <i>"Подарок + доставка"</i>`;
+  }
+}
+
 function gwPresetKb(wsId) {
   return new InlineKeyboard()
     .text(GW_PRESETS[0].title, `a:gw_preset_apply|ws:${wsId}|id:${GW_PRESETS[0].id}`)
@@ -1237,7 +1297,16 @@ function participantKb(gwId, entry, opts = {}) {
   const pub = opts.pub ? '|pub:1' : '';
   const kb = new InlineKeyboard();
 
-  // Jobs-style: do not show "Участвовать" if the user is already in.
+  // Optional: direct user to the missing sponsor channel
+  const blocker = opts.blocker;
+  if (blocker && typeof blocker.chat === 'string' && blocker.chat.startsWith('@')) {
+    const url = sponsorUrlFromHandle(blocker.chat);
+    if (url) {
+      kb.url(`🔗 Открыть ${blocker.chat}`, url).row();
+    }
+  }
+
+  // Primary actions
   if (!entry) {
     kb.text('✅ Участвовать', `a:gw_join|i:${gwId}${pub}`).row();
   }
@@ -1246,55 +1315,104 @@ function participantKb(gwId, entry, opts = {}) {
   kb.text(checkLabel, `a:gw_check|i:${gwId}${pub}`).row();
 
   kb.text('🧾 Лог конкурса', `a:gw_log|i:${gwId}${pub}`);
+
+  if (opts.backTo?.text && opts.backTo?.cb) {
+    kb.row().text(opts.backTo.text, opts.backTo.cb);
+  }
   return kb;
 }
 
 function renderParticipantScreen(g, entry, opts = {}) {
-  const prize = (g.prize_value_text || '').trim() || '—';
-  const ends = g.ends_at ? fmtTs(g.ends_at) : '—';
-  const stLabel = gwStatusLabel(g.status);
-
-  // Status line
+  const statusEligible = Boolean(entry?.is_eligible);
+  const isEnded = g.status === 'ended';
+  // Status block (Jobs-style: one screen, no extra messages)
   let stLine;
-  if (opts.checking) stLine = 'Статус: ⏳ <b>проверяю подписки…</b>';
-  else if (!entry) stLine = 'Статус: ⛔ <b>не участвуешь</b>';
-  else if (entry.is_eligible === true) stLine = 'Статус: ✅ <b>участие подтверждено</b>';
-  else if (!entry.last_checked_at) stLine = 'Статус: ⏳ <b>нужно проверить</b>';
-  else stLine = 'Статус: ⚠️ <b>пока не подтверждено</b>';
-
-  // One-line hint (Jobs-style)
-  let hint = '';
-  if (opts.hint) {
-    if (!entry) hint = '👉 Шаги: 1) ✅ Участвовать  2) 🔄 Проверить';
-    else hint = '👉 Действие: жми 🔄 Проверить, чтобы подтвердить подписки';
+  if (opts.checking) {
+    stLine = '⏳ <b>проверяю подписки...</b>';
+  } else if (statusEligible) {
+    stLine = '✅ <b>участие подтверждено</b>';
+  } else if (entry) {
+    stLine = '✅ <b>участие записано</b> · нужно подтвердить подписки';
+  } else {
+    stLine = '🕒 <b>нажми “✅ Участвовать”</b> чтобы записаться';
   }
-  if (opts.checking) hint = '⏳ Это может занять 5–10 сек. Подожди…';
+
+  // Explain the blocker (first missing / unknown), if we know it
+  let blockerLine = '';
+  const blocker = opts.blocker || opts.elig?.firstBlocker;
+  if (!opts.checking && !statusEligible && blocker) {
+    const chat = blocker.chat;
+    const handle = typeof chat === 'string' && chat.startsWith('@') ? chat : null;
+    if (blocker.state === 'no') {
+      blockerLine = handle
+        ? `\n\n❌ Не хватает подписки: <b>${escapeHtml(handle)}</b>`
+        : `\n\n❌ Не хватает подписки на один из каналов.`;
+    } else if (blocker.state === 'unknown') {
+      blockerLine = handle
+        ? `\n\n⚠️ Не могу проверить: <b>${escapeHtml(handle)}</b> (бот не добавлен в канал)`
+        : `\n\n⚠️ Бот не может проверить один из каналов-спонсоров.`;
+    }
+  }
+
+  // Sponsors list (with simple status icons)
+  const sponsors = Array.isArray(opts.sponsors) ? opts.sponsors : [];
+  const stateMap = {};
+  if (opts.elig?.results) {
+    for (const r of opts.elig.results) stateMap[String(r.chat)] = r.state;
+  }
+
+  const iconFor = (st) => {
+    if (st === 'ok') return '✅';
+    if (st === 'no') return '❌';
+    if (st === 'unknown') return '⚠️';
+    return '⚪';
+  };
+
+  let sponsorsBlock = '';
+  if (sponsors.length) {
+    const lines = sponsors
+      .map((s) => {
+        const handle = fmtSponsorHandle(s);
+        const st = stateMap[handle] || 'pending';
+        return `${iconFor(st)} ${escapeHtml(handle)}`;
+      })
+      .join('\n');
+
+    sponsorsBlock = `\n\n👥 <b>Спонсоры</b>\n${lines}`;
+
+    const hasUnknown = Object.values(stateMap).includes('unknown');
+    if (hasUnknown) {
+      sponsorsBlock += `\n\n💡 Если бот не может проверить канал — попроси админа добавить бота в канал-спонсор.`;
+    }
+  }
+  // Action hint (super short)
+  const actionHint = opts.checking
+    ? ''
+    : !entry
+      ? `\n\nНажми “✅ Участвовать”, чтобы записаться.`
+      : !statusEligible
+        ? `\n\nНажми “🔄 Проверить”, чтобы подтвердить подписки.`
+        : '';
+
+  const waitHint = opts.checking ? `\n\n⏳ Это может занять 2–5 сек. Подожди…` : '';
+
+  const tipLine = opts.hint ? `\n\n💡 1) Участвовать  2) Проверить` : '';
 
   return (
-`🎁 <b>Конкурс #${g.id}</b>
-
-🎁 Приз: <b>${escapeHtml(prize)}</b>
-🏆 Мест: <b>${Number(g.winners_count || 1)}</b>
-⏳ Итоги: <b>${escapeHtml(ends)}</b>
-
-${stLine}
-Статус конкурса: <b>${escapeHtml(stLabel)}</b>
-${hint ? `
-
-${hint}` : ''}
-
-💡 Если бот не может проверить каналы — попроси админа добавить бота в канал-спонсор.`
+    `🎁 <b>Конкурс #${g.id}</b>\n\n` +
+    `🎁 Приз: ${escapeHtml(g.prize_value_text || '—')}\n` +
+    `🏆 Мест: ${g.winners_count || 1}\n` +
+    `⏰ Итоги: ${escapeHtml(fmtUtc(g.ends_at))}\n\n` +
+    `Статус: ${stLine}\n` +
+    `Статус конкурса: ${isEnded ? '🔴 Завершён' : '🟢 Идёт'}` +
+    blockerLine +
+    sponsorsBlock +
+    actionHint +
+    waitHint +
+    tipLine
   );
 }
 
-async function sendSafeDM(ctx, tgId, text, extra = {}) {
-  try {
-    await ctx.api.sendMessage(tgId, text, { parse_mode: 'HTML', ...extra });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function ensureWorkspaceForOwner(ctx, ownerUserId) {
   const wsList = await db.listWorkspaces(ownerUserId);
@@ -4273,7 +4391,11 @@ async function renderGwOpenPublic(ctx, gwId, userId) {
   const g = await db.getGiveawayInfoForUser(gwId);
   if (!g) return ctx.answerCallbackQuery({ text: 'Конкурс не найден.' });
   const entry = await db.getEntryStatus(gwId, userId);
-  const text = renderParticipantScreen(g, entry, { hint: true });
+
+  const sponsorRows = await db.listGiveawaySponsors(gwId);
+  const sponsors = (sponsorRows || []).map(r => r.sponsor_text).filter(Boolean);
+
+  const text = renderParticipantScreen(g, entry, { hint: true, sponsors });
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry, { pub: true }) });
 }
 
@@ -4752,46 +4874,108 @@ async function ensureBotId(ctx) {
   return me.id;
 }
 
-async function doEligibilityCheck(ctx, gwId, userTgId) {
-  // Always check the main giveaway channel (where the post is published), plus optional sponsor channels.
-  let mainChat = null;
+async function getChatMemberStateCached(ctx, chat, userTgId) {
+  const cacheKey = k(['cm', chat, userTgId]);
   try {
-    const g = await db.getGiveawayInfoForUser(gwId);
-    mainChat = g?.published_chat_id ?? g?.published_chat ?? g?.channel_id ?? null;
+    const cached = await redis.get(cacheKey);
+    if (cached) return String(cached);
   } catch {}
 
-  const sponsors = await db.listGiveawaySponsors(gwId);
-  const sponsorChats = sponsors.map(s => sponsorToChatId(s.sponsor_text)).filter(Boolean);
-
-  const chats = [...new Set([mainChat, ...sponsorChats].filter(Boolean).map((x) => String(x)))];
-  const results = [];
-  let unknown = false;
-
-  for (const chat of chats) {
-    const cacheKey = k(['cm', chat, userTgId]);
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      results.push({ chat, status: cached });
-      if (cached === 'unknown') unknown = true;
-      continue;
-    }
-
-    try {
-      const cm = await ctx.api.getChatMember(chat, userTgId);
-      const st = String(cm.status || '');
-      const ok = (st === 'member' || st === 'administrator' || st === 'creator');
-      const val = ok ? 'ok' : 'no';
-      await redis.set(cacheKey, val, { ex: 10 * 60 });
-      results.push({ chat, status: val });
-    } catch {
-      unknown = true;
-      await redis.set(cacheKey, 'unknown', { ex: 5 * 60 });
-      results.push({ chat, status: 'unknown' });
-    }
+  let state = 'unknown';
+  try {
+    const cm = await ctx.api.getChatMember(chat, userTgId);
+    const st = String(cm?.status || '');
+    const ok = (st === 'member' || st === 'administrator' || st === 'creator' || st === 'restricted');
+    state = ok ? 'ok' : 'no';
+  } catch {
+    state = 'unknown';
   }
 
-  const isEligible = results.every(r => r.status === 'ok') && !unknown;
-  return { isEligible, unknown, results };
+  // IMPORTANT UX: do NOT cache negative too long, otherwise user subscribes but still sees ❌ for minutes.
+  const ex = state === 'ok' ? 10 * 60 : (state === 'no' ? 45 : 2 * 60);
+  try {
+    await redis.set(cacheKey, state, { ex });
+  } catch {}
+  return state;
+}
+
+async function doEligibilityCheck(ctx, gwId, userTgId) {
+  // One check at a time per user+giveaway (avoid double-taps and Telegram retry storms)
+  const resKey = k(['gw_check', gwId, userTgId]);
+  const lockKey = k(['lock', 'gw_check', gwId, userTgId]);
+
+  try {
+    const cached = await redis.get(resKey);
+    if (cached) return cached;
+  } catch {}
+
+  let lock = null;
+  try {
+    lock = await redis.set(lockKey, '1', { nx: true, ex: 15 });
+  } catch {
+    lock = null;
+  }
+
+  if (!lock) {
+    // If a check is already running, return cached result if we have it; otherwise return a small "busy" payload.
+    try {
+      const cached = await redis.get(resKey);
+      if (cached) return cached;
+    } catch {}
+    return { isEligible: false, unknown: true, results: [], firstBlocker: null, firstBlockerHandle: null, sponsors: [], busy: true };
+  }
+
+  try {
+    // Always check the main giveaway channel (where the post is published), plus optional sponsor channels.
+    let mainChat = null;
+    try {
+      const g = await db.getGiveawayInfoForUser(gwId);
+      mainChat = g?.published_chat_id ?? g?.published_chat ?? g?.channel_id ?? null;
+    } catch {}
+
+    const sponsorRows = await db.listGiveawaySponsors(gwId);
+    const sponsors = (sponsorRows || []).map((s) => String(s.sponsor_text || '')).filter(Boolean);
+
+    const sponsorChats = [];
+    const chatToHandle = new Map();
+    for (const s of sponsors) {
+      const chat = sponsorToChatId(s);
+      if (!chat) continue;
+      sponsorChats.push(chat);
+      // Prefer @handle for UI when possible
+      chatToHandle.set(String(chat), s.startsWith('@') ? s : (String(chat).startsWith('@') ? String(chat) : null));
+    }
+
+    const chats = [...new Set([mainChat, ...sponsorChats].filter(Boolean).map((x) => String(x)))];
+
+    const results = [];
+    let unknown = false;
+    let firstBlocker = null;
+
+    // "Fail-fast": stop on first NO / UNKNOWN. This makes the check feel instant for the common case.
+    for (const chat of chats) {
+      const state = await getChatMemberStateCached(ctx, chat, userTgId);
+      results.push({ chat, state });
+      if (state !== 'ok') {
+        if (state === 'unknown') unknown = true;
+        firstBlocker = { chat, state };
+        break;
+      }
+    }
+
+    const isEligible = results.length === chats.length && results.every((r) => r.state === 'ok') && !unknown;
+
+    const firstBlockerHandle = firstBlocker ? (chatToHandle.get(String(firstBlocker.chat)) || (String(firstBlocker.chat).startsWith('@') ? String(firstBlocker.chat) : null)) : null;
+
+    const payload = { isEligible, unknown, results, firstBlocker, firstBlockerHandle, sponsors };
+    try {
+      await redis.set(resKey, payload, { ex: 60 });
+    } catch {}
+
+    return payload;
+  } finally {
+    try { await redis.del(lockKey); } catch {}
+  }
 }
 
 async function renderSetupInstructions(ctx) {
@@ -6380,8 +6564,9 @@ ${list}
       if (!g) return ctx.api.editMessageText(ctx.chat.id, loading.message_id, 'Конкурс не найден.');
       await db.upsertGiveawayEntry(payload.id, u.id);
       await db.auditGiveaway(payload.id, g.workspace_id, u.id, 'gw.joined', { from: 'start_link' });
+      const sponsors = await db.listGiveawaySponsors(payload.id);
       const entry = await db.getEntryStatus(payload.id, u.id);
-      const text = renderParticipantScreen(g, entry, { hint: true });
+      const text = renderParticipantScreen(g, entry, { hint: true, sponsors });
       try {
         return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
       } catch {
@@ -6393,9 +6578,10 @@ ${list}
       const g = await db.getGiveawayInfoForUser(payload.id);
       if (!g) return ctx.api.editMessageText(ctx.chat.id, loading.message_id, 'Конкурс не найден.');
       await db.upsertGiveawayEntry(payload.id, u.id);
+      const sponsors = await db.listGiveawaySponsors(payload.id);
       const entry0 = await db.getEntryStatus(payload.id, u.id);
       try {
-        const t0 = renderParticipantScreen(g, entry0, { checking: true });
+        const t0 = renderParticipantScreen(g, entry0, { checking: true, sponsors });
         await ctx.api.editMessageText(ctx.chat.id, loading.message_id, t0, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry0, { pub: true }) });
       } catch {
         // ignore
@@ -6405,19 +6591,20 @@ ${list}
       await db.setEntryEligibility(payload.id, u.id, check.isEligible);
       await db.auditGiveaway(payload.id, g.workspace_id, u.id, 'gw.checked', { from: 'start_link', isEligible: check.isEligible, unknown: check.unknown, results: check.results });
       const entry = await db.getEntryStatus(payload.id, u.id);
-      const text = renderParticipantScreen(g, entry, { hint: true });
+      const text = renderParticipantScreen(g, entry, { hint: true, sponsors, elig: check });
       try {
-        return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
+        return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true, blocker: check.firstBlocker }) });
       } catch {
-        return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
+        return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true, blocker: check.firstBlocker }) });
       }
     }
     if (payload?.type === 'gw') {
       const loading = preMsg || await ctx.reply('⏳ Открываю конкурс…');
       const g = await db.getGiveawayInfoForUser(payload.id);
       if (!g) return ctx.api.editMessageText(ctx.chat.id, loading.message_id, 'Конкурс не найден.');
+      const sponsors = await db.listGiveawaySponsors(payload.id);
       const entry = await db.getEntryStatus(payload.id, u.id);
-      const text = renderParticipantScreen(g, entry, { hint: true });
+      const text = renderParticipantScreen(g, entry, { hint: true, sponsors });
       try {
         return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
       } catch {
@@ -10047,7 +10234,7 @@ if (p.a === 'a:gw_prize') {
       if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
       const type = p.t;
       await ctx.answerCallbackQuery();
-      await ctx.editMessageText('✍️ Опиши приз одним сообщением (коротко и понятно).', {
+      await ctx.editMessageText(gwPrizePrompt(type), {
         reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_new|ws:${wsId}`)
       });
       await setDraft(ctx.from.id, { wsId, prize_type: type });
@@ -10310,8 +10497,26 @@ ${sponsorsLine}
       // publish post
       const botUsername = CFG.BOT_USERNAME;
       const deepLinkOpen = `https://t.me/${botUsername}?start=gw_${created.id}`;
+
+      const sponsorsInline = Array.isArray(draft.sponsors) && draft.sponsors.length
+        ? sponsorsInlineText(draft.sponsors, 3)
+        : '';
+      const sponsorsLine = sponsorsInline
+        ? `
+👥 Спонсоры: <b>${escapeHtml(sponsorsInline)}</b>`
+        : '';
+      const actionHint = sponsorsInline
+        ? '✅ Открой бота → нажми «Проверить»'
+        : '✅ Нажми “Открыть бота” — там будут кнопки «Участвовать» и «Проверить».';
+
       const text =
-`🎀 <b>РОЗЫГРЫШ</b>\n\n🎁 Приз: <b>${escapeHtml(draft.prize_value_text)}</b>\n🏆 Мест: <b>${Number(draft.winners_count)}</b>\n⏳ Итоги: <b>${escapeHtml(fmtTs(draft.ends_at))}</b>\n\n✅ Нажми “Открыть бота” — там будут кнопки «Участвовать» и «Проверить».`;
+`🎀 <b>РОЗЫГРЫШ</b>
+
+🎁 Приз: <b>${escapeHtml(draft.prize_value_text)}</b>
+🏆 Мест: <b>${Number(draft.winners_count)}</b>
+⏳ Итоги: <b>${escapeHtml(fmtTs(draft.ends_at))}</b>${sponsorsLine}
+
+${actionHint}`;
 
       const kb = {
         inline_keyboard: [
@@ -10372,23 +10577,26 @@ ${sponsorsLine}
     if (p.a === 'a:gw_join') {
       const gwId = Number(p.i);
       const pub = String(p.pub || '') === '1';
-      const g = await db.getGiveawayPublic(gwId);
+      const g = await db.getGiveawayInfoForUser(gwId);
       if (!g) return ctx.answerCallbackQuery({ text: 'Конкурс не найден.' });
+
+      // Ensure entry exists
       await db.upsertGiveawayEntry(gwId, u.id);
       await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.joined', { from: 'button' });
 
+      const sponsors = await db.listGiveawaySponsors(gwId);
       const entryNow = await db.getEntryStatus(gwId, u.id);
 
-      const dmText = `✅ Ты участвуешь в конкурсе #${gwId}.\n\nНажми “Проверить”, чтобы подтвердить подписки.`;
-      const ok = await sendSafeDM(ctx, ctx.from.id, dmText, { reply_markup: participantKb(gwId, entryNow, { pub }) });
-
-      if (!ok) {
-        const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${gwId}`;
-        await ctx.answerCallbackQuery({ text: 'Открой бота для проверки', show_alert: true });
-        return;
-      }
-
       await ctx.answerCallbackQuery({ text: 'Участие записано ✅' });
+
+      const screen = renderParticipantScreen(g, entryNow, { hint: true, sponsors });
+      const kb = participantKb(gwId, entryNow, { pub });
+
+      try {
+        await ctx.editMessageText(screen, { parse_mode: 'HTML', reply_markup: kb });
+      } catch {
+        await ctx.reply(screen, { parse_mode: 'HTML', reply_markup: kb });
+      }
       return;
     }
 
@@ -10401,11 +10609,12 @@ ${sponsorsLine}
       // Ensure entry exists
       await db.upsertGiveawayEntry(gwId, u.id);
       const entry0 = await db.getEntryStatus(gwId, u.id);
+      const sponsors = await db.listGiveawaySponsors(gwId);
 
       // Instant feedback (perceived speed)
       await ctx.answerCallbackQuery({ text: '⏳ Проверяю…' });
       try {
-        const text0 = renderParticipantScreen(g, entry0, { checking: true });
+        const text0 = renderParticipantScreen(g, entry0, { checking: true, sponsors });
         await ctx.editMessageText(text0, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry0, { pub: isPub }) });
       } catch {
         // ignore edit errors
@@ -10417,8 +10626,8 @@ ${sponsorsLine}
 
       try {
         const entry = await db.getEntryStatus(gwId, u.id);
-        const text = renderParticipantScreen(g, entry, { hint: true });
-        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry, { pub: isPub }) });
+        const text1 = renderParticipantScreen(g, entry, { hint: true, sponsors, elig: check });
+        await ctx.editMessageText(text1, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry, { pub: isPub, blocker: check.firstBlocker }) });
       } catch {
         const msg = check.isEligible ? '✅ Участие подтверждено!' : '⚠️ Пока не подтверждено.';
         await ctx.reply(msg + (check.unknown ? '\n\n💡 Если бот не может проверить — попроси админа добавить бота в канал-спонсор.' : ''));
