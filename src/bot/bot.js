@@ -1,6 +1,6 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import { CFG, assertEnv } from '../lib/config.js';
-import { redis, k, rateLimit } from '../lib/redis.js';
+import { redis, k, rateLimit, consumeOnce } from '../lib/redis.js';
 import * as db from '../db/queries.js';
 import { escapeHtml, fmtTs, parseCb, parseStartPayload, randomToken, addMinutes, parseMoscowDateTime, computeThreadReplyStatus, formatBxChargeLine } from './helpers.js';
 import { parseSponsorsFromText, sponsorToChatId } from './sponsorParse.js';
@@ -217,7 +217,8 @@ async function getRoleFlags(userRow, tgId) {
   const isAdmin = isSuperAdminTg(tgId);
   const isModerator = isAdmin || (userRow ? await db.isNetworkModerator(userRow.id) : false);
   const isFolderEditor = userRow ? await db.hasAnyWorkspaceEditorRole(userRow.id) : false;
-  return { isAdmin, isModerator, isFolderEditor };
+  const isCurator = userRow ? await db.hasAnyCuratorRole(userRow.id) : false;
+  return { isAdmin, isModerator, isFolderEditor, isCurator };
 }
 
 async function isModerator(userRow, tgId) {
@@ -261,7 +262,7 @@ async function safeBrandProfiles(primaryFn, fallbackFn) {
 
 
 function mainMenuKb(flags = {}) {
-  const { isModerator = false, isAdmin = false, isFolderEditor = false } = flags;
+  const { isModerator = false, isAdmin = false, isFolderEditor = false, isCurator = false } = flags;
 
   const kb = new InlineKeyboard()
     .text('🚀 Подключить канал', 'a:setup')
@@ -282,6 +283,7 @@ function mainMenuKb(flags = {}) {
 
   const extra = [];
   if (CFG.VERIFICATION_ENABLED) extra.push(['✅ Верификация', 'a:verify_home']);
+  if (isCurator) extra.push(['👤 Куратор', 'a:cur_home']);
   if (isModerator) extra.push(['🛡 Модерация', 'a:mod_home']);
   if (isAdmin) extra.push(['👑 Админка', 'a:admin_home']);
 
@@ -340,10 +342,10 @@ function wsMenuKb(wsId) {
 
 
 function wsSettingsKb(wsId, s) {
-  const net = s.network_enabled ? '✅ Сеть: ВКЛ' : '🌐 Сеть: ВЫКЛ';
-  const cur = s.curator_enabled ? '🛡 Куратор: ВКЛ' : '🛡 Куратор: ВЫКЛ';
+  const net = s.network_enabled ? '🌐 Сеть: ✅ ВКЛ' : '🌐 Сеть: ❌ ВЫКЛ';
+  const cur = s.curator_enabled ? '👤 Куратор: ВКЛ' : '👤 Куратор: ВЫКЛ';
   return new InlineKeyboard()
-    .text(net, `a:ws_toggle_net|ws:${wsId}`)
+    .text(net, `a:net_q|ws:${wsId}|ret:ws`)
     .row()
     .text(cur, `a:ws_toggle_cur|ws:${wsId}`)
     .row()
@@ -354,6 +356,33 @@ function wsSettingsKb(wsId, s) {
     .text('👥 Список кураторов', `a:cur_list|ws:${wsId}`)
     .row()
     .text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
+}
+
+function netConfirmKb(wsId, enabled, ret) {
+  const actionLabel = enabled ? '❌ Выключить сеть' : '✅ Включить сеть';
+  const v = enabled ? 0 : 1;
+  const cancelCb = String(ret) === 'bx' ? `a:bx_open|ws:${wsId}` : `a:ws_settings|ws:${wsId}`;
+  return new InlineKeyboard()
+    .text(actionLabel, `a:net_set|ws:${wsId}|v:${v}|ret:${String(ret) === 'bx' ? 'bx' : 'ws'}`)
+    .row()
+    .text('⬅️ Отмена', cancelCb);
+}
+
+async function renderNetConfirm(ctx, ownerUserId, wsId, ret = 'ws') {
+  const ws = await db.getWorkspace(ownerUserId, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const enabled = !!ws.network_enabled;
+  const state = enabled ? '🌐 Сеть: ✅ ВКЛ' : '🌐 Сеть: ❌ ВЫКЛ';
+  const hint = enabled
+    ? 'Если выключить, твой канал пропадёт из ленты и не сможет публиковать новые офферы в сети.'
+    : 'Если включить, твой канал появится в сети и сможет видеть ленту и публиковать офферы.';
+
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(`🌐 <b>Сеть</b>\n\nСейчас: <b>${escapeHtml(state)}</b>\n\n${escapeHtml(hint)}`, {
+    parse_mode: 'HTML',
+    reply_markup: netConfirmKb(wsId, enabled, ret)
+  });
 }
 
 function curListKb(wsId, curators) {
@@ -370,7 +399,8 @@ function curListKb(wsId, curators) {
 // Barters Marketplace (v0.9.1)
 // -----------------------------
 
-function bxMenuKb(wsId) {
+function bxMenuKb(wsId, networkEnabled = true) {
+  const net = networkEnabled ? '🌐 Сеть: ✅ ВКЛ' : '🌐 Сеть: ❌ ВЫКЛ';
   const kb = new InlineKeyboard()
     .text('🛍 Лента', `a:bx_feed|ws:${wsId}|p:0`)
     .text('🎛 Фильтры', `a:bx_filters|ws:${wsId}`)
@@ -381,13 +411,9 @@ function bxMenuKb(wsId) {
     .text('➕ Разместить оффер', `a:bx_new|ws:${wsId}`)
     .text('🏷 Brand Mode', 'a:bx_open|ws:0');
 
-  // Network toggle (workspace owners only). Brand Mode (ws=0) doesn't manage network.
-  if (Number(wsId || 0) !== 0) {
-    kb.row().text('🌐 Сеть: ✅ ВКЛ', `a:bx_net_q|ws:${wsId}|v:off`);
-  }
-
   if (CFG.VERIFICATION_ENABLED) kb.row().text('✅ Верификация', 'a:verify_home');
 
+  kb.row().text(net, `a:net_q|ws:${wsId}|ret:bx`);
   kb.row().text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
   return kb;
 }
@@ -658,7 +684,7 @@ async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
 
 function bxNeedNetworkKb(wsId) {
   return new InlineKeyboard()
-    .text('🌐 Сеть: ❌ ВЫКЛ', `a:bx_net_q|ws:${wsId}|v:on`)
+    .text('🌐 Сеть: ❌ ВЫКЛ', `a:net_q|ws:${wsId}|ret:bx`)
     .row()
     .text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
 }
@@ -673,44 +699,6 @@ const BX_CATEGORIES = [
 
 function bxCategoryLabel(c) {
   return BX_CATEGORIES.find((x) => x.key === c)?.label || '✨ Другое';
-}
-
-// -----------------------------
-// Giveaway status labels (RU)
-// -----------------------------
-
-function gwStatusBadge(status) {
-  const st = String(status || '').toUpperCase();
-  // Backward/forward compatible mapping across bot versions.
-  if (st === 'DRAFT') return { emoji: '📝', label: 'Черновик' };
-  if (st === 'PUBLISHED') return { emoji: '📣', label: 'Опубликован' };
-  if (st === 'RUNNING') return { emoji: '🟢', label: 'Идёт' };
-
-  // Current bot statuses
-  if (st === 'ACTIVE') return { emoji: '🟢', label: 'Идёт' };
-  if (st === 'PAUSED') return { emoji: '⏸', label: 'Пауза' };
-  if (st === 'ENDED') return { emoji: '🏁', label: 'Завершён' };
-  if (st === 'WINNERS_DRAWN') return { emoji: '🎲', label: 'Победители выбраны' };
-  if (st === 'RESULTS_PUBLISHED') return { emoji: '🏆', label: 'Итоги опубликованы' };
-  if (st === 'CANCELLED') return { emoji: '⛔️', label: 'Отменён' };
-  return { emoji: '❔', label: st || '—' };
-}
-
-function gwStatusText(status) {
-  const b = gwStatusBadge(status);
-  return `${b.emoji} ${b.label}`;
-}
-
-// Normalize wsId for navigation: if user doesn't own this wsId, fall back to Brand Mode (ws=0)
-async function sanitizeWsIdForUser(userId, wsId) {
-  const n = Number(wsId || 0);
-  if (!n) return 0;
-  try {
-    const ws = await db.getWorkspace(userId, n);
-    return ws ? n : 0;
-  } catch {
-    return 0;
-  }
 }
 
 function bxCategoryKb(wsId) {
@@ -1073,7 +1061,8 @@ function gwOpenKb(g, flags = {}) {
   if (isAdmin) kb.text('🧩 Проверка доступа', `a:gw_access|i:${gwId}`).row();
   kb.text('📣 Напомнить проверить', `a:gw_remind_q|i:${gwId}`)
     .row()
-    ;
+    .text('👤 Кураторы', `a:ws_settings|ws:${g.workspace_id}`)
+    .row();
 
   if (String(g.status || '').toUpperCase() === 'WINNERS_DRAWN' && !g.results_message_id && g.published_chat_id) {
     kb.text('📣 Опубликовать итоги', `a:gw_publish_results|i:${gwId}`).row();
@@ -1101,7 +1090,6 @@ function renderParticipantScreen(g, entry) {
   const prize = (g.prize_value_text || '').trim() || '—';
   const ends = g.ends_at ? fmtTs(g.ends_at) : '—';
   const st = String(g.status || '').toUpperCase();
-  const stUi = gwStatusText(st);
 
   let stLine;
   if (!entry) stLine = 'Статус: ⛔ <b>не участвуешь</b>';
@@ -1117,7 +1105,7 @@ function renderParticipantScreen(g, entry) {
 ⏳ Итоги: <b>${escapeHtml(ends)}</b>
 
 ${stLine}
-Статус конкурса: <b>${escapeHtml(stUi)}</b>
+Статус конкурса: <b>${st}</b>
 
 Нажми “🔄 Проверить”, чтобы подтвердить подписки на каналы.
 
@@ -2781,9 +2769,7 @@ function bxFilterSummary(f) {
 }
 
 async function renderBxOpen(ctx, ownerUserId, wsId) {
-  let wsNum = Number(wsId || 0);
-  // If user doesn't own the workspace, silently fall back to Brand Mode (ws=0)
-  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(ownerUserId, wsNum);
+  const wsNum = Number(wsId || 0);
   if (wsNum === 0) {
     const credits = await db.getBrandCredits(ownerUserId);
     const retry = CFG.INTRO_RETRY_ENABLED ? await db.countAvailableBrandRetryCredits(ownerUserId) : 0;
@@ -2811,7 +2797,7 @@ async function renderBxOpen(ctx, ownerUserId, wsId) {
   }
 
   const ws = await db.getWorkspace(ownerUserId, wsNum);
-  if (!ws) return renderBxOpen(ctx, ownerUserId, 0);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
 
   if (!ws.network_enabled) {
     await ctx.editMessageText(
@@ -2833,43 +2819,15 @@ async function renderBxOpen(ctx, ownerUserId, wsId) {
 • Лента — офферы от участников сети
 • Разместить — твой оффер попадет в ленту
 • Мои офферы — пауза/удаление`,
-    { parse_mode: 'HTML', reply_markup: bxMenuKb(wsNum) }
-  );
-}
-
-async function renderBxNetConfirm(ctx, ownerUserId, wsId, target) {
-  const wsNum = Number(wsId || 0);
-  const ws = await db.getWorkspace(ownerUserId, wsNum);
-  if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-  const cur = Boolean(ws.network_enabled);
-  const want = target === 'on';
-  const curTxt = cur ? '✅ ВКЛ' : '❌ ВЫКЛ';
-  const wantTxt = want ? '✅ ВКЛ' : '❌ ВЫКЛ';
-  const title = want ? 'Включить сеть?' : 'Выключить сеть?';
-  const primary = want ? '✅ Включить' : '⛔️ Выключить';
-
-  const kb = new InlineKeyboard()
-    .text(primary, `a:bx_net_set|ws:${wsNum}|v:${want ? 'on' : 'off'}`)
-    .row()
-    .text('⬅️ Отмена', `a:bx_open|ws:${wsNum}`);
-
-  await ctx.editMessageText(
-    `🌐 <b>Сеть</b>
-
-${escapeHtml(title)}
-
-Сейчас: <b>${escapeHtml(curTxt)}</b>
-Станет: <b>${escapeHtml(wantTxt)}</b>`,
-    { parse_mode: 'HTML', reply_markup: kb }
+    { parse_mode: 'HTML', reply_markup: bxMenuKb(wsNum, ws.network_enabled) }
   );
 }
 
 async function renderBxFeed(ctx, ownerUserId, wsId, page = 0) {
-  let wsNum = Number(wsId || 0);
-  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(ownerUserId, wsNum);
+  const wsNum = Number(wsId || 0);
   if (wsNum !== 0) {
     const ws = await db.getWorkspace(ownerUserId, wsNum);
-    if (!ws) return renderBxFeed(ctx, ownerUserId, 0, page);
+    if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
     if (!ws.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
   }
 
@@ -3194,11 +3152,11 @@ ${contact ? `Контакт: <b>${escapeHtml(contact)}</b>` : ''}`;
 
 
 async function renderBxFilters(ctx, ownerUserId, wsId, page = 0) {
-  let wsNum = Number(wsId || 0);
-  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(ownerUserId, wsNum);
+  const wsNum = Number(wsId || 0);
   if (wsNum !== 0) {
     const ws = await db.getWorkspace(ownerUserId, wsNum);
-    if (!ws?.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
+    if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+    if (!ws.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
   }
 
   const f = await getBxFilter(ctx.from.id, wsNum);
@@ -3214,11 +3172,11 @@ ${escapeHtml(bxFilterSummary(f))}
 }
 
 async function renderBxFilterPick(ctx, ownerUserId, wsId, key, page = 0) {
-  let wsNum = Number(wsId || 0);
-  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(ownerUserId, wsNum);
+  const wsNum = Number(wsId || 0);
   if (wsNum !== 0) {
     const ws = await db.getWorkspace(ownerUserId, wsNum);
-    if (!ws?.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
+    if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+    if (!ws.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
   }
 
   const title = key === 'cat' ? 'Категория' : (key === 'type' ? 'Формат' : 'Оплата');
@@ -3244,11 +3202,6 @@ async function renderBxPublicView(ctx, userId, wsId, offerId, page = 0) {
   if (String(o.status || '').toUpperCase() !== 'ACTIVE') return fail('Оффер закрыт.');
   if (!o.network_enabled) return fail('Оффер вне сети.');
 
-  // Navigation / actions should use Brand Mode (ws=0) for non-owners.
-  const offerWsId = Number(o.workspace_id || wsId || 0);
-  let uiWsId = offerWsId;
-  if (uiWsId !== 0) uiWsId = await sanitizeWsIdForUser(userId, uiWsId);
-
   const ch = o.channel_username ? `@${o.channel_username}` : (o.ws_title || 'канал');
   const contact = (o.contact || '').trim();
 
@@ -3256,7 +3209,7 @@ async function renderBxPublicView(ctx, userId, wsId, offerId, page = 0) {
   if (o.partner_folder_id) {
     try {
       const folder = await db.getChannelFolder(Number(o.partner_folder_id));
-      if (folder && Number(folder.workspace_id) === Number(offerWsId)) {
+      if (folder && Number(folder.workspace_id) === Number(wsId)) {
         const items = await db.listChannelFolderItems(folder.id);
         const shown = items.slice(0, 10).map((i) => i.channel_username);
         const more = items.length > shown.length ? `\n… и ещё ${items.length - shown.length}` : '';
@@ -3277,7 +3230,7 @@ async function renderBxPublicView(ctx, userId, wsId, offerId, page = 0) {
     `${contact ? `Контакт: <b>${escapeHtml(contact)}</b>\n` : ''}` +
     `\nЕсли бот не может проверить каналы — попроси админа добавить бота в канал-спонсор.`;
 
-  const kb = new InlineKeyboard().text('💬 Написать', `a:bx_msg|ws:${uiWsId}|o:${offerId}|p:${page}`);
+  const kb = new InlineKeyboard().text('💬 Написать', `a:bx_msg|ws:${wsId}|o:${offerId}|p:${page}`);
 
   const isOwner = Number(o.owner_user_id) === Number(userId);
   let canOfficial = false;
@@ -3290,11 +3243,13 @@ async function renderBxPublicView(ctx, userId, wsId, offerId, page = 0) {
   }
 
   if (canOfficial) {
-    kb.row().text('📣 Офиц.канал', `a:off_manage|ws:${offerWsId}|o:${offerId}|p:${page}`);
+    kb.row().text('📣 Офиц.канал', `a:off_manage|ws:${wsId}|o:${offerId}|p:${page}`);
   }
 
-  kb.row().text('🚩 Жалоба', `a:bx_report_offer|ws:${uiWsId}|o:${offerId}|p:${page}`);
-  kb.row().text('⬅️ Назад', `a:bx_feed|ws:${uiWsId}|p:${page}`);
+  kb.row().text('🚩 Жалоба', `a:bx_report_offer|ws:${wsId}|o:${offerId}|p:${page}`);
+  // Back: for non-owners this wsId feed is inaccessible; send them to Brand Mode feed
+  const backCb = isOwner ? `a:bx_feed|ws:${wsId}|p:${page}` : `a:bx_feed|ws:0|p:0`;
+  kb.row().text('⬅️ Назад', backCb);
 
   const send = ctx.callbackQuery ? ctx.editMessageText.bind(ctx) : ctx.reply.bind(ctx);
   await send(text, { parse_mode: 'HTML', reply_markup: kb });
@@ -3689,8 +3644,6 @@ ${trialLine}${limitLine}${verifyHintLine}
 }
 
 async function renderBxInbox(ctx, userId, wsId, page = 0) {
-  let wsNum = Number(wsId || 0);
-  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(userId, wsNum);
 
   const limit = CFG.BARTER_INBOX_PAGE_SIZE;
   const offset = page * limit;
@@ -3720,12 +3673,12 @@ async function renderBxInbox(ctx, userId, wsId, page = 0) {
     const stLine = st.retry ? `${st.base} · ${st.retry}` : st.base;
 
     const line = `${prefix} · ${stLine} · ${escapeHtml(t.offer_title || 'оффер')} · ${escapeHtml(other)}${v}`;
-    kb.text(line.slice(0, 60), `a:bx_thread|ws:${wsNum}|t:${t.id}|p:${page}`).row();
+    kb.text(line.slice(0, 60), `a:bx_thread|ws:${wsId}|t:${t.id}|p:${page}`).row();
   }
 
   const hasPrev = page > 0;
   const hasNext = rows.length >= limit; // heuristic
-  const nav = bxInboxNavKb(wsNum, page, hasPrev, hasNext);
+  const nav = bxInboxNavKb(wsId, page, hasPrev, hasNext);
   for (const row of nav.inline_keyboard) kb.inline_keyboard.push(row);
 
   await ctx.editMessageText(header + (rows.length ? '' : '\n\nПока нет диалогов.'), { parse_mode: 'HTML', reply_markup: kb });
@@ -3796,8 +3749,6 @@ ${body}`;
 }
 
 async function renderBxThread(ctx, userId, wsId, threadId, opts = {}) {
-  let wsNum = Number(wsId || 0);
-  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(userId, wsNum);
   const built = await buildBxThreadView(userId, threadId);
   if (!built) return ctx.answerCallbackQuery({ text: 'Диалог не найден.' });
   const { thread, text, proofsCount } = built;
@@ -3815,7 +3766,7 @@ async function renderBxThread(ctx, userId, wsId, threadId, opts = {}) {
   });
   const showRetryInfo = replySt.isBuyer && CFG.INTRO_RETRY_ENABLED && thread.buyer_first_msg_at && !thread.seller_first_reply_at;
 
-  const kb = bxThreadKb(wsNum, threadId, {
+  const kb = bxThreadKb(wsId, threadId, {
     ...opts,
     offerId: thread.offer_id,
     canStage,
@@ -3841,8 +3792,6 @@ function bxProofsKb(wsId, threadId, opts = {}) {
 }
 
 async function renderBxProofs(ctx, userId, wsId, threadId, opts = {}) {
-  let wsNum = Number(wsId || 0);
-  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(userId, wsNum);
   const built = await buildBxThreadView(userId, threadId);
   if (!built) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
   const offerId = built.thread.offer_id ? Number(built.thread.offer_id) : null;
@@ -3876,7 +3825,7 @@ ${lines.length ? lines.join('\n') : 'Пока пусто.'}`;
 
   await ctx.editMessageText(text, {
     parse_mode: 'HTML',
-    reply_markup: bxProofsKb(wsNum, threadId, { ...opts, offerId })
+    reply_markup: bxProofsKb(wsId, threadId, { ...opts, offerId })
   });
   }
 
@@ -3995,6 +3944,32 @@ ${contact ? `Контакт: <b>${escapeHtml(String(contact))}</b>
     { parse_mode: 'HTML', reply_markup: kb }
   );
 }
+
+// Giveaway status labels (RU + emoji)
+function gwStatusLabel(status) {
+  const st = String(status || '').toUpperCase();
+  switch (st) {
+    case 'ACTIVE':
+      return '🟢 Идёт';
+    case 'ENDED':
+      return '🏁 Завершён';
+    case 'DRAFT':
+      return '📝 Черновик';
+    case 'PAUSED':
+      return '⏸ Пауза';
+    case 'WINNERS_DRAWN':
+      return '🎲 Победители выбраны';
+    case 'RESULTS_PUBLISHED':
+      return '🏆 Итоги опубликованы';
+    case 'CANCELLED':
+      return '⛔ Отменён';
+    case 'PUBLISHED':
+      return '📣 Опубликован';
+    default:
+      return st ? `ℹ️ ${st}` : '—';
+  }
+}
+
 async function renderGwList(ctx, ownerUserId, wsId = null) {
   const items = await db.listGiveaways(ownerUserId, 25);
   const filtered = wsId ? items.filter(x => x.workspace_id === wsId) : items;
@@ -4016,7 +3991,7 @@ async function renderGwList(ctx, ownerUserId, wsId = null) {
   }
 
   for (const g of filtered) {
-    const st = gwStatusText(g.status);
+    const st = gwStatusLabel(g.status);
     const wsLabel = !wsId ? ` · ${String(g.workspace_title || '').slice(0, 18)}` : '';
     kb.text(`#${g.id} · ${st}${wsLabel}`, `a:gw_open|i:${g.id}`)
       .text('🗑', `a:gw_del_q|i:${g.id}|ws:${g.workspace_id}`)
@@ -4039,12 +4014,14 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
   const sponsorLines = sponsors.map(s => `• ${escapeHtml(s.sponsor_text)}`).join('\n') || '—';
   const text = `🎁 <b>Конкурс #${g.id}</b>
 
-Статус: <b>${escapeHtml(gwStatusText(g.status))}</b>
+Статус: <b>${escapeHtml(gwStatusLabel(g.status))}</b>
 Приз: <b>${escapeHtml(g.prize_value_text || '—')}</b>
 Мест: <b>${g.winners_count}</b>
 Дедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>
 
-Спонсоры:\n${sponsorLines}`;
+Спонсоры:\n${sponsorLines}
+
+👤 <b>Куратор</b>: если ведёшь конкурс не один — пригласи помощника (⚙️ Настройки канала → 👤 Пригласить куратора).`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
 }
 
@@ -4108,6 +4085,157 @@ async function renderGwOpenPublic(ctx, gwId, userId) {
   const entry = await db.getEntryStatus(gwId, userId);
   const text = renderParticipantScreen(g, entry);
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: participantKb(gwId) });
+}
+
+// ----------------------
+// Curator cabinet (safe permissions)
+// ----------------------
+
+function curatorHomeKb(items) {
+  const kb = new InlineKeyboard();
+  for (const w of items) {
+    const on = !!w.curator_enabled;
+    const label = `${on ? '👤' : '🚫'} ${w.title || ('Канал #' + w.id)}`;
+    kb.text(label, on ? `a:cur_ws|ws:${w.id}` : `a:cur_ws_off|ws:${w.id}`).row();
+  }
+  kb.text('⬅️ Назад', 'a:menu').row();
+  return kb;
+}
+
+async function renderCuratorHome(ctx, userId) {
+  const items = await db.listCuratorWorkspaces(userId);
+  const text = `👤 <b>Куратор</b>
+
+Здесь — каналы, где ты назначен куратором.
+По умолчанию права безопасные: <b>Статистика</b> • <b>Лог</b> • <b>Напомнить проверить</b>.
+
+${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}`;
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorHomeKb(items) });
+}
+
+function curatorWsKb(wsId, giveaways) {
+  const kb = new InlineKeyboard();
+  for (const g of giveaways) {
+    kb.text(`🎁 #${g.id} · ${gwStatusLabel(g.status)}`, `a:cur_gw_open|ws:${wsId}|i:${g.id}`).row();
+  }
+  kb.text('⬅️ Назад', 'a:cur_home').row();
+  return kb;
+}
+
+async function renderCuratorWorkspace(ctx, userId, wsId) {
+  const wsIdNum = Number(wsId);
+  const giveaways = await db.listGiveawaysForCurator(wsIdNum, userId, 30);
+  const text = `👤 <b>Куратор</b> • Канал #${wsIdNum}
+
+${giveaways.length ? 'Конкурсы:' : 'Пока нет конкурсов.'}`;
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorWsKb(wsIdNum, giveaways) });
+}
+
+function curatorGwKb(wsId, gwId) {
+  return new InlineKeyboard()
+    .text('📊 Статистика', `a:cur_gw_stats|ws:${wsId}|i:${gwId}`)
+    .text('🧾 Лог', `a:cur_gw_log|ws:${wsId}|i:${gwId}`)
+    .row()
+    .text('📣 Напомнить проверить', `a:cur_gw_remind_q|ws:${wsId}|i:${gwId}`)
+    .row()
+    .text('⬅️ Назад', `a:cur_ws|ws:${wsId}`);
+}
+
+async function renderCuratorGiveawayOpen(ctx, userId, wsId, gwId) {
+  const g = await db.getGiveawayForCurator(Number(gwId), userId);
+  if (!g || Number(g.workspace_id) !== Number(wsId)) {
+    return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+  }
+  const text = `🎁 <b>Конкурс #${g.id}</b>
+
+Статус: <b>${escapeHtml(gwStatusLabel(g.status))}</b>
+Приз: <b>${escapeHtml(g.prize_value_text || '—')}</b>
+Мест: <b>${g.winners_count}</b>
+Дедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>
+
+Режим: <b>Куратор</b> (безопасные права)`;
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorGwKb(Number(wsId), Number(gwId)) });
+}
+
+async function renderCuratorGiveawayStats(ctx, userId, wsId, gwId) {
+  const st = await db.getGiveawayStatsForCurator(Number(gwId), userId);
+  if (!st) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const text = `📊 <b>Статистика конкурса #${gwId}</b>
+
+Всего заявок: <b>${st.entries_total ?? 0}</b>
+Прошли проверку: <b>${st.eligible_count ?? 0}</b>
+Не прошли: <b>${st.not_eligible_count ?? 0}</b>
+Последняя заявка: <b>${st.last_joined_at ? escapeHtml(fmtTs(st.last_joined_at)) : '—'}</b>
+Последняя проверка: <b>${st.last_checked_at ? escapeHtml(fmtTs(st.last_checked_at)) : '—'}</b>`;
+
+  const kb = new InlineKeyboard()
+    .text('🧾 Лог', `a:cur_gw_log|ws:${wsId}|i:${gwId}`)
+    .row()
+    .text('⬅️ Назад', `a:cur_gw_open|ws:${wsId}|i:${gwId}`);
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function renderCuratorGiveawayLog(ctx, userId, wsId, gwId) {
+  const g = await db.getGiveawayForCurator(Number(gwId), userId);
+  if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+  const rows = await db.listGiveawayAudit(Number(gwId), 30);
+  const lines = rows.map(r => `• <b>${escapeHtml(r.action)}</b> — ${fmtTs(r.created_at)}`);
+  const text = `🧾 <b>Лог конкурса #${gwId}</b>
+
+${lines.length ? lines.join('\n') : 'Пока пусто.'}`;
+  const kb = new InlineKeyboard().text('⬅️ Назад', `a:cur_gw_open|ws:${wsId}|i:${gwId}`);
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function renderCuratorGiveawayRemindQ(ctx, userId, wsId, gwId) {
+  const g = await db.getGiveawayForCurator(Number(gwId), userId);
+  if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const text = `📣 <b>Напомнить проверить</b>
+
+Бот отправит сообщение в канал конкурса, чтобы участники нажали кнопку <b>«Проверить»</b>.
+
+Отправить сейчас?`;
+  const kb = new InlineKeyboard()
+    .text('✅ Отправить', `a:cur_gw_remind_send|ws:${wsId}|i:${gwId}`)
+    .text('⬅️ Отмена', `a:cur_gw_open|ws:${wsId}|i:${gwId}`);
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function renderCuratorGiveawayRemindSend(ctx, userId, wsId, gwId) {
+  const g = await db.getGiveawayForCurator(Number(gwId), userId);
+  if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const chatId = g.published_chat_id ?? g.published_chat ?? g.channel_id ?? null;
+  if (!chatId) {
+    await ctx.answerCallbackQuery({ text: 'Не найден канал конкурса.' });
+    return renderCuratorGiveawayOpen(ctx, userId, wsId, gwId);
+  }
+
+  // rate-limit: 1 remind per 10 minutes per giveaway
+  const rlKey = k(['rl', 'gw_remind', String(gwId)]);
+  const locked = await rateLimit(rlKey, 1, 10 * 60);
+  if (!locked.ok) {
+    await ctx.answerCallbackQuery({ text: 'Слишком часто. Подожди немного.' });
+    return;
+  }
+
+  const kb = new InlineKeyboard().text('✅ Проверить', `a:gw_check|i:${g.id}`);
+  const msg = `🔔 <b>Проверка участия</b>
+
+Если ты уже выполнил условия — нажми «Проверить».`;
+
+  try {
+    await ctx.api.sendMessage(chatId, msg, { parse_mode: 'HTML', reply_markup: kb });
+    await db.auditGiveaway(g.id, userId, 'gw.reminder_posted', { actor_role: 'curator' });
+    await ctx.answerCallbackQuery({ text: '✅ Отправлено' });
+  } catch (e) {
+    await ctx.answerCallbackQuery({ text: 'Не удалось отправить в канал.' });
+  }
+
+  await renderCuratorGiveawayOpen(ctx, userId, wsId, gwId);
 }
 
 
@@ -4529,7 +4657,7 @@ export function getBot() {
       await db.addCurator(exp.wsId, curator.id, u.id);
       await ctx.reply(`✅ Куратор @${username} добавлен.
 
-Включи 🛡 Куратор: ВКЛ, если хочешь чтобы он мог модерировать споры.`);
+Включи 👤 Куратор: ВКЛ, если хочешь чтобы он мог помогать с конкурсами (статы/лог/напоминания).`);
       return;
     }
 
@@ -5896,18 +6024,18 @@ ${reason}
       if (!g) return ctx.reply('Нет доступа к этому конкурсу.');
       const sponsors = await db.listGiveawaySponsors(payload.id);
       const sponsorLines = sponsors.map(s => `• ${escapeHtml(s.sponsor_text)}`).join('\n') || '—';
-      const text = `🎁 <b>Конкурс #${g.id}</b>\n\nСтатус: <b>${escapeHtml(gwStatusText(g.status))}</b>\nПриз: <b>${escapeHtml(g.prize_value_text || '—')}</b>\nМест: <b>${g.winners_count}</b>\nДедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>\n\nСпонсоры:\n${sponsorLines}`;
+      const text = `🎁 <b>Конкурс #${g.id}</b>\n\nСтатус: <b>${escapeHtml(gwStatusLabel(g.status))}</b>\nПриз: <b>${escapeHtml(g.prize_value_text || '—')}</b>\nМест: <b>${g.winners_count}</b>\nДедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>\n\nСпонсоры:\n${sponsorLines}`;
       return ctx.reply(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
     }
     if (payload?.type === 'cur') {
       // curator invite flow
       const key = k(['cur_invite', payload.wsId, payload.token]);
-      const val = await redis.get(key);
-      if (!val) return ctx.reply('Ссылка устарела или недействительна.');
+      // single-use: consume value atomically when possible
+      const val = await consumeOnce(key);
+      if (!val) return ctx.reply('Ссылка устарела, недействительна или уже была использована.');
       const ownerUserId = Number(val.ownerUserId || val.owner_user_id || val.owner || 0);
       const added = await db.addCurator(payload.wsId, u.id, ownerUserId || u.id);
-      await redis.del(key);
-      await ctx.reply('✅ Ты добавлен как куратор. Теперь попроси владельца включить “🛡 Куратор: ВКЛ” в настройках канала.');
+      await ctx.reply('✅ Ты добавлен как куратор. Теперь попроси владельца включить “👤 Куратор: ВКЛ” в настройках канала.');
       return;
     }
 
@@ -6311,6 +6439,7 @@ bot.on('message:successful_payment', async (ctx) => {
 3) 🎁 Создай конкурс или 🤝 оффер
 4) Опубликуй / получай заявки
 5) В Brand Mode бренды проходят через Brand Pass (анти-спам)
+6) 👤 Если ведёшь конкурс с командой — добавь куратора: Мои каналы → ⚙️ Настройки → Пригласить куратора
 
 Выбери раздел:`;
 
@@ -7376,35 +7505,9 @@ if (p.a === 'a:match_home') {
       return;
     }
 
-    // Barters network toggle (confirm → set)
-    if (p.a === 'a:bx_net_q') {
-      const wsId = Number(p.ws);
-      const target = String(p.v || '').toLowerCase() === 'off' ? 'off' : 'on';
-      await ctx.answerCallbackQuery();
-      await renderBxNetConfirm(ctx, u.id, wsId, target);
-      return;
-    }
-
-    if (p.a === 'a:bx_net_set') {
-      const wsId = Number(p.ws);
-      const target = String(p.v || '').toLowerCase() === 'off' ? 'off' : 'on';
-      const ws = await db.getWorkspace(u.id, wsId);
-      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-      const enabled = target === 'on';
-      await db.setWorkspaceSetting(wsId, { network_enabled: enabled });
-      await db.auditWorkspace(wsId, u.id, 'ws.network_enabled', { enabled, source: 'barter' });
-
-      await ctx.answerCallbackQuery({ text: enabled ? '🌐 Сеть включена ✅' : '🌐 Сеть выключена ❌' });
-      await renderBxOpen(ctx, u.id, wsId);
-      return;
-    }
-
     if (p.a === 'a:bx_enable_net') {
       const wsId = Number(p.ws);
-      // Backward compatibility for old keyboards: route to confirm screen.
-      await ctx.answerCallbackQuery();
-      await renderBxNetConfirm(ctx, u.id, wsId, 'on');
+      await renderNetConfirm(ctx, u.id, wsId, 'bx');
       return;
     }
 
@@ -8279,13 +8382,35 @@ if (p.a === 'a:bx_cat') {
       return;
     }
 
-    if (p.a === 'a:ws_toggle_net') {
+    if (p.a === 'a:net_q') {
       const wsId = Number(p.ws);
+      const ret = String(p.ret || 'ws');
+      await renderNetConfirm(ctx, u.id, wsId, ret);
+      return;
+    }
+
+    if (p.a === 'a:net_set') {
+      const wsId = Number(p.ws);
+      const enabled = String(p.v) === '1';
+      const ret = String(p.ret || 'ws') === 'bx' ? 'bx' : 'ws';
       const ws = await db.getWorkspace(u.id, wsId);
       if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-      await db.setWorkspaceSetting(wsId, { network_enabled: !ws.network_enabled });
-      await db.auditWorkspace(wsId, u.id, 'ws.network_toggled', { enabled: !ws.network_enabled });
-      await renderWsSettings(ctx, u.id, wsId);
+
+      await db.setWorkspaceSetting(wsId, { network_enabled: enabled });
+      await db.auditWorkspace(wsId, u.id, 'ws.network_toggled', { enabled, source: ret });
+      await ctx.answerCallbackQuery({ text: enabled ? '✅ Сеть включена' : '❌ Сеть выключена' });
+      if (ret === 'bx') {
+        await renderBxOpen(ctx, u.id, wsId);
+      } else {
+        await renderWsSettings(ctx, u.id, wsId);
+      }
+      return;
+    }
+
+    // Backward compat: old toggle callback (messages already sent)
+    if (p.a === 'a:ws_toggle_net') {
+      const wsId = Number(p.ws);
+      await renderNetConfirm(ctx, u.id, wsId, 'ws');
       return;
     }
 
@@ -8310,12 +8435,18 @@ if (p.a === 'a:bx_cat') {
       await redis.set(key, { ownerUserId: u.id }, { ex: 10 * 60 });
 
       const link = `https://t.me/${CFG.BOT_USERNAME}?start=cur_${wsId}_${token}`;
-      const text = `👤 <b>Приглашение куратора</b>\n\nСсылка на 10 минут:\n${escapeHtml(link)}\n\nКуратор должен открыть ссылку в Telegram.`;
+      const text = `👤 <b>Приглашение куратора</b>\n\nСсылка (одноразовая • 10 минут):\n${escapeHtml(link)}\n\nНажми “Поделиться” и отправь приглашение нужному человеку.`;
+
+      const shareText = `Приглашение куратора (одноразовая, 10 минут).\nОткрой ссылку: ${link}`;
+      const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`;
       await ctx.answerCallbackQuery();
       await ctx.editMessageText(text, {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
-        reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:ws_settings|ws:${wsId}`)
+        reply_markup: new InlineKeyboard()
+          .url('📤 Поделиться', shareUrl)
+          .row()
+          .text('⬅️ Назад', `a:ws_settings|ws:${wsId}`)
       });
       return;
     }
