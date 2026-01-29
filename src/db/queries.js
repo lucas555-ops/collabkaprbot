@@ -841,7 +841,7 @@ export async function listGiveawaysToEnd(limit = 50) {
   const r = await pool.query(
     `select id, workspace_id, ends_at, status, auto_draw, auto_publish, published_chat_id
      from giveaways
-     where status in ('PUBLISHED','RUNNING')
+     where status in ('PUBLISHED','RUNNING','ACTIVE')
        and ends_at is not null
        and ends_at <= now()
      order by ends_at asc
