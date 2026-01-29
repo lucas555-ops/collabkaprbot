@@ -1061,8 +1061,7 @@ function gwOpenKb(g, flags = {}) {
   if (isAdmin) kb.text('🧩 Проверка доступа', `a:gw_access|i:${gwId}`).row();
   kb.text('📣 Напомнить проверить', `a:gw_remind_q|i:${gwId}`)
     .row()
-    .text('👤 Кураторы', `a:ws_settings|ws:${g.workspace_id}`)
-    .row();
+    ;
 
   if (String(g.status || '').toUpperCase() === 'WINNERS_DRAWN' && !g.results_message_id && g.published_chat_id) {
     kb.text('📣 Опубликовать итоги', `a:gw_publish_results|i:${gwId}`).row();
@@ -4019,9 +4018,7 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
 Мест: <b>${g.winners_count}</b>
 Дедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>
 
-Спонсоры:\n${sponsorLines}
-
-👤 <b>Куратор</b>: если ведёшь конкурс не один — пригласи помощника (⚙️ Настройки канала → 👤 Пригласить куратора).`;
+Спонсоры:\n${sponsorLines}`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
 }
 
@@ -6439,7 +6436,6 @@ bot.on('message:successful_payment', async (ctx) => {
 3) 🎁 Создай конкурс или 🤝 оффер
 4) Опубликуй / получай заявки
 5) В Brand Mode бренды проходят через Brand Pass (анти-спам)
-6) 👤 Если ведёшь конкурс с командой — добавь куратора: Мои каналы → ⚙️ Настройки → Пригласить куратора
 
 Выбери раздел:`;
 
