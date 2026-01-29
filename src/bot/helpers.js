@@ -36,7 +36,11 @@ export function parseCb(data) {
 
 export function parseStartPayload(text) {
   const t = String(text || '');
-  let m = t.match(/\/start\s+gw_(\d+)/);
+  let m = t.match(/\/start\s+gwj_(\d+)/);
+  if (m) return { type: 'gwj', id: Number(m[1]) };
+  m = t.match(/\/start\s+gwc_(\d+)/);
+  if (m) return { type: 'gwc', id: Number(m[1]) };
+  m = t.match(/\/start\s+gw_(\d+)/);
   if (m) return { type: 'gw', id: Number(m[1]) };
   m = t.match(/\/start\s+gwo_(\d+)/);
   if (m) return { type: 'gwo', id: Number(m[1]) };
