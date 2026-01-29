@@ -4166,6 +4166,22 @@ ${items.length ? 'Выбери канал:' : 'Пока тебя не назна
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorHomeKb(items, modeEnabled) });
 }
 
+// Same as renderCuratorHome, but for /start (new message instead of edit)
+async function replyCuratorHome(ctx, userId) {
+  const items = await db.listCuratorWorkspaces(userId);
+  const modeEnabled = await getCuratorMode(ctx.from.id);
+  const text = `👤 <b>Куратор</b>
+
+Здесь — каналы, где ты назначен куратором.
+По умолчанию права безопасные: <b>Статистика</b> • <b>Лог</b> • <b>Напомнить проверить</b>.
+
+${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}
+
+✅ — куратор включен • ❌ — владелец выключил`;
+
+  await ctx.reply(text, { parse_mode: 'HTML', reply_markup: curatorHomeKb(items, modeEnabled) });
+}
+
 function curatorWsKb(wsId, giveaways) {
   const kb = new InlineKeyboard();
   for (const g of giveaways) {
@@ -6203,14 +6219,9 @@ if (payload?.type === 'bxo') {
 
     const flags = await getRoleFlags(u, ctx.from.id);
     const curMode = !!flags.isCurator && (await getCuratorMode(ctx.from.id));
+    // If curator mode is enabled — go straight to curator cabinet (more direct than showing the mode menu).
     if (curMode) {
-      await ctx.reply(`👤 <b>Режим куратора</b>
-
-Здесь показаны только действия куратора, чтобы не путаться.
-Чтобы вернуть полное меню — нажми “🔓 Обычный режим”.`, {
-        parse_mode: 'HTML',
-        reply_markup: curatorModeMenuKb(flags)
-      });
+      await replyCuratorHome(ctx, u.id);
       return;
     }
     if (CFG.ONBOARDING_V2_ENABLED) {
@@ -6699,7 +6710,9 @@ bot.on('message:successful_payment', async (ctx) => {
       const wsId = Number(p.ws || 0);
       if (!wsId) return;
       await renderCuratorWorkspace(ctx, u.id, wsId);
-      
+      return;
+    }
+
     if (p.a === 'a:cur_leave_q') {
       await ctx.answerCallbackQuery();
       const flags = await getRoleFlags(u, ctx.from.id);
@@ -6757,9 +6770,6 @@ bot.on('message:successful_payment', async (ctx) => {
 
       await renderCuratorHome(ctx, u.id);
       return;
-    }
-
-return;
     }
 
     if (p.a === 'a:cur_gw_open') {
