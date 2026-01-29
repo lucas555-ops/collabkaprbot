@@ -1104,6 +1104,8 @@ function gwSponsorsOptionalKb(wsId) {
     .row()
     .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
     .row()
+    .text('🧭 Что такое спонсоры?', `a:gw_sponsors_help|ws:${wsId}`)
+    .row()
     .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
 }
 
@@ -10071,6 +10073,8 @@ if (p.a === 'a:gw_prize') {
         .row()
         .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
         .row()
+        .text('🧭 Что такое спонсоры?', `a:gw_sponsors_help|ws:${wsId}`)
+        .row()
         .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
       await ctx.editMessageText(
         `Спонсоры (необязательно, до ${max}).\n\n` +
@@ -10105,6 +10109,8 @@ if (p.a === 'a:gw_prize') {
         .text('✍️ Ввести списком', `a:gw_sponsors_enter|ws:${wsId}`)
         .row()
         .text('📁 Из папки', `a:gw_sponsors_from_folder|ws:${wsId}`)
+        .row()
+        .text('🧭 Что такое спонсоры?', `a:gw_sponsors_help|ws:${wsId}`)
         .row()
         .text('⬅️ Назад', `a:gw_new|ws:${wsId}`);
       await ctx.editMessageText(
@@ -10223,6 +10229,10 @@ if (p.a === 'a:gw_prize') {
       const prize = (draft.prize_value_text || '').trim() || '—';
       const winners = Number(draft.winners_count || 0) || 1;
       const ends = draft.ends_at ? fmtTs(draft.ends_at) : '—';
+      const sponsorsN = Array.isArray(draft.sponsors) ? draft.sponsors.length : 0;
+      const sponsorsLine = sponsorsN
+        ? `👥 Спонсоры: подписка на <b>${sponsorsN}</b> канал(ов). Проверка — кнопкой «Проверить».`
+        : `👥 Спонсоры: <b>нет</b> (соло).`;
 
       const text =
 `🎀 <b>РОЗЫГРЫШ</b>
@@ -10230,6 +10240,8 @@ if (p.a === 'a:gw_prize') {
 🎁 Приз: <b>${escapeHtml(prize)}</b>
 🏆 Мест: <b>${winners}</b>
 ⏳ Итоги: <b>${escapeHtml(String(ends))}</b>
+
+${sponsorsLine}
 
 ✅ Нажми “Открыть бота” — там будут кнопки «Участвовать» и «Проверить».
 
