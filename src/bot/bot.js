@@ -4446,7 +4446,7 @@ async function renderCuratorGiveawayRemindQ(ctx, userId, wsId, gwId) {
 
   const text = `📣 <b>Напомнить проверить</b>
 
-Бот отправит сообщение в канал конкурса, чтобы участники открыли бота и нажали <b>«Проверить участие»</b>.
+Бот отправит сообщение в канал конкурса, чтобы участники открыли бота и нажали <b>«Проверить»</b>.
 
 Отправить сейчас?`;
   const kb = new InlineKeyboard()
@@ -4474,13 +4474,13 @@ async function renderCuratorGiveawayRemindSend(ctx, userId, wsId, gwId) {
   }
 
   // Use URL button (works reliably inside channel posts and always opens the bot).
-  const link = `https://t.me/${CFG.BOT_USERNAME}?start=gwc_${g.id}`;
+  const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${g.id}`;
   const msg = `🔔 <b>Проверка участия</b>
 
-Если ты уже выполнил условия — нажми <b>«Проверить участие»</b> в боте.
+Открой бота и нажми <b>«Проверить»</b>, чтобы подтвердить подписки.
 
-🔍 Проверка: ${escapeHtml(link)}`;
-  const kb = { inline_keyboard: [[{ text: '🔍 Проверить участие', url: link }]] };
+🤖 Бот: ${escapeHtml(link)}`;
+  const kb = { inline_keyboard: [[{ text: '✅ Открыть бота', url: link }]] };
 
   try {
     await ctx.api.sendMessage(chatId, msg, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
@@ -10133,7 +10133,7 @@ if (p.a === 'a:gw_prize') {
 🏆 Мест: <b>${winners}</b>
 ⏳ Итоги: <b>${escapeHtml(String(ends))}</b>
 
-✅ Нажми “Участвовать”, затем “Проверить” в боте.
+✅ Нажми “Открыть бота” — там будут кнопки «Участвовать» и «Проверить».
 
 <i>Это превью. Для публикации нажми “📣 Опубликовать” ниже.</i>`;
 
@@ -10199,17 +10199,13 @@ if (p.a === 'a:gw_prize') {
 
       // publish post
       const botUsername = CFG.BOT_USERNAME;
-      const deepLinkJoin = `https://t.me/${botUsername}?start=gwj_${created.id}`;
-      const deepLinkCheck = `https://t.me/${botUsername}?start=gwc_${created.id}`;
+      const deepLinkOpen = `https://t.me/${botUsername}?start=gw_${created.id}`;
       const text =
-`🎀 <b>РОЗЫГРЫШ</b>\n\n🎁 Приз: <b>${escapeHtml(draft.prize_value_text)}</b>\n🏆 Мест: <b>${Number(draft.winners_count)}</b>\n⏳ Итоги: <b>${escapeHtml(fmtTs(draft.ends_at))}</b>\n\n✅ Нажми “Участвовать”, затем “Проверить” в боте.`;
+`🎀 <b>РОЗЫГРЫШ</b>\n\n🎁 Приз: <b>${escapeHtml(draft.prize_value_text)}</b>\n🏆 Мест: <b>${Number(draft.winners_count)}</b>\n⏳ Итоги: <b>${escapeHtml(fmtTs(draft.ends_at))}</b>\n\n✅ Нажми “Открыть бота” — там будут кнопки «Участвовать» и «Проверить».`;
 
       const kb = {
         inline_keyboard: [
-          [
-            { text: '✅ Участвовать', url: deepLinkJoin },
-            { text: '🔍 Проверить', url: deepLinkCheck }
-          ]
+          [{ text: '✅ Открыть бота', url: deepLinkOpen }]
         ]
       };
 
@@ -10339,18 +10335,18 @@ if (p.a === 'a:gw_prize') {
       const hasSponsors = Array.isArray(sponsors) && sponsors.length > 0;
 
       // Use a direct "check" deep-link so the channel button always works and takes the user straight to eligibility check.
-      const link = `https://t.me/${CFG.BOT_USERNAME}?start=gwc_${gwId}`;
+      const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${gwId}`;
       const line1 = hasSponsors
         ? '1) Подпишись на канал конкурса (этот канал) и на все каналы-спонсоры'
         : '1) Подпишись на канал конкурса (этот канал)';
       const text =
-`📣 <b>Напоминание участникам</b>\n\nЧтобы участие засчиталось ✅\n${line1}\n2) Нажми <b>«Проверить участие»</b> в боте\n\n🔍 Проверка: ${escapeHtml(link)}`;
+`📣 <b>Напоминание участникам</b>\n\nЧтобы участие засчиталось ✅\n${line1}\n2) Открой бота и нажми <b>«Проверить»</b>\n\n🤖 Бот: ${escapeHtml(link)}`;
 
       try {
         const sent = await ctx.api.sendMessage(Number(g.published_chat_id), text, {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
-          reply_markup: { inline_keyboard: [[{ text: '🔍 Проверить участие', url: link }]] }
+          reply_markup: { inline_keyboard: [[{ text: '✅ Открыть бота', url: link }]] }
         });
         await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.reminder_posted', { chat_id: g.published_chat_id, message_id: sent.message_id });
         await ctx.answerCallbackQuery({ text: 'Отправлено ✅' });
