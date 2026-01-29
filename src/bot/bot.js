@@ -381,6 +381,11 @@ function bxMenuKb(wsId) {
     .text('➕ Разместить оффер', `a:bx_new|ws:${wsId}`)
     .text('🏷 Brand Mode', 'a:bx_open|ws:0');
 
+  // Network toggle (workspace owners only). Brand Mode (ws=0) doesn't manage network.
+  if (Number(wsId || 0) !== 0) {
+    kb.row().text('🌐 Сеть: ✅ ВКЛ', `a:bx_net_q|ws:${wsId}|v:off`);
+  }
+
   if (CFG.VERIFICATION_ENABLED) kb.row().text('✅ Верификация', 'a:verify_home');
 
   kb.row().text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
@@ -653,7 +658,7 @@ async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
 
 function bxNeedNetworkKb(wsId) {
   return new InlineKeyboard()
-    .text('✅ Включить “Сеть”', `a:bx_enable_net|ws:${wsId}`)
+    .text('🌐 Сеть: ❌ ВЫКЛ', `a:bx_net_q|ws:${wsId}|v:on`)
     .row()
     .text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
 }
@@ -668,6 +673,44 @@ const BX_CATEGORIES = [
 
 function bxCategoryLabel(c) {
   return BX_CATEGORIES.find((x) => x.key === c)?.label || '✨ Другое';
+}
+
+// -----------------------------
+// Giveaway status labels (RU)
+// -----------------------------
+
+function gwStatusBadge(status) {
+  const st = String(status || '').toUpperCase();
+  // Backward/forward compatible mapping across bot versions.
+  if (st === 'DRAFT') return { emoji: '📝', label: 'Черновик' };
+  if (st === 'PUBLISHED') return { emoji: '📣', label: 'Опубликован' };
+  if (st === 'RUNNING') return { emoji: '🟢', label: 'Идёт' };
+
+  // Current bot statuses
+  if (st === 'ACTIVE') return { emoji: '🟢', label: 'Идёт' };
+  if (st === 'PAUSED') return { emoji: '⏸', label: 'Пауза' };
+  if (st === 'ENDED') return { emoji: '🏁', label: 'Завершён' };
+  if (st === 'WINNERS_DRAWN') return { emoji: '🎲', label: 'Победители выбраны' };
+  if (st === 'RESULTS_PUBLISHED') return { emoji: '🏆', label: 'Итоги опубликованы' };
+  if (st === 'CANCELLED') return { emoji: '⛔️', label: 'Отменён' };
+  return { emoji: '❔', label: st || '—' };
+}
+
+function gwStatusText(status) {
+  const b = gwStatusBadge(status);
+  return `${b.emoji} ${b.label}`;
+}
+
+// Normalize wsId for navigation: if user doesn't own this wsId, fall back to Brand Mode (ws=0)
+async function sanitizeWsIdForUser(userId, wsId) {
+  const n = Number(wsId || 0);
+  if (!n) return 0;
+  try {
+    const ws = await db.getWorkspace(userId, n);
+    return ws ? n : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function bxCategoryKb(wsId) {
@@ -1058,6 +1101,7 @@ function renderParticipantScreen(g, entry) {
   const prize = (g.prize_value_text || '').trim() || '—';
   const ends = g.ends_at ? fmtTs(g.ends_at) : '—';
   const st = String(g.status || '').toUpperCase();
+  const stUi = gwStatusText(st);
 
   let stLine;
   if (!entry) stLine = 'Статус: ⛔ <b>не участвуешь</b>';
@@ -1073,7 +1117,7 @@ function renderParticipantScreen(g, entry) {
 ⏳ Итоги: <b>${escapeHtml(ends)}</b>
 
 ${stLine}
-Статус конкурса: <b>${st}</b>
+Статус конкурса: <b>${escapeHtml(stUi)}</b>
 
 Нажми “🔄 Проверить”, чтобы подтвердить подписки на каналы.
 
@@ -2737,7 +2781,9 @@ function bxFilterSummary(f) {
 }
 
 async function renderBxOpen(ctx, ownerUserId, wsId) {
-  const wsNum = Number(wsId || 0);
+  let wsNum = Number(wsId || 0);
+  // If user doesn't own the workspace, silently fall back to Brand Mode (ws=0)
+  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(ownerUserId, wsNum);
   if (wsNum === 0) {
     const credits = await db.getBrandCredits(ownerUserId);
     const retry = CFG.INTRO_RETRY_ENABLED ? await db.countAvailableBrandRetryCredits(ownerUserId) : 0;
@@ -2765,7 +2811,7 @@ async function renderBxOpen(ctx, ownerUserId, wsId) {
   }
 
   const ws = await db.getWorkspace(ownerUserId, wsNum);
-  if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+  if (!ws) return renderBxOpen(ctx, ownerUserId, 0);
 
   if (!ws.network_enabled) {
     await ctx.editMessageText(
@@ -2791,11 +2837,39 @@ async function renderBxOpen(ctx, ownerUserId, wsId) {
   );
 }
 
-async function renderBxFeed(ctx, ownerUserId, wsId, page = 0) {
+async function renderBxNetConfirm(ctx, ownerUserId, wsId, target) {
   const wsNum = Number(wsId || 0);
+  const ws = await db.getWorkspace(ownerUserId, wsNum);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+  const cur = Boolean(ws.network_enabled);
+  const want = target === 'on';
+  const curTxt = cur ? '✅ ВКЛ' : '❌ ВЫКЛ';
+  const wantTxt = want ? '✅ ВКЛ' : '❌ ВЫКЛ';
+  const title = want ? 'Включить сеть?' : 'Выключить сеть?';
+  const primary = want ? '✅ Включить' : '⛔️ Выключить';
+
+  const kb = new InlineKeyboard()
+    .text(primary, `a:bx_net_set|ws:${wsNum}|v:${want ? 'on' : 'off'}`)
+    .row()
+    .text('⬅️ Отмена', `a:bx_open|ws:${wsNum}`);
+
+  await ctx.editMessageText(
+    `🌐 <b>Сеть</b>
+
+${escapeHtml(title)}
+
+Сейчас: <b>${escapeHtml(curTxt)}</b>
+Станет: <b>${escapeHtml(wantTxt)}</b>`,
+    { parse_mode: 'HTML', reply_markup: kb }
+  );
+}
+
+async function renderBxFeed(ctx, ownerUserId, wsId, page = 0) {
+  let wsNum = Number(wsId || 0);
+  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(ownerUserId, wsNum);
   if (wsNum !== 0) {
     const ws = await db.getWorkspace(ownerUserId, wsNum);
-    if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+    if (!ws) return renderBxFeed(ctx, ownerUserId, 0, page);
     if (!ws.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
   }
 
@@ -3120,11 +3194,11 @@ ${contact ? `Контакт: <b>${escapeHtml(contact)}</b>` : ''}`;
 
 
 async function renderBxFilters(ctx, ownerUserId, wsId, page = 0) {
-  const wsNum = Number(wsId || 0);
+  let wsNum = Number(wsId || 0);
+  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(ownerUserId, wsNum);
   if (wsNum !== 0) {
     const ws = await db.getWorkspace(ownerUserId, wsNum);
-    if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-    if (!ws.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
+    if (!ws?.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
   }
 
   const f = await getBxFilter(ctx.from.id, wsNum);
@@ -3140,11 +3214,11 @@ ${escapeHtml(bxFilterSummary(f))}
 }
 
 async function renderBxFilterPick(ctx, ownerUserId, wsId, key, page = 0) {
-  const wsNum = Number(wsId || 0);
+  let wsNum = Number(wsId || 0);
+  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(ownerUserId, wsNum);
   if (wsNum !== 0) {
     const ws = await db.getWorkspace(ownerUserId, wsNum);
-    if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-    if (!ws.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
+    if (!ws?.network_enabled) return renderBxOpen(ctx, ownerUserId, wsNum);
   }
 
   const title = key === 'cat' ? 'Категория' : (key === 'type' ? 'Формат' : 'Оплата');
@@ -3170,6 +3244,11 @@ async function renderBxPublicView(ctx, userId, wsId, offerId, page = 0) {
   if (String(o.status || '').toUpperCase() !== 'ACTIVE') return fail('Оффер закрыт.');
   if (!o.network_enabled) return fail('Оффер вне сети.');
 
+  // Navigation / actions should use Brand Mode (ws=0) for non-owners.
+  const offerWsId = Number(o.workspace_id || wsId || 0);
+  let uiWsId = offerWsId;
+  if (uiWsId !== 0) uiWsId = await sanitizeWsIdForUser(userId, uiWsId);
+
   const ch = o.channel_username ? `@${o.channel_username}` : (o.ws_title || 'канал');
   const contact = (o.contact || '').trim();
 
@@ -3177,7 +3256,7 @@ async function renderBxPublicView(ctx, userId, wsId, offerId, page = 0) {
   if (o.partner_folder_id) {
     try {
       const folder = await db.getChannelFolder(Number(o.partner_folder_id));
-      if (folder && Number(folder.workspace_id) === Number(wsId)) {
+      if (folder && Number(folder.workspace_id) === Number(offerWsId)) {
         const items = await db.listChannelFolderItems(folder.id);
         const shown = items.slice(0, 10).map((i) => i.channel_username);
         const more = items.length > shown.length ? `\n… и ещё ${items.length - shown.length}` : '';
@@ -3198,7 +3277,7 @@ async function renderBxPublicView(ctx, userId, wsId, offerId, page = 0) {
     `${contact ? `Контакт: <b>${escapeHtml(contact)}</b>\n` : ''}` +
     `\nЕсли бот не может проверить каналы — попроси админа добавить бота в канал-спонсор.`;
 
-  const kb = new InlineKeyboard().text('💬 Написать', `a:bx_msg|ws:${wsId}|o:${offerId}|p:${page}`);
+  const kb = new InlineKeyboard().text('💬 Написать', `a:bx_msg|ws:${uiWsId}|o:${offerId}|p:${page}`);
 
   const isOwner = Number(o.owner_user_id) === Number(userId);
   let canOfficial = false;
@@ -3211,11 +3290,11 @@ async function renderBxPublicView(ctx, userId, wsId, offerId, page = 0) {
   }
 
   if (canOfficial) {
-    kb.row().text('📣 Офиц.канал', `a:off_manage|ws:${wsId}|o:${offerId}|p:${page}`);
+    kb.row().text('📣 Офиц.канал', `a:off_manage|ws:${offerWsId}|o:${offerId}|p:${page}`);
   }
 
-  kb.row().text('🚩 Жалоба', `a:bx_report_offer|ws:${wsId}|o:${offerId}|p:${page}`);
-    kb.row().text('⬅️ Назад', `a:bx_feed|ws:${wsId}|p:${page}`);
+  kb.row().text('🚩 Жалоба', `a:bx_report_offer|ws:${uiWsId}|o:${offerId}|p:${page}`);
+  kb.row().text('⬅️ Назад', `a:bx_feed|ws:${uiWsId}|p:${page}`);
 
   const send = ctx.callbackQuery ? ctx.editMessageText.bind(ctx) : ctx.reply.bind(ctx);
   await send(text, { parse_mode: 'HTML', reply_markup: kb });
@@ -3610,6 +3689,8 @@ ${trialLine}${limitLine}${verifyHintLine}
 }
 
 async function renderBxInbox(ctx, userId, wsId, page = 0) {
+  let wsNum = Number(wsId || 0);
+  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(userId, wsNum);
 
   const limit = CFG.BARTER_INBOX_PAGE_SIZE;
   const offset = page * limit;
@@ -3639,12 +3720,12 @@ async function renderBxInbox(ctx, userId, wsId, page = 0) {
     const stLine = st.retry ? `${st.base} · ${st.retry}` : st.base;
 
     const line = `${prefix} · ${stLine} · ${escapeHtml(t.offer_title || 'оффер')} · ${escapeHtml(other)}${v}`;
-    kb.text(line.slice(0, 60), `a:bx_thread|ws:${wsId}|t:${t.id}|p:${page}`).row();
+    kb.text(line.slice(0, 60), `a:bx_thread|ws:${wsNum}|t:${t.id}|p:${page}`).row();
   }
 
   const hasPrev = page > 0;
   const hasNext = rows.length >= limit; // heuristic
-  const nav = bxInboxNavKb(wsId, page, hasPrev, hasNext);
+  const nav = bxInboxNavKb(wsNum, page, hasPrev, hasNext);
   for (const row of nav.inline_keyboard) kb.inline_keyboard.push(row);
 
   await ctx.editMessageText(header + (rows.length ? '' : '\n\nПока нет диалогов.'), { parse_mode: 'HTML', reply_markup: kb });
@@ -3715,6 +3796,8 @@ ${body}`;
 }
 
 async function renderBxThread(ctx, userId, wsId, threadId, opts = {}) {
+  let wsNum = Number(wsId || 0);
+  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(userId, wsNum);
   const built = await buildBxThreadView(userId, threadId);
   if (!built) return ctx.answerCallbackQuery({ text: 'Диалог не найден.' });
   const { thread, text, proofsCount } = built;
@@ -3732,7 +3815,7 @@ async function renderBxThread(ctx, userId, wsId, threadId, opts = {}) {
   });
   const showRetryInfo = replySt.isBuyer && CFG.INTRO_RETRY_ENABLED && thread.buyer_first_msg_at && !thread.seller_first_reply_at;
 
-  const kb = bxThreadKb(wsId, threadId, {
+  const kb = bxThreadKb(wsNum, threadId, {
     ...opts,
     offerId: thread.offer_id,
     canStage,
@@ -3758,6 +3841,8 @@ function bxProofsKb(wsId, threadId, opts = {}) {
 }
 
 async function renderBxProofs(ctx, userId, wsId, threadId, opts = {}) {
+  let wsNum = Number(wsId || 0);
+  if (wsNum !== 0) wsNum = await sanitizeWsIdForUser(userId, wsNum);
   const built = await buildBxThreadView(userId, threadId);
   if (!built) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
   const offerId = built.thread.offer_id ? Number(built.thread.offer_id) : null;
@@ -3791,7 +3876,7 @@ ${lines.length ? lines.join('\n') : 'Пока пусто.'}`;
 
   await ctx.editMessageText(text, {
     parse_mode: 'HTML',
-    reply_markup: bxProofsKb(wsId, threadId, { ...opts, offerId })
+    reply_markup: bxProofsKb(wsNum, threadId, { ...opts, offerId })
   });
   }
 
@@ -3931,7 +4016,7 @@ async function renderGwList(ctx, ownerUserId, wsId = null) {
   }
 
   for (const g of filtered) {
-    const st = String(g.status || '').toUpperCase();
+    const st = gwStatusText(g.status);
     const wsLabel = !wsId ? ` · ${String(g.workspace_title || '').slice(0, 18)}` : '';
     kb.text(`#${g.id} · ${st}${wsLabel}`, `a:gw_open|i:${g.id}`)
       .text('🗑', `a:gw_del_q|i:${g.id}|ws:${g.workspace_id}`)
@@ -3954,7 +4039,7 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
   const sponsorLines = sponsors.map(s => `• ${escapeHtml(s.sponsor_text)}`).join('\n') || '—';
   const text = `🎁 <b>Конкурс #${g.id}</b>
 
-Статус: <b>${escapeHtml(String(g.status).toUpperCase())}</b>
+Статус: <b>${escapeHtml(gwStatusText(g.status))}</b>
 Приз: <b>${escapeHtml(g.prize_value_text || '—')}</b>
 Мест: <b>${g.winners_count}</b>
 Дедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>
@@ -5811,7 +5896,7 @@ ${reason}
       if (!g) return ctx.reply('Нет доступа к этому конкурсу.');
       const sponsors = await db.listGiveawaySponsors(payload.id);
       const sponsorLines = sponsors.map(s => `• ${escapeHtml(s.sponsor_text)}`).join('\n') || '—';
-      const text = `🎁 <b>Конкурс #${g.id}</b>\n\nСтатус: <b>${escapeHtml(String(g.status).toUpperCase())}</b>\nПриз: <b>${escapeHtml(g.prize_value_text || '—')}</b>\nМест: <b>${g.winners_count}</b>\nДедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>\n\nСпонсоры:\n${sponsorLines}`;
+      const text = `🎁 <b>Конкурс #${g.id}</b>\n\nСтатус: <b>${escapeHtml(gwStatusText(g.status))}</b>\nПриз: <b>${escapeHtml(g.prize_value_text || '—')}</b>\nМест: <b>${g.winners_count}</b>\nДедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>\n\nСпонсоры:\n${sponsorLines}`;
       return ctx.reply(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
     }
     if (payload?.type === 'cur') {
@@ -7291,14 +7376,35 @@ if (p.a === 'a:match_home') {
       return;
     }
 
-    if (p.a === 'a:bx_enable_net') {
+    // Barters network toggle (confirm → set)
+    if (p.a === 'a:bx_net_q') {
       const wsId = Number(p.ws);
+      const target = String(p.v || '').toLowerCase() === 'off' ? 'off' : 'on';
+      await ctx.answerCallbackQuery();
+      await renderBxNetConfirm(ctx, u.id, wsId, target);
+      return;
+    }
+
+    if (p.a === 'a:bx_net_set') {
+      const wsId = Number(p.ws);
+      const target = String(p.v || '').toLowerCase() === 'off' ? 'off' : 'on';
       const ws = await db.getWorkspace(u.id, wsId);
       if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-      await db.setWorkspaceSetting(wsId, { network_enabled: true });
-      await db.auditWorkspace(wsId, u.id, 'ws.network_enabled', { enabled: true, source: 'barter' });
-      await ctx.answerCallbackQuery();
+
+      const enabled = target === 'on';
+      await db.setWorkspaceSetting(wsId, { network_enabled: enabled });
+      await db.auditWorkspace(wsId, u.id, 'ws.network_enabled', { enabled, source: 'barter' });
+
+      await ctx.answerCallbackQuery({ text: enabled ? '🌐 Сеть включена ✅' : '🌐 Сеть выключена ❌' });
       await renderBxOpen(ctx, u.id, wsId);
+      return;
+    }
+
+    if (p.a === 'a:bx_enable_net') {
+      const wsId = Number(p.ws);
+      // Backward compatibility for old keyboards: route to confirm screen.
+      await ctx.answerCallbackQuery();
+      await renderBxNetConfirm(ctx, u.id, wsId, 'on');
       return;
     }
 
