@@ -499,6 +499,66 @@ export async function removeCurator(workspaceId, curatorUserId) {
   );
 }
 
+export async function hasAnyCuratorRole(userId) {
+  const r = await pool.query(
+    `select 1 from workspace_curators where user_id=$1 limit 1`,
+    [userId]
+  );
+  return r.rowCount > 0;
+}
+
+export async function listCuratorWorkspaces(userId) {
+  const r = await pool.query(
+    `select ws.id, ws.title, ws.channel_id, ws.channel_username, ws.owner_user_id, ss.curator_enabled
+     from workspace_curators c
+     join workspaces ws on ws.id = c.workspace_id
+     join workspace_settings ss on ss.workspace_id = ws.id
+     where c.user_id=$1
+     order by ws.created_at desc`,
+    [userId]
+  );
+  return r.rows;
+}
+
+export async function listGiveawaysForCurator(workspaceId, userId, limit = 25) {
+  const lim = Math.max(1, Math.min(50, Number(limit || 25)));
+  const r = await pool.query(
+    `select g.*
+     from giveaways g
+     join workspaces ws on ws.id = g.workspace_id
+     join workspace_settings ss on ss.workspace_id = ws.id
+     where g.workspace_id=$1
+       and (
+         ws.owner_user_id=$2
+         or (ss.curator_enabled=true and exists(
+           select 1 from workspace_curators c where c.workspace_id=ws.id and c.user_id=$2
+         ))
+       )
+     order by g.created_at desc
+     limit $3`,
+    [workspaceId, userId, lim]
+  );
+  return r.rows;
+}
+
+export async function getGiveawayForCurator(giveawayId, userId) {
+  const r = await pool.query(
+    `select g.*, ws.owner_user_id, ws.channel_id, ws.channel_username, ws.title as workspace_title, ss.curator_enabled
+     from giveaways g
+     join workspaces ws on ws.id = g.workspace_id
+     join workspace_settings ss on ss.workspace_id = ws.id
+     where g.id=$1
+       and (
+         ws.owner_user_id=$2
+         or (ss.curator_enabled=true and exists(
+           select 1 from workspace_curators c where c.workspace_id=ws.id and c.user_id=$2
+         ))
+       )`,
+    [giveawayId, userId]
+  );
+  return r.rows[0] || null;
+}
+
 // Workspace audit
 export async function auditWorkspace(workspaceId, actorUserId, action, payload = {}) {
   await pool.query(
@@ -672,6 +732,31 @@ export async function getGiveawayStats(giveawayId, ownerUserId) {
   return r.rows[0] || null;
 }
 
+export async function getGiveawayStatsForCurator(giveawayId, userId) {
+  const r = await pool.query(
+    `select
+        count(e.*)::int as entries_total,
+        sum(case when e.is_eligible then 1 else 0 end)::int as eligible_count,
+        sum(case when not e.is_eligible then 1 else 0 end)::int as not_eligible_count,
+        max(e.last_checked_at) as last_checked_at,
+        max(e.joined_at) as last_joined_at
+     from giveaways g
+     join workspaces ws on ws.id = g.workspace_id
+     join workspace_settings ss on ss.workspace_id = ws.id
+     left join giveaway_entries e on e.giveaway_id = g.id
+     where g.id=$1
+       and (
+         ws.owner_user_id=$2
+         or (ss.curator_enabled=true and exists(
+           select 1 from workspace_curators c where c.workspace_id=ws.id and c.user_id=$2
+         ))
+       )
+     group by g.id`,
+    [giveawayId, userId]
+  );
+  return r.rows[0] || null;
+}
+
 
 export async function listGiveawayEntriesPage(giveawayId, ownerUserId, limit = 10, offset = 0) {
   const lim = Math.max(1, Math.min(50, Number(limit || 10)));
@@ -841,7 +926,7 @@ export async function listGiveawaysToEnd(limit = 50) {
   const r = await pool.query(
     `select id, workspace_id, ends_at, status, auto_draw, auto_publish, published_chat_id
      from giveaways
-     where status in ('PUBLISHED','RUNNING','ACTIVE')
+     where status in ('PUBLISHED','RUNNING')
        and ends_at is not null
        and ends_at <= now()
      order by ends_at asc
