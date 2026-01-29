@@ -480,6 +480,29 @@ async function getCurGwNotes(gwId, limit = 3) {
     // ignore
   }
 
+
+// Fallback: if Redis was flushed, try restore from DB audit (no migrations).
+try {
+  const rows = await db.listGiveawayCuratorNotesAudit(gwId, lim);
+  if (Array.isArray(rows) && rows.length) {
+    const out = [];
+    for (const r of rows) {
+      const p = r?.payload || {};
+      const t = String(p.text || '').trim();
+      if (!t) continue;
+      out.push({
+        text: t,
+        by_tg_id: p.by_tg_id || null,
+        by_username: p.by_username || null,
+        by_name: p.by_name || null,
+        at: r.created_at || null,
+      });
+    }
+    if (out.length) return out;
+  }
+} catch {
+  // ignore
+}
   return [];
 }
 
@@ -1402,7 +1425,7 @@ function renderParticipantScreen(g, entry, opts = {}) {
     `🎁 <b>Конкурс #${g.id}</b>\n\n` +
     `🎁 Приз: ${escapeHtml(g.prize_value_text || '—')}\n` +
     `🏆 Мест: ${g.winners_count || 1}\n` +
-    `⏰ Итоги: ${escapeHtml(fmtUtc(g.ends_at))}\n\n` +
+    `⏰ Итоги: ${escapeHtml(fmtTs(g.ends_at))}\n\n` +
     `Статус: ${stLine}\n` +
     `Статус конкурса: ${isEnded ? '🔴 Завершён' : '🟢 Идёт'}` +
     blockerLine +
@@ -5178,6 +5201,8 @@ export function getBot() {
         await db.auditGiveaway(gwId, Number(g.workspace_id), u.id, 'curator.note', {
           by_tg_id: meta.by_tg_id,
           by_username: meta.by_username,
+          by_name: meta.by_name,
+          text: noteText,
           len: noteText.length
         });
       } catch {}
@@ -6547,11 +6572,11 @@ ${list}
 
   // --- Commands ---
   bot.command('start', async (ctx) => {
+    let preMsg = null;
     try {
       const payload = parseStartPayload(ctx.message?.text || '');
 
       // Early feedback for giveaway deep-links (Jobs-style)
-      let preMsg = null;
       if (payload?.type === 'gw') preMsg = await ctx.reply('⏳ Открываю конкурс…');
       else if (payload?.type === 'gwj') preMsg = await ctx.reply('⏳ Записываю участие…');
       else if (payload?.type === 'gwc') preMsg = await ctx.reply('⏳ Проверяю подписки…');
@@ -6723,7 +6748,12 @@ if (payload?.type === 'bxo') {
         name: String(e?.name || e?.error?.name || 'Error'),
       });
       try {
-        await ctx.reply('⚠️ Сейчас есть техническая ошибка. Попробуй ещё раз через минуту.');
+        const msg = '⚠️ Сейчас есть техническая ошибка. Попробуй ещё раз через минуту.';
+        if (preMsg?.message_id) {
+          await ctx.api.editMessageText(ctx.chat.id, preMsg.message_id, msg);
+        } else {
+          await ctx.reply(msg);
+        }
       } catch {}
     }
 
