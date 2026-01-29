@@ -299,6 +299,31 @@ function mainMenuKb(flags = {}) {
 }
 
 
+function curatorModeMenuKb(flags = {}) {
+  const { isModerator = false, isAdmin = false } = flags;
+  const kb = new InlineKeyboard()
+    .text('👤 Кабинет куратора', 'a:cur_home')
+    .row()
+    .text('🧭 Гайд', 'a:guide')
+    .text('💬 Support', 'a:support')
+    .row()
+    .text('🔓 Обычный режим', 'a:cur_mode_set|v:0|ret:menu')
+    .row()
+    .text('🔄 Обновить', 'a:menu');
+
+  const extra = [];
+  if (isModerator) extra.push(['🛡 Модерация', 'a:mod_home']);
+  if (isAdmin) extra.push(['👑 Админка', 'a:admin_home']);
+  for (let i = 0; i < extra.length; i += 2) {
+    const a = extra[i];
+    const b = extra[i + 1];
+    kb.row().text(a[0], a[1]);
+    if (b) kb.text(b[0], b[1]);
+  }
+  return kb;
+}
+
+
 function onboardingKb(flags = {}) {
   const { isModerator = false, isAdmin = false } = flags;
   const kb = new InlineKeyboard()
@@ -321,6 +346,16 @@ async function getActiveWorkspace(tgId) {
   const v = await redis.get(k(['active_ws', tgId]));
   const n = Number(v);
   return n > 0 ? n : null;
+}
+
+// Curator UI mode (hide non-curator actions to reduce confusion)
+async function setCuratorMode(tgId, enabled) {
+  await redis.set(k(['cur_mode', tgId]), enabled ? '1' : '0', { ex: 365 * 24 * 3600 });
+}
+
+async function getCuratorMode(tgId) {
+  const v = await redis.get(k(['cur_mode', tgId]));
+  return String(v || '') === '1';
 }
 
 function wsMenuKb(wsId) {
@@ -387,6 +422,9 @@ async function renderNetConfirm(ctx, ownerUserId, wsId, ret = 'ws') {
 
 function curListKb(wsId, curators) {
   const kb = new InlineKeyboard();
+  kb.text('👤 Пригласить', `a:cur_invite|ws:${wsId}`)
+    .text('➕ Добавить', `a:cur_add_username|ws:${wsId}`)
+    .row();
   for (const c of curators) {
     const label = c.tg_username ? `@${c.tg_username}` : `id:${c.tg_id}`;
     kb.text(`🗑 ${label}`, `a:cur_rm_q|ws:${wsId}|u:${c.user_id}`).row();
@@ -4101,8 +4139,10 @@ function wsLabelNice(w) {
   return `Канал #${w?.id}`;
 }
 
-function curatorHomeKb(items) {
+function curatorHomeKb(items, modeEnabled = false) {
   const kb = new InlineKeyboard();
+  const label = modeEnabled ? '🧹 Режим куратора: ✅ ВКЛ' : '🧹 Режим куратора: ❌ ВЫКЛ';
+  kb.text(label, `a:cur_mode_set|v:${modeEnabled ? 0 : 1}|ret:cur`).row();
   for (const w of items) {
     const on = !!w.curator_enabled;
     const label = `${on ? '✅' : '❌'} ${wsLabelNice(w)}`;
@@ -4114,6 +4154,7 @@ function curatorHomeKb(items) {
 
 async function renderCuratorHome(ctx, userId) {
   const items = await db.listCuratorWorkspaces(userId);
+  const modeEnabled = await getCuratorMode(ctx.from.id);
   const text = `👤 <b>Куратор</b>
 
 Здесь — каналы, где ты назначен куратором.
@@ -4122,7 +4163,7 @@ async function renderCuratorHome(ctx, userId) {
 ${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}
 
 ✅ — куратор включен • ❌ — владелец выключил` ;
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorHomeKb(items) });
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorHomeKb(items, modeEnabled) });
 }
 
 function curatorWsKb(wsId, giveaways) {
@@ -4691,9 +4732,29 @@ export function getBot() {
         return;
       }
       await db.addCurator(exp.wsId, curator.id, u.id);
+      const ws = await db.getWorkspaceAny(Number(exp.wsId));
+      const wsTitle = ws ? wsLabelNice(ws) : `Канал #${exp.wsId}`;
       await ctx.reply(`✅ Куратор @${username} добавлен.
 
 Включи 👤 Куратор: ВКЛ, если хочешь чтобы он мог помогать с конкурсами (статы/лог/напоминания).`);
+
+      // best-effort notify curator in DM
+      try {
+        const kb = new InlineKeyboard()
+          .text('👤 Открыть кабинет куратора', 'a:cur_home')
+          .row()
+          .text('🧹 Включить режим куратора', `a:cur_mode_set|v:1|ret:cur`)
+          .row()
+          .text('🏠 Главное меню', 'a:menu');
+
+        await ctx.api.sendMessage(
+          Number(curator.tg_id),
+          `✅ Тебя назначили <b>куратором</b> для: <b>${escapeHtml(wsTitle)}</b>.
+
+Открой кабинет куратора — там будут каналы и конкурсы, где нужна твоя помощь.`,
+          { parse_mode: 'HTML', reply_markup: kb }
+        );
+      } catch {}
       return;
     }
 
@@ -6071,8 +6132,24 @@ ${reason}
       const val = await consumeOnce(key);
       if (!val) return ctx.reply('Ссылка устарела, недействительна или уже была использована.');
       const ownerUserId = Number(val.ownerUserId || val.owner_user_id || val.owner || 0);
-      const added = await db.addCurator(payload.wsId, u.id, ownerUserId || u.id);
-      await ctx.reply('✅ Ты добавлен как куратор. Теперь попроси владельца включить “👤 Куратор: ВКЛ” в настройках канала.');
+      await db.addCurator(payload.wsId, u.id, ownerUserId || u.id);
+
+      const ws = await db.getWorkspaceAny(Number(payload.wsId));
+      const wsTitle = ws ? wsLabelNice(ws) : `Канал #${payload.wsId}`;
+      const already = await getCuratorMode(ctx.from.id);
+      const kb = new InlineKeyboard()
+        .text('👤 Открыть кабинет куратора', 'a:cur_home')
+        .row()
+        .text(already ? '🧹 Режим куратора: ✅ ВКЛ' : '🧹 Включить режим куратора', `a:cur_mode_set|v:1|ret:cur`)
+        .row()
+        .text('🏠 Главное меню', 'a:menu');
+
+      await ctx.reply(
+        `✅ Ты назначен куратором для: <b>${escapeHtml(wsTitle)}</b>.
+
+Попроси владельца включить “👤 Куратор: ВКЛ” в настройках канала (тогда будут доступны конкурсы/лог/напоминания).`,
+        { parse_mode: 'HTML', reply_markup: kb }
+      );
       return;
     }
 
@@ -6125,6 +6202,17 @@ if (payload?.type === 'bxo') {
     }
 
     const flags = await getRoleFlags(u, ctx.from.id);
+    const curMode = !!flags.isCurator && (await getCuratorMode(ctx.from.id));
+    if (curMode) {
+      await ctx.reply(`👤 <b>Режим куратора</b>
+
+Здесь показаны только действия куратора, чтобы не путаться.
+Чтобы вернуть полное меню — нажми “🔓 Обычный режим”.`, {
+        parse_mode: 'HTML',
+        reply_markup: curatorModeMenuKb(flags)
+      });
+      return;
+    }
     if (CFG.ONBOARDING_V2_ENABLED) {
       await ctx.reply('Привет! 👋\n\nВыбери роль — и я покажу быстрый старт:', { reply_markup: onboardingKb(flags) });
       return;
@@ -6462,6 +6550,17 @@ bot.on('message:successful_payment', async (ctx) => {
     if (p.a === 'a:menu') {
       await ctx.answerCallbackQuery();
       const flags = await getRoleFlags(u, ctx.from.id);
+      const curMode = !!flags.isCurator && (await getCuratorMode(ctx.from.id));
+      if (curMode) {
+        await ctx.editMessageText(`👤 <b>Режим куратора</b>
+
+Здесь показаны только действия куратора, чтобы не путаться.
+Чтобы вернуть полное меню — нажми “🔓 Обычный режим”.`, {
+          parse_mode: 'HTML',
+          reply_markup: curatorModeMenuKb(flags)
+        });
+        return;
+      }
       await ctx.editMessageText(`🏠 <b>Главное меню</b>
 
 Здесь ты можешь:
@@ -6516,6 +6615,52 @@ bot.on('message:successful_payment', async (ctx) => {
 
       const kb = new InlineKeyboard().text('⬅️ Меню', 'a:menu');
       await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    // Curator UI mode toggle
+    if (p.a === 'a:cur_mode_set') {
+      const enabled = String(p.v) === '1';
+      const ret = String(p.ret || 'menu');
+      await setCuratorMode(ctx.from.id, enabled);
+      await ctx.answerCallbackQuery({ text: enabled ? '✅ Режим куратора включен' : '🔓 Обычный режим' });
+
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (enabled) {
+        if (ret === 'cur') {
+          await renderCuratorHome(ctx, u.id);
+          return;
+        }
+        await ctx.editMessageText(`👤 <b>Режим куратора</b>
+
+Здесь показаны только действия куратора, чтобы не путаться.
+Чтобы вернуть полное меню — нажми “🔓 Обычный режим”.`, {
+          parse_mode: 'HTML',
+          reply_markup: curatorModeMenuKb(flags)
+        });
+        return;
+      }
+
+      // back to full menu
+      if (ret === 'cur') {
+        // if user toggled from curator cabinet, return there but with full mode
+        await renderCuratorHome(ctx, u.id);
+        return;
+      }
+
+      await ctx.editMessageText(`🏠 <b>Главное меню</b>
+
+Здесь ты можешь:
+• 🚀 подключить канал (workspace)
+• 🎁 создавать и публиковать конкурсы в канал
+• 🤝 бартер‑биржа и заявки
+• 🏷 Brand Mode для брендов (Brand Pass = анти‑спам)
+
+Выбери действие:`, {
+        parse_mode: 'HTML',
+        reply_markup: mainMenuKb(flags)
+      });
+      await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
       return;
     }
 
@@ -8706,6 +8851,24 @@ ${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
       const curatorUserId = Number(p.u);
       await db.removeCurator(wsId, curatorUserId);
       await db.auditWorkspace(wsId, u.id, 'ws.curator_removed', { curatorUserId });
+
+      // best-effort notify curator in DM
+      try {
+        const info = await db.getUserTgIdByUserId(curatorUserId);
+        if (info?.tg_id) {
+          const wsTitle = wsLabelNice(ws);
+          const kb = new InlineKeyboard()
+            .text('🏠 Главное меню', 'a:menu')
+            .row()
+            .text('💬 Support', 'a:support');
+          await ctx.api.sendMessage(
+            Number(info.tg_id),
+            `❌ Твоя роль <b>куратора</b> для: <b>${escapeHtml(wsTitle)}</b> была удалена владельцем.`,
+            { parse_mode: 'HTML', reply_markup: kb }
+          );
+        }
+      } catch {}
+
       await ctx.answerCallbackQuery({ text: 'Удалено' });
       // refresh list
       const curators = await db.listCurators(wsId);
