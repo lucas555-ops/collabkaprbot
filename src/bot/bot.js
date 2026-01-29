@@ -1498,7 +1498,7 @@ function buildWsShareText(ws, wsId, variant = 'short') {
       `🎬 Форматы: <b>${escapeHtml(formats)}</b>\n` +
       (about ? `\n<b>Коротко:</b>\n${escapeHtml(about)}\n` : '') +
       (ports.length ? `\n<b>Портфолио:</b>\n` + ports.map(u => `• ${escapeHtml(String(u))}`).join('\n') + '\n' : '\n') +
-      `\nЧтобы оставить заявку: открой витрину → «✉️ Заявка от бренда».`;
+      `\nЧтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
     return t;
   }
 
@@ -1508,7 +1508,7 @@ function buildWsShareText(ws, wsId, variant = 'short') {
     (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
     (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
     (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
-    `Оставь заявку: открой витрину → «✉️ Заявка от бренда».`;
+    `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
   return escapeHtml(t).replace(/\n/g, '\n');
 }
 
@@ -5299,13 +5299,19 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
 
       await clearExpectText(ctx.from.id);
       await ctx.reply('✅ Профиль обновлён.');
-      await renderBrandProfileHome(ctx, u.id, {
-        wsId: Number(exp.wsId || 0),
-        ret: String(exp.ret || 'brand'),
-        backOfferId: exp.backOfferId ? Number(exp.backOfferId) : null,
-        backPage: Number(exp.backPage || 0),
-        edit: false
-      });
+
+      const wsId = Number(exp.wsId || 0);
+      const ret = String(exp.ret || 'brand');
+      const backOfferId = exp.backOfferId ? Number(exp.backOfferId) : null;
+      const backPage = Number(exp.backPage || 0);
+
+      // Keep UX consistent: if user edits an "extended" field, stay on the extended screen.
+      const EXT_FIELDS = new Set(['niche', 'geo', 'collab_types', 'budget', 'goals', 'requirements']);
+      if (EXT_FIELDS.has(field)) {
+        await renderBrandProfileMore(ctx, u.id, { wsId, ret, backOfferId, backPage, edit: false });
+      } else {
+        await renderBrandProfileHome(ctx, u.id, { wsId, ret, backOfferId, backPage, edit: false });
+      }
       return;
     }
 
