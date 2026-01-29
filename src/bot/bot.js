@@ -1061,7 +1061,8 @@ function gwOpenKb(g, flags = {}) {
   if (isAdmin) kb.text('🧩 Проверка доступа', `a:gw_access|i:${gwId}`).row();
   kb.text('📣 Напомнить проверить', `a:gw_remind_q|i:${gwId}`)
     .row()
-    ;
+    .text('👤 Кураторы', `a:ws_settings|ws:${g.workspace_id}`)
+    .row();
 
   if (String(g.status || '').toUpperCase() === 'WINNERS_DRAWN' && !g.results_message_id && g.published_chat_id) {
     kb.text('📣 Опубликовать итоги', `a:gw_publish_results|i:${gwId}`).row();
@@ -4018,7 +4019,9 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
 Мест: <b>${g.winners_count}</b>
 Дедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>
 
-Спонсоры:\n${sponsorLines}`;
+Спонсоры:\n${sponsorLines}
+
+👤 <b>Куратор</b>: если ведёшь конкурс не один — пригласи помощника (⚙️ Настройки канала → 👤 Пригласить куратора).`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
 }
 
@@ -6436,6 +6439,7 @@ bot.on('message:successful_payment', async (ctx) => {
 3) 🎁 Создай конкурс или 🤝 оффер
 4) Опубликуй / получай заявки
 5) В Brand Mode бренды проходят через Brand Pass (анти-спам)
+6) 👤 Если ведёшь конкурс с командой — добавь куратора: Мои каналы → ⚙️ Настройки → Пригласить куратора
 
 Выбери раздел:`;
 
@@ -6462,6 +6466,94 @@ bot.on('message:successful_payment', async (ctx) => {
 
       const kb = new InlineKeyboard().text('⬅️ Меню', 'a:menu');
       await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+
+    // CURATOR (safe cabinet)
+    if (p.a === 'a:cur_home') {
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await renderCuratorHome(ctx, u.id);
+      return;
+    }
+
+    if (p.a === 'a:cur_ws_off') {
+      await ctx.answerCallbackQuery({ text: 'Режим куратора в этом канале выключен владельцем.', show_alert: true });
+      return;
+    }
+
+    if (p.a === 'a:cur_ws') {
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return;
+      await renderCuratorWorkspace(ctx, u.id, wsId);
+      return;
+    }
+
+    if (p.a === 'a:cur_gw_open') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await renderCuratorGiveawayOpen(ctx, u.id, Number(p.ws || 0), Number(p.i || 0));
+      return;
+    }
+
+    if (p.a === 'a:cur_gw_stats') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await renderCuratorGiveawayStats(ctx, u.id, Number(p.ws || 0), Number(p.i || 0));
+      return;
+    }
+
+    if (p.a === 'a:cur_gw_log') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await renderCuratorGiveawayLog(ctx, u.id, Number(p.ws || 0), Number(p.i || 0));
+      return;
+    }
+
+    if (p.a === 'a:cur_gw_remind_q') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await renderCuratorGiveawayRemindQ(ctx, u.id, Number(p.ws || 0), Number(p.i || 0));
+      return;
+    }
+
+    if (p.a === 'a:cur_gw_remind_send') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await renderCuratorGiveawayRemindSend(ctx, u.id, Number(p.ws || 0), Number(p.i || 0));
       return;
     }
 
