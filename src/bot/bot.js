@@ -4091,12 +4091,22 @@ async function renderGwOpenPublic(ctx, gwId, userId) {
 // Curator cabinet (safe permissions)
 // ----------------------
 
+function wsLabelNice(w) {
+  const title = String(w?.title || '').trim();
+  const unameRaw = String(w?.channel_username || '').trim();
+  const uname = unameRaw ? (unameRaw.startsWith('@') ? unameRaw : '@' + unameRaw) : '';
+  if (title && uname) return `${title} ${uname}`.trim();
+  if (title) return title;
+  if (uname) return uname;
+  return `Канал #${w?.id}`;
+}
+
 function curatorHomeKb(items) {
   const kb = new InlineKeyboard();
   for (const w of items) {
     const on = !!w.curator_enabled;
-    const label = `${on ? '👤' : '🚫'} ${w.title || ('Канал #' + w.id)}`;
-    kb.text(label, on ? `a:cur_ws|ws:${w.id}` : `a:cur_ws_off|ws:${w.id}`).row();
+    const label = `${on ? '✅' : '❌'} ${wsLabelNice(w)}`;
+    kb.text(label, `a:cur_ws|ws:${w.id}`).row();
   }
   kb.text('⬅️ Назад', 'a:menu').row();
   return kb;
@@ -4109,7 +4119,9 @@ async function renderCuratorHome(ctx, userId) {
 Здесь — каналы, где ты назначен куратором.
 По умолчанию права безопасные: <b>Статистика</b> • <b>Лог</b> • <b>Напомнить проверить</b>.
 
-${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}`;
+${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}
+
+✅ — куратор включен • ❌ — владелец выключил` ;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorHomeKb(items) });
 }
 
@@ -4118,16 +4130,40 @@ function curatorWsKb(wsId, giveaways) {
   for (const g of giveaways) {
     kb.text(`🎁 #${g.id} · ${gwStatusLabel(g.status)}`, `a:cur_gw_open|ws:${wsId}|i:${g.id}`).row();
   }
+  kb.text('❌ Выйти из канала', `a:cur_leave_q|ws:${wsId}`).row();
   kb.text('⬅️ Назад', 'a:cur_home').row();
   return kb;
 }
 
 async function renderCuratorWorkspace(ctx, userId, wsId) {
   const wsIdNum = Number(wsId);
-  const giveaways = await db.listGiveawaysForCurator(wsIdNum, userId, 30);
-  const text = `👤 <b>Куратор</b> • Канал #${wsIdNum}
+  const ws = await db.getWorkspaceAny(wsIdNum);
 
-${giveaways.length ? 'Конкурсы:' : 'Пока нет конкурсов.'}`;
+  const wsTitle = ws ? wsLabelNice(ws) : `Канал #${wsIdNum}`;
+
+  // If owner disabled curator mode — show info + allow leaving
+  if (ws && !ws.curator_enabled) {
+    const kb = new InlineKeyboard()
+      .text('❌ Выйти из канала', `a:cur_leave_q|ws:${wsIdNum}`)
+      .row()
+      .text('⬅️ Назад', 'a:cur_home');
+    const text = `👤 <b>Куратор</b> • ${escapeHtml(wsTitle)}
+
+Режим куратора в этом канале выключен владельцем.
+
+Если хочешь — выйди из канала (удалишь свою роль куратора).`;
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    return;
+  }
+
+  const giveaways = await db.listGiveawaysForCurator(wsIdNum, userId, 30);
+
+  
+  const text = `👤 <b>Куратор</b> • ${escapeHtml(wsTitle)}
+
+${giveaways.length ? 'Конкурсы:' : 'Пока нет конкурсов.'}
+
+Если тебя назначили по ошибке или помощь больше не нужна — нажми “❌ Выйти из канала”.`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorWsKb(wsIdNum, giveaways) });
 }
 
@@ -4216,9 +4252,9 @@ async function renderCuratorGiveawayRemindSend(ctx, userId, wsId, gwId) {
 
   // rate-limit: 1 remind per 10 minutes per giveaway
   const rlKey = k(['rl', 'gw_remind', String(gwId)]);
-  const locked = await rateLimit(rlKey, 1, 10 * 60);
-  if (!locked.ok) {
-    await ctx.answerCallbackQuery({ text: 'Слишком часто. Подожди немного.' });
+  const rl = await rateLimit(rlKey, { limit: 1, windowSec: 10 * 60 });
+  if (!rl.allowed) {
+    await ctx.answerCallbackQuery({ text: `⏳ Слишком часто. Подожди ${fmtWait(rl.resetSec || 60)}.` });
     return;
   }
 
@@ -6009,6 +6045,7 @@ ${reason}
 
   // --- Commands ---
   bot.command('start', async (ctx) => {
+    try {
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
     const payload = parseStartPayload(ctx.message?.text || '');
     db.trackEvent('start', { userId: u.id, meta: { payloadType: payload?.type || null, hasPayload: !!payload } });
@@ -6094,6 +6131,19 @@ if (payload?.type === 'bxo') {
     }
     await ctx.reply(`🏠 <b>Главное меню</b>\n\nЗдесь ты можешь:\n• 🚀 подключить канал (workspace)\n• 🎁 создавать и публиковать конкурсы в канал\n• 🤝 бартер‑биржа и заявки\n• 🏷 Brand Mode для брендов (Brand Pass = анти‑спам)\n\nВыбери действие:`, { parse_mode: 'HTML', reply_markup: mainMenuKb(flags) });
     await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
+
+    } catch (e) {
+      console.error('[START] error', {
+        chat_id: ctx?.chat?.id ?? null,
+        from_id: ctx?.from?.id ?? null,
+        message: String(e?.message || e?.error?.message || e || ''),
+        name: String(e?.name || e?.error?.name || 'Error'),
+      });
+      try {
+        await ctx.reply('⚠️ Сейчас есть техническая ошибка. Попробуй ещё раз через минуту.');
+      } catch {}
+    }
+
 
   });
 
@@ -6484,9 +6534,14 @@ bot.on('message:successful_payment', async (ctx) => {
     }
 
     if (p.a === 'a:cur_ws_off') {
-      await ctx.answerCallbackQuery({ text: 'Режим куратора в этом канале выключен владельцем.', show_alert: true });
+      // Backward-compat: old buttons for disabled workspaces
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return;
+      await renderCuratorWorkspace(ctx, u.id, wsId);
       return;
     }
+
 
     if (p.a === 'a:cur_ws') {
       await ctx.answerCallbackQuery();
@@ -6499,7 +6554,67 @@ bot.on('message:successful_payment', async (ctx) => {
       const wsId = Number(p.ws || 0);
       if (!wsId) return;
       await renderCuratorWorkspace(ctx, u.id, wsId);
+      
+    if (p.a === 'a:cur_leave_q') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return;
+
+      // ensure user is actually curator for this workspace
+      const items = await db.listCuratorWorkspaces(u.id);
+      const ok = items.some(w => Number(w.id) === wsId);
+      if (!ok && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+
+      const ws = await db.getWorkspaceAny(wsId);
+      const wsTitle = ws ? wsLabelNice(ws) : `Канал #${wsId}`;
+      const kb = new InlineKeyboard()
+        .text('✅ Выйти', `a:cur_leave_do|ws:${wsId}`)
+        .text('❌ Отмена', `a:cur_ws|ws:${wsId}`);
+      await ctx.editMessageText(`❌ <b>Выйти из канала</b>
+
+Ты больше не будешь куратором: <b>${escapeHtml(wsTitle)}</b>
+
+Продолжить?`, {
+        parse_mode: 'HTML',
+        reply_markup: kb
+      });
       return;
+    }
+
+    if (p.a === 'a:cur_leave_do') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return;
+
+      const items = await db.listCuratorWorkspaces(u.id);
+      const ok = items.some(w => Number(w.id) === wsId);
+      if (!ok && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+
+      await db.removeCurator(wsId, u.id);
+      await db.auditWorkspace(wsId, u.id, 'ws.curator_left', { curatorUserId: u.id });
+      await ctx.answerCallbackQuery({ text: 'Готово' });
+
+      await renderCuratorHome(ctx, u.id);
+      return;
+    }
+
+return;
     }
 
     if (p.a === 'a:cur_gw_open') {
@@ -8558,7 +8673,11 @@ if (p.a === 'a:bx_cat') {
       const curators = await db.listCurators(wsId);
       const lines = curators.map(c => `• ${c.tg_username ? '@' + escapeHtml(c.tg_username) : 'id:' + c.tg_id}`);
       await ctx.answerCallbackQuery();
-      await ctx.editMessageText(`👥 <b>Кураторы</b>\n\n${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
+      await ctx.editMessageText(`👥 <b>Кураторы</b>
+
+Нажми на 🗑 рядом с именем, чтобы удалить.
+
+${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
         parse_mode: 'HTML',
         reply_markup: curListKb(wsId, curators)
       });
@@ -8591,7 +8710,11 @@ if (p.a === 'a:bx_cat') {
       // refresh list
       const curators = await db.listCurators(wsId);
       const lines = curators.map(c => `• ${c.tg_username ? '@' + escapeHtml(c.tg_username) : 'id:' + c.tg_id}`);
-      await ctx.editMessageText(`👥 <b>Кураторы</b>\n\n${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
+      await ctx.editMessageText(`👥 <b>Кураторы</b>
+
+Нажми на 🗑 рядом с именем, чтобы удалить.
+
+${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
         parse_mode: 'HTML',
         reply_markup: curListKb(wsId, curators)
       });
