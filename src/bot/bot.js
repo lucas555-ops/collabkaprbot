@@ -359,8 +359,15 @@ async function getCuratorMode(tgId) {
 }
 
 
-// Curator meta for a giveaway (safe helpers): "checked" mark + last note
+// Curator meta for a giveaway (safe helpers): "checked" mark + notes history (last 3)
 const CUR_GW_META_TTL_SEC = 180 * 24 * 3600; // ~180 days
+
+function clipText(s, maxLen = 140) {
+  const t = String(s ?? '').trim();
+  const n = Number(maxLen) || 0;
+  if (!n || t.length <= n) return t;
+  return t.slice(0, Math.max(1, n - 1)) + '…';
+}
 
 function curatorLabelFromTg(from) {
   const uname = from?.username ? `@${from.username}` : '';
@@ -377,6 +384,29 @@ function curatorLabelFromMeta(meta) {
   return uname || name || (meta.by_tg_id ? `tg:${meta.by_tg_id}` : '—');
 }
 
+function curatorNotesBlock(notes) {
+  if (!Array.isArray(notes) || notes.length === 0) return '📝 Заметки: —';
+  const shown = notes.slice(0, 3);
+  const lines = shown
+    .map((n) => {
+      const txt = clipText(String(n?.text || ''), 140);
+      const who = curatorLabelFromMeta(n);
+      const when = n?.at ? fmtTs(n.at) : '—';
+      return `• ${escapeHtml(txt)}\n  — <b>${escapeHtml(who)}</b> · ${escapeHtml(when)}`;
+    })
+    .join('\n\n');
+  return `📝 <b>Заметки</b> (последние ${shown.length}):\n${lines}`;
+}
+
+
+
+
+
+
+
+
+
+
 async function getCurGwChecked(gwId) {
   try { return await redis.get(k(['cur_gw_checked', gwId])); } catch { return null; }
 }
@@ -384,12 +414,66 @@ async function setCurGwChecked(gwId, meta) {
   try { await redis.set(k(['cur_gw_checked', gwId]), meta, { ex: CUR_GW_META_TTL_SEC }); } catch {}
 }
 
-async function getCurGwNote(gwId) {
-  try { return await redis.get(k(['cur_gw_note', gwId])); } catch { return null; }
+async function getCurGwNotes(gwId, limit = 3) {
+  const lim = Math.max(1, Math.min(10, Number(limit) || 3));
+  const listKey = k(['cur_gw_notes', gwId]);
+
+  // Prefer list history (new)
+  try {
+    if (typeof redis.lrange === 'function') {
+      const raw = await redis.lrange(listKey, 0, lim - 1);
+      const out = [];
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          if (item == null) continue;
+          if (typeof item === 'object') {
+            out.push(item);
+          } else if (typeof item === 'string') {
+            try { out.push(JSON.parse(item)); } catch { out.push({ text: item, at: Date.now() }); }
+          } else {
+            out.push({ text: String(item), at: Date.now() });
+          }
+        }
+      }
+      if (out.length) return out;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Fallback: legacy single note (old)
+  try {
+    const legacy = await redis.get(k(['cur_gw_note', gwId]));
+    if (legacy) return [legacy].slice(0, lim);
+  } catch {
+    // ignore
+  }
+
+  return [];
 }
+
+async function getCurGwNote(gwId) {
+  const notes = await getCurGwNotes(gwId, 1);
+  return notes && notes.length ? notes[0] : null;
+}
+
 async function setCurGwNote(gwId, meta) {
+  // Push into history list (new) + keep legacy "last note" key (compat)
+  const listKey = k(['cur_gw_notes', gwId]);
+  try {
+    const payload = typeof meta === 'string' ? meta : JSON.stringify(meta);
+    if (typeof redis.lpush === 'function') {
+      await redis.lpush(listKey, payload);
+      if (typeof redis.ltrim === 'function') await redis.ltrim(listKey, 0, 2);
+      if (typeof redis.expire === 'function') await redis.expire(listKey, CUR_GW_META_TTL_SEC);
+    }
+  } catch {
+    // ignore
+  }
+
   try { await redis.set(k(['cur_gw_note', gwId]), meta, { ex: CUR_GW_META_TTL_SEC }); } catch {}
 }
+
 function wsMenuKb(wsId) {
   return new InlineKeyboard()
     .text('➕ Новый конкурс', `a:gw_new|ws:${wsId}`)
@@ -4084,16 +4168,13 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
   const sponsorLines = sponsors.map(s => `• ${escapeHtml(s.sponsor_text)}`).join('\n') || '—';
 
   const checked = await getCurGwChecked(g.id);
-  const note = await getCurGwNote(g.id);
+  const notes = await getCurGwNotes(g.id, 3);
 
   const checkedLine = checked
     ? `✅ Проверено: <b>${escapeHtml(curatorLabelFromMeta(checked))}</b> · ${escapeHtml(fmtTs(checked.at))}`
     : '✅ Проверено: —';
 
-  const noteText = note ? String(note.text || '').trim() : '';
-  const noteLine = noteText
-    ? `📝 Заметка: ${escapeHtml(noteText)}\n— <b>${escapeHtml(curatorLabelFromMeta(note))}</b> · ${escapeHtml(fmtTs(note.at))}`
-    : '📝 Заметка: —';
+  const notesBlock = curatorNotesBlock(notes);
 
   const text = `🎁 <b>Конкурс #${g.id}</b>
 
@@ -4106,7 +4187,7 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
 
 👤 <b>Куратор</b>
 ${checkedLine}
-${noteLine}
+${notesBlock}
 
 Если ведёшь конкурс не один — пригласи помощника (⚙️ Настройки канала → 👤 Пригласить куратора).`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
@@ -4293,16 +4374,13 @@ async function renderCuratorGiveawayOpen(ctx, userId, wsId, gwId) {
   }
 
   const checked = await getCurGwChecked(g.id);
-  const note = await getCurGwNote(g.id);
+  const notes = await getCurGwNotes(g.id, 3);
 
   const checkedLine = checked
     ? `✅ Проверено: <b>${escapeHtml(curatorLabelFromMeta(checked))}</b> · ${escapeHtml(fmtTs(checked.at))}`
     : '✅ Проверено: —';
 
-  const noteText = note ? String(note.text || '').trim() : '';
-  const noteLine = noteText
-    ? `📝 Заметка: ${escapeHtml(noteText)}\n— <b>${escapeHtml(curatorLabelFromMeta(note))}</b> · ${escapeHtml(fmtTs(note.at))}`
-    : '📝 Заметка: —';
+  const notesBlock = curatorNotesBlock(notes);
 
   const text = `🎁 <b>Конкурс #${g.id}</b>
 
@@ -4312,7 +4390,7 @@ async function renderCuratorGiveawayOpen(ctx, userId, wsId, gwId) {
 Дедлайн: <b>${g.ends_at ? escapeHtml(fmtTs(g.ends_at)) : '—'}</b>
 
 ${checkedLine}
-${noteLine}
+${notesBlock}
 
 Режим: <b>Куратор</b> (безопасные права)`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorGwKb(Number(wsId), Number(gwId)) });
