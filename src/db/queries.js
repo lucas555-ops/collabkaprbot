@@ -640,7 +640,7 @@ export async function getGiveawayPublic(giveawayId) {
 
 export async function getGiveawayInfoForUser(giveawayId) {
   const r = await pool.query(
-    `select id, status, ends_at, prize_value_text, winners_count, published_chat_id
+    `select id, workspace_id, status, ends_at, prize_value_text, winners_count, published_chat_id
      from giveaways
      where id=$1`,
     [giveawayId]
