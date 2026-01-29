@@ -1243,7 +1243,7 @@ function participantKb(gwId) {
 function renderParticipantScreen(g, entry) {
   const prize = (g.prize_value_text || '').trim() || '—';
   const ends = g.ends_at ? fmtTs(g.ends_at) : '—';
-  const st = String(g.status || '').toUpperCase();
+  const stLabel = gwStatusLabel(g.status);
 
   let stLine;
   if (!entry) stLine = 'Статус: ⛔ <b>не участвуешь</b>';
@@ -1259,7 +1259,7 @@ function renderParticipantScreen(g, entry) {
 ⏳ Итоги: <b>${escapeHtml(ends)}</b>
 
 ${stLine}
-Статус конкурса: <b>${st}</b>
+Статус конкурса: <b>${escapeHtml(stLabel)}</b>
 
 Нажми “🔄 Проверить”, чтобы подтвердить подписки на каналы.
 
@@ -4287,12 +4287,18 @@ async function renderCuratorHome(ctx, userId) {
   const modeEnabled = await getCuratorMode(ctx.from.id);
   const text = `👤 <b>Куратор</b>
 
-Здесь — каналы, где ты назначен куратором.
-По умолчанию права безопасные: <b>Статистика</b> • <b>Лог</b> • <b>Напомнить проверить</b>.
+Тут ты смотришь конкурсы чужих каналов, где тебя назначили куратором.
 
-${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}
+<b>Как пользоваться:</b>
+• Жми на канал ниже → увидишь конкурсы.
+• ✅ — доступ включён, можно работать.
+• ❌ — владелец выключил куратора (попроси включить или выйди из канала).
 
-✅ — куратор включен • ❌ — владелец выключил` ;
+<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки
+
+🧹 <b>Режим куратора</b> — прячет лишнее меню (оставляет только кураторское).
+
+${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorHomeKb(items, modeEnabled) });
 }
 
@@ -4302,12 +4308,18 @@ async function replyCuratorHome(ctx, userId) {
   const modeEnabled = await getCuratorMode(ctx.from.id);
   const text = `👤 <b>Куратор</b>
 
-Здесь — каналы, где ты назначен куратором.
-По умолчанию права безопасные: <b>Статистика</b> • <b>Лог</b> • <b>Напомнить проверить</b>.
+Тут ты смотришь конкурсы чужих каналов, где тебя назначили куратором.
 
-${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}
+<b>Как пользоваться:</b>
+• Жми на канал ниже → увидишь конкурсы.
+• ✅ — доступ включён, можно работать.
+• ❌ — владелец выключил куратора (попроси включить или выйди из канала).
 
-✅ — куратор включен • ❌ — владелец выключил`;
+<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки
+
+🧹 <b>Режим куратора</b> — прячет лишнее меню (оставляет только кураторское).
+
+${items.length ? 'Выбери канал:' : 'Пока тебя не назначили куратором ни в одном канале.'}`;
 
   await ctx.reply(text, { parse_mode: 'HTML', reply_markup: curatorHomeKb(items, modeEnabled) });
 }
@@ -4434,7 +4446,7 @@ async function renderCuratorGiveawayRemindQ(ctx, userId, wsId, gwId) {
 
   const text = `📣 <b>Напомнить проверить</b>
 
-Бот отправит сообщение в канал конкурса, чтобы участники нажали кнопку <b>«Проверить»</b>.
+Бот отправит сообщение в канал конкурса, чтобы участники открыли бота и нажали <b>«Проверить участие»</b>.
 
 Отправить сейчас?`;
   const kb = new InlineKeyboard()
@@ -4461,13 +4473,17 @@ async function renderCuratorGiveawayRemindSend(ctx, userId, wsId, gwId) {
     return;
   }
 
-  const kb = new InlineKeyboard().text('✅ Проверить', `a:gw_check|i:${g.id}`);
+  // Use URL button (works reliably inside channel posts and always opens the bot).
+  const link = `https://t.me/${CFG.BOT_USERNAME}?start=gwc_${g.id}`;
   const msg = `🔔 <b>Проверка участия</b>
 
-Если ты уже выполнил условия — нажми «Проверить».`;
+Если ты уже выполнил условия — нажми <b>«Проверить участие»</b> в боте.
+
+🔍 Проверка: ${escapeHtml(link)}`;
+  const kb = { inline_keyboard: [[{ text: '🔍 Проверить участие', url: link }]] };
 
   try {
-    await ctx.api.sendMessage(chatId, msg, { parse_mode: 'HTML', reply_markup: kb });
+    await ctx.api.sendMessage(chatId, msg, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
     await db.auditGiveaway(g.id, userId, 'gw.reminder_posted', { actor_role: 'curator' });
     await ctx.answerCallbackQuery({ text: '✅ Отправлено' });
   } catch (e) {
@@ -6323,6 +6339,26 @@ ${reason}
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
     const payload = parseStartPayload(ctx.message?.text || '');
     db.trackEvent('start', { userId: u.id, meta: { payloadType: payload?.type || null, hasPayload: !!payload } });
+    if (payload?.type === 'gwj') {
+      const g = await db.getGiveawayInfoForUser(payload.id);
+      if (!g) return ctx.reply('Конкурс не найден.');
+      await db.upsertGiveawayEntry(payload.id, u.id);
+      await db.auditGiveaway(payload.id, g.workspace_id, u.id, 'gw.joined', { from: 'start_link' });
+      const entry = await db.getEntryStatus(payload.id, u.id);
+      const text = renderParticipantScreen(g, entry);
+      return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id) });
+    }
+    if (payload?.type === 'gwc') {
+      const g = await db.getGiveawayInfoForUser(payload.id);
+      if (!g) return ctx.reply('Конкурс не найден.');
+      await db.upsertGiveawayEntry(payload.id, u.id);
+      const check = await doEligibilityCheck(ctx, payload.id, ctx.from.id);
+      await db.setEntryEligibility(payload.id, u.id, check.isEligible);
+      await db.auditGiveaway(payload.id, g.workspace_id, u.id, 'gw.checked', { from: 'start_link', isEligible: check.isEligible, unknown: check.unknown, results: check.results });
+      const entry = await db.getEntryStatus(payload.id, u.id);
+      const text = renderParticipantScreen(g, entry);
+      return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id) });
+    }
     if (payload?.type === 'gw') {
       const g = await db.getGiveawayInfoForUser(payload.id);
       if (!g) return ctx.reply('Конкурс не найден.');
@@ -6360,7 +6396,13 @@ ${reason}
       await ctx.reply(
         `✅ Ты назначен куратором для: <b>${escapeHtml(wsTitle)}</b>.
 
-Попроси владельца включить “👤 Куратор: ВКЛ” в настройках канала (тогда будут доступны конкурсы/лог/напоминания).`,
+Что дальше:
+1) Нажми <b>«👤 Открыть кабинет куратора»</b>
+2) Выбери канал в списке:
+   ✅ — доступ включен, можно смотреть конкурсы
+   ❌ — владелец выключил кураторов (попроси включить в настройках канала)
+
+💡 Для простоты включи <b>«🧹 Режим куратора»</b> — он прячет лишнее меню.`,
         { parse_mode: 'HTML', reply_markup: kb }
       );
       return;
@@ -10157,15 +10199,16 @@ if (p.a === 'a:gw_prize') {
 
       // publish post
       const botUsername = CFG.BOT_USERNAME;
-      const deepLink = `https://t.me/${botUsername}?start=gw_${created.id}`;
+      const deepLinkJoin = `https://t.me/${botUsername}?start=gwj_${created.id}`;
+      const deepLinkCheck = `https://t.me/${botUsername}?start=gwc_${created.id}`;
       const text =
 `🎀 <b>РОЗЫГРЫШ</b>\n\n🎁 Приз: <b>${escapeHtml(draft.prize_value_text)}</b>\n🏆 Мест: <b>${Number(draft.winners_count)}</b>\n⏳ Итоги: <b>${escapeHtml(fmtTs(draft.ends_at))}</b>\n\n✅ Нажми “Участвовать”, затем “Проверить” в боте.`;
 
       const kb = {
         inline_keyboard: [
           [
-            { text: '✅ Участвовать', callback_data: `a:gw_join|i:${created.id}` },
-            { text: '🔍 Проверить', url: deepLink }
+            { text: '✅ Участвовать', url: deepLinkJoin },
+            { text: '🔍 Проверить', url: deepLinkCheck }
           ]
         ]
       };
@@ -10295,7 +10338,8 @@ if (p.a === 'a:gw_prize') {
       const sponsors = await db.listGiveawaySponsors(gwId);
       const hasSponsors = Array.isArray(sponsors) && sponsors.length > 0;
 
-      const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${gwId}`;
+      // Use a direct "check" deep-link so the channel button always works and takes the user straight to eligibility check.
+      const link = `https://t.me/${CFG.BOT_USERNAME}?start=gwc_${gwId}`;
       const line1 = hasSponsors
         ? '1) Подпишись на канал конкурса (этот канал) и на все каналы-спонсоры'
         : '1) Подпишись на канал конкурса (этот канал)';
@@ -10310,7 +10354,8 @@ if (p.a === 'a:gw_prize') {
         });
         await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.reminder_posted', { chat_id: g.published_chat_id, message_id: sent.message_id });
         await ctx.answerCallbackQuery({ text: 'Отправлено ✅' });
-        await ctx.editMessageText('✅ Напоминание опубликовано.', { reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_open|i:${gwId}`) });
+        // Go back to the giveaway card to avoid leaving a "success" message hanging in the chat.
+        await renderGwOpen(ctx, u.id, gwId);
       } catch (e) {
         await redis.del(rlKey);
         await ctx.answerCallbackQuery({ text: 'Не удалось.' });
