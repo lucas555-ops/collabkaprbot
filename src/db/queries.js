@@ -921,6 +921,19 @@ export async function listGiveawayAudit(giveawayId, limit = 30) {
   return r.rows;
 }
 
+
+export async function listGiveawayCuratorNotesAudit(giveawayId, limit = 3) {
+  const r = await pool.query(
+    `select payload, created_at
+     from giveaway_audit
+     where giveaway_id=$1 and action='curator.note'
+     order by created_at desc
+     limit $2`,
+    [giveawayId, limit]
+  );
+  return r.rows;
+}
+
 // Worker queries
 export async function listGiveawaysToEnd(limit = 50) {
   const r = await pool.query(
