@@ -594,6 +594,8 @@ async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
     kb.text('✅ Продолжить → Заявка', `a:brand_continue${suf}`).row();
   }
 
+  kb.text('🧹 Сбросить', `a:brand_prof_reset${suf}`).row();
+
   kb.text('⬅️ Назад', brandBackCb(params));
 
   const opts = { parse_mode: 'HTML', reply_markup: kb };
@@ -1585,8 +1587,9 @@ function wsProfileKb(wsId, ws) {
     .text('🧩 Режим', `a:ws_prof_mode|ws:${wsId}`)
     .row()
     .text('📨 Заявки', `a:ws_leads|ws:${wsId}|s:new|p:0`)
-    .text('🔗 Поделиться', `a:ws_share|ws:${wsId}`)
+    .text('🪟 Витрина', `a:wsp_preview|ws:${wsId}`)
     .row()
+    .text('🔗 Поделиться', `a:ws_share|ws:${wsId}`)
     .text('📌 IG шаблоны', `a:ws_ig_templates|ws:${wsId}`)
     .row()
     .text('📸 Instagram', `a:ws_prof_edit|ws:${wsId}|f:ig`)
@@ -1699,6 +1702,7 @@ async function renderWsProfile(ctx, ownerUserId, wsId) {
     `👤 <b>Профиль (витрина)</b>\n\n` +
     `<b>IG leads → TG deals</b>\n` +
     `Бренды находят тебя в Instagram → по ссылке открывают этот профиль → дальше всё в Telegram.\n\n` +
+    `🪟 Витрина: открой кнопку ниже — там находится «📝 Оставить заявку».\n\n` +
     `Канал: <b>${escapeHtml(channel)}</b>\n` +
     `${proLine}\n${progressLine}${improveBlock}\n\n` +
     `Название/витрина: <b>${escapeHtml(name)}</b>\n` +
@@ -2173,6 +2177,7 @@ async function renderWsPublicProfile(ctx, wsId, opts = {}) {
   const text =
     `✨ <b>${escapeHtml(name)}</b>\n\n` +
     `IG leads → TG deals: бренд находит в Instagram → сделка закрывается в Telegram.\n\n` +
+    `🪟 Витрина: открой кнопку ниже — там находится «📝 Оставить заявку».\n\n` +
     `Канал: <b>${escapeHtml(channel)}</b>\n` +
     `🧩 Режим: <b>${escapeHtml(modeLine)}</b>\n` +
     `📸 Instagram:\n${igLine}\n` +
@@ -3015,7 +3020,7 @@ async function sendBxPreview(ctx, ownerUserId, wsId, offerId, back = 'my') {
   if (!o) return ctx.reply('Оффер не найден или нет доступа.');
 
   const { text } = await buildOfficialOfferPost(o, { forCaption: true });
-  const note = `\n\n<i>Кнопки добавятся при публикации.</i>\n<i>Медиа попадёт в официальный канал только при PAID-размещении.</i>`;
+  const note = `\n\n<i>Это превью (пересылать не нужно).</i>\n<i>Кнопки появятся при публикации.</i>\n<i>Медиа попадёт в официальный канал только при PAID-размещении.</i>`;
   const caption = `${text}${note}`;
 
   try {
@@ -6250,7 +6255,17 @@ bot.on('message:successful_payment', async (ctx) => {
       return;
     }
 
-// Public profile (vitrina)
+    if (p.a === 'a:wsp_preview') {
+      const wsId = Number(p.ws || 0);
+      if (!wsId) return ctx.answerCallbackQuery({ text: 'Workspace не найден.' });
+
+      try { await ctx.answerCallbackQuery({ text: 'Открываю витрину…' }); } catch {}
+
+      await renderWsPublicProfile(ctx, wsId, { backCb: `a:ws_profile|ws:${wsId}` });
+      return;
+    }
+
+    // Public profile (vitrina)
     if (p.a === 'a:wsp_open') {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws || 0);
@@ -6800,6 +6815,47 @@ if (p.a === 'a:ws_prof_mode') {
     }
 
 
+    if (p.a === 'a:brand_prof_reset') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      const suf = brandCbSuffix({ wsId, ret, backOfferId: bo, backPage: bp });
+
+      const kb = new InlineKeyboard()
+        .text('✅ Да, сбросить', `a:brand_prof_reset_ok${suf}`)
+        .row()
+        .text('⬅️ Отмена', `a:brand_profile${suf}`);
+
+      const txt = `🧹 <b>Сбросить профиль бренда?</b>
+
+Это удалит базовые и расширенные поля профиля. Действие необратимо.`;
+      await ctx.editMessageText(txt, { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    if (p.a === 'a:brand_prof_reset_ok') {
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+
+      const res = await safeBrandProfiles(
+        () => db.deleteBrandProfile(u.id),
+        async () => ({ __missing_relation: true })
+      );
+
+      if (res && res.__missing_relation) {
+        await ctx.answerCallbackQuery({ text: '⚠️ Не найдена таблица brand_profiles. Нужна миграция 024_brand_profiles.sql.', show_alert: true });
+        await renderBrandProfileHome(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: '✅ Профиль сброшен.' });
+      await renderBrandProfileHome(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
 
 
     if (p.a === 'a:brand_pass') {
@@ -9117,17 +9173,24 @@ if (p.a === 'a:gw_prize') {
 
 ✅ Нажми “Участвовать”, затем “Проверить” в боте.
 
-<i>Кнопки добавятся при публикации.</i>`;
+<i>Это превью. Для публикации нажми “📣 Опубликовать” ниже.</i>`;
+
+      // Add action buttons прямо в превью, чтобы не было ощущения “надо переслать”.
+      // IMPORTANT: callback приходит из превью-сообщения (медиа), поэтому “назад” делаем как «показать черновик ещё раз».
+      const previewKb = new InlineKeyboard()
+        .text('📣 Опубликовать', `a:gw_publish|ws:${wsId}`)
+        .row()
+        .text('⬅️ Назад к черновику', `a:gw_confirm_push|ws:${wsId}`);
 
       try {
         if (draft.media_file_id && String(draft.media_type) === 'photo') {
-          await ctx.replyWithPhoto(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+          await ctx.replyWithPhoto(draft.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: previewKb });
         } else if (draft.media_file_id && String(draft.media_type) === 'animation') {
-          await ctx.replyWithAnimation(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+          await ctx.replyWithAnimation(draft.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: previewKb });
         } else if (draft.media_file_id && String(draft.media_type) === 'video') {
-          await ctx.replyWithVideo(draft.media_file_id, { caption: text, parse_mode: 'HTML' });
+          await ctx.replyWithVideo(draft.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: previewKb });
         } else {
-          await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true });
+          await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: previewKb });
         }
       } catch (_) {
         await ctx.reply('Не удалось отправить превью. Попробуй ещё раз или убери медиа.');
@@ -9135,6 +9198,15 @@ if (p.a === 'a:gw_prize') {
 
       // Keep user in confirm screen
       await renderGwConfirm(ctx, wsId, { edit: true });
+      return;
+    }
+
+    // “Назад” из превью конкурса: присылаем черновик ещё раз (не пытаемся редактировать медиа-сообщение).
+    if (p.a === 'a:gw_confirm_push') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      await clearExpectText(ctx.from.id);
+      await renderGwConfirm(ctx, wsId, { edit: false });
       return;
     }
 
