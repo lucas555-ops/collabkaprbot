@@ -4144,9 +4144,11 @@ function gwStatusLabel(status) {
 
 async function renderGwList(ctx, ownerUserId, wsId = null) {
   const items = await db.listGiveaways(ownerUserId, 25);
-  const filtered = wsId ? items.filter(x => x.workspace_id === wsId) : items;
+  const wsNum = (wsId === null || wsId === undefined) ? null : Number(wsId);
+  // workspace_id can come from PG as a string (BIGINT), so compare by Number to avoid empty lists
+  const filtered = wsNum ? items.filter(x => Number(x.workspace_id) === wsNum) : items;
 
-  const activeWs = wsId || (ctx?.from?.id ? await getActiveWorkspace(ctx.from.id) : null);
+  const activeWs = wsNum || (ctx?.from?.id ? await getActiveWorkspace(ctx.from.id) : null);
   const createCb = activeWs ? `a:gw_new|ws:${activeWs}` : 'a:gw_new_pick';
 
   const kb = new InlineKeyboard();
@@ -6017,7 +6019,13 @@ ${reason}
 
       const list = sponsors.map(x => `• ${escapeHtml(String(x))}`).join('\n');
       await ctx.reply(
-        `✅ Спонсоры: <b>${sponsors.length}</b>\n${list}\n\nВыбери действие:`,
+        `✅ Спонсоры: <b>${sponsors.length}</b>
+${list}
+
+Эти каналы появятся в конкурсе как обязательные подписки.
+Дальше жми «➡️ Дальше» и выбери дедлайн.
+
+⚠️ Чтобы «Проверить» работало, добавь бота админом в каналы-спонсоры.`,
         { parse_mode: 'HTML', reply_markup: gwSponsorsReviewKb(exp.wsId) }
       );
       return;
@@ -9649,6 +9657,36 @@ ${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
 
 
 
+
+
+
+    // Giveaways: sponsors help (Jobs-style micro guide)
+    if (p.a === 'a:gw_sponsors_help') {
+      const wsId = Number(p.ws);
+      const ws = await db.getWorkspace(u.id, wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      const b = String(p.b || '').toLowerCase();
+      let backCb = `a:gw_step_sponsors|ws:${wsId}`;
+      if (b === 'folder') backCb = `a:gw_sponsors_from_folder|ws:${wsId}`;
+      if (b === 'step') backCb = `a:gw_step_sponsors|ws:${wsId}`;
+
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageText(
+        `🧭 Каналы-спонсоры (подписки)
+
+Это список каналов, на которые участник должен подписаться.
+Дальше участник жмёт «🔄 Проверить», и бот проверяет подписки на каждый канал.
+
+Как подготовить (по-уму):
+1) Добавь бота админом в каналы-спонсоры (иначе Telegram не даст проверить).
+2) В «Мои каналы» создай папку и добавь туда нужные каналы.
+
+Дальше: выбери папку → «➡️ Дальше» → дедлайн → превью → публикация.`,
+        { reply_markup: new InlineKeyboard().text('⬅️ Назад', backCb) }
+      );
+      return;
+    }
 // Giveaways: load sponsors from folder
     if (p.a === 'a:gw_sponsors_from_folder') {
       const wsId = Number(p.ws);
@@ -9660,10 +9698,14 @@ ${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
       for (const f of folders.slice(0, 20)) {
         kb.text(`📁 ${String(f.title).slice(0, 32)} (${Number(f.items_count || 0)})`, `a:gw_sponsors_use_folder|ws:${wsId}|f:${f.id}`).row();
       }
+      kb.text('🧭 Как это работает', `a:gw_sponsors_help|ws:${wsId}|b:folder`).row();
       kb.text('⬅️ Назад', `a:gw_step_sponsors|ws:${wsId}`);
 
       await ctx.answerCallbackQuery();
-      await ctx.editMessageText('📁 Выбери папку — каналы из неё станут спонсорами конкурса:', { reply_markup: kb });
+      await ctx.editMessageText(`📁 Спонсоры из папки
+
+Выбери папку — каналы из неё станут спонсорами (подписки) для конкурса.
+Если папок нет — создай папку в «Мои каналы» → «Папки».`, { reply_markup: kb });
       return;
     }
 
@@ -9697,7 +9739,13 @@ ${lines.length ? lines.join('\n') : 'Пока нет.'}`, {
       const list = sponsors.map(x => `• ${escapeHtml(String(x))}`).join('\n');
       await ctx.answerCallbackQuery({ text: 'Готово.' });
       await ctx.editMessageText(
-        `✅ Спонсоры: <b>${sponsors.length}</b>\n${list}\n\nВыбери действие:`,
+        `✅ Спонсоры: <b>${sponsors.length}</b>
+${list}
+
+Эти каналы появятся в конкурсе как обязательные подписки.
+Дальше жми «➡️ Дальше» и выбери дедлайн.
+
+⚠️ Чтобы «Проверить» работало, добавь бота админом в каналы-спонсоры.`,
         { parse_mode: 'HTML', reply_markup: gwSponsorsReviewKb(wsId) }
       );
       return;
