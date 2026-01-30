@@ -66,9 +66,34 @@ function fmtWait(sec) {
 }
 
 // Sponsors helpers (Jobs-style clarity)
+function normalizeSponsorsList(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (!item) continue;
+    if (typeof item === 'string') {
+      const s = item.trim();
+      if (s) out.push(s);
+      continue;
+    }
+    if (typeof item === 'object') {
+      const s = String(item.sponsor_text ?? item.sponsorText ?? item.sponsor ?? item.text ?? item.handle ?? item.username ?? '').trim();
+      if (s) out.push(s);
+      continue;
+    }
+    const s = String(item).trim();
+    if (s) out.push(s);
+  }
+  // unique preserve order
+  return [...new Set(out)];
+}
+
 function fmtSponsorHandle(raw) {
-  const handle = sponsorToChatId(raw);
-  return handle || String(raw || '').trim();
+  const item = raw && typeof raw === 'object'
+    ? (raw.sponsor_text ?? raw.sponsorText ?? raw.sponsor ?? raw.text ?? raw.handle ?? raw.username)
+    : raw;
+  const handle = sponsorToChatId(item);
+  return handle || String(item || '').trim();
 }
 
 function sponsorUrlFromHandle(handle) {
@@ -80,12 +105,12 @@ function sponsorUrlFromHandle(handle) {
 }
 
 function sponsorsInlineText(rawSponsors, max = 3) {
-  const handles = (rawSponsors || []).map(fmtSponsorHandle).filter(Boolean);
+  const handles = normalizeSponsorsList(rawSponsors).map(fmtSponsorHandle).filter(Boolean);
   if (!handles.length) return '';
   const shown = handles.slice(0, max);
   const rest = handles.length - shown.length;
   const inline = shown.join(', ');
-  return rest > 0 ? `${inline} (+${rest})` : inline;
+  return rest > 0 ? `${inline} +${rest}` : inline;
 }
 
 function sponsorStateIcon(state) {
@@ -1104,11 +1129,11 @@ const GW_PRESETS = [
     id: 'cert_discount',
     title: '🎟 Сертификат / скидка',
     prize_type: 'cert',
-    prize_value_text: 'Сертификат/скидка от магазина (условия и номинал — в описании/в треде).'
+    prize_value_text: 'Сертификат/скидка от магазина — условия и номинал в описании/в треде.'
   },
   {
     id: 'cash_rub',
-    title: '💸 Денежный приз (₽)',
+    title: '💸 Денежный приз в ₽',
     prize_type: 'rub',
     prize_value_text: 'Денежный приз в ₽. Сумма и способ выплаты — указать в описании.'
   }
@@ -1119,7 +1144,7 @@ function gwPrizePrompt(prizeType) {
     case 'barter':
       return `🤝 <b>Бартер</b>
 
-✍️ Опиши приз одним сообщением.
+✍️ Опиши, что именно разыгрываем + условия/доставку.
 Пример: <i>"Бьюти-бокс (1 победитель), доставка по РФ"</i>`;
     case 'cert':
       return `🎟 <b>Сертификат / скидка</b>
@@ -1127,7 +1152,7 @@ function gwPrizePrompt(prizeType) {
 ✍️ Укажи номинал и условия.
 Пример: <i>"Сертификат 3 000₽ в @shopname (1 победитель)"</i>`;
     case 'rub':
-      return `💸 <b>Денежный приз (₽)</b>
+      return `💸 <b>Денежный приз в ₽</b>
 
 ✍️ Укажи сумму и способ выплаты.
 Пример: <i>"2 000₽ на карту/СБП (1 победитель)"</i>`;
@@ -1322,22 +1347,21 @@ function participantKb(gwId, entry, opts = {}) {
 
   // Optional: direct user to the missing sponsor channel
   const blocker = opts.blocker;
-  if (blocker && typeof blocker.chat === 'string' && blocker.chat.startsWith('@')) {
-    const url = sponsorUrlFromHandle(blocker.chat);
-    if (url) {
-      kb.url(`🔗 Открыть ${blocker.chat}`, url).row();
-    }
+  const blockerHandle =
+    opts.firstBlockerHandle ||
+    (blocker && typeof blocker.chat === 'string' && blocker.chat.startsWith('@') ? blocker.chat : null);
+  if (blockerHandle) {
+    const url = sponsorUrlFromHandle(blockerHandle);
+    if (url) kb.url(`🔗 Открыть ${blockerHandle}`, url).row();
   }
 
   // Primary actions
   if (!entry) {
-    kb.text('✅ Участвовать', `a:gw_join|i:${gwId}${pub}`).row();
+    kb.text('🎟 Участвовать', `a:gw_join|i:${gwId}${pub}`).row();
   }
 
   const checkLabel = entry?.is_eligible ? '🔄 Проверить ещё раз' : '🔄 Проверить';
   kb.text(checkLabel, `a:gw_check|i:${gwId}${pub}`).row();
-
-  kb.text('🧾 Лог конкурса', `a:gw_log|i:${gwId}${pub}`);
 
   if (opts.backTo?.text && opts.backTo?.cb) {
     kb.row().text(opts.backTo.text, opts.backTo.cb);
@@ -1357,7 +1381,7 @@ function renderParticipantScreen(g, entry, opts = {}) {
   } else if (entry) {
     stLine = '✅ <b>участие записано</b> · нужно подтвердить подписки';
   } else {
-    stLine = '🕒 <b>нажми “✅ Участвовать”</b> чтобы записаться';
+    stLine = '🕒 <b>нажми “🎟 Участвовать”</b> чтобы записаться';
   }
 
   // Explain the blocker (first missing / unknown), if we know it
@@ -1365,7 +1389,7 @@ function renderParticipantScreen(g, entry, opts = {}) {
   const blocker = opts.blocker || opts.elig?.firstBlocker;
   if (!opts.checking && !statusEligible && blocker) {
     const chat = blocker.chat;
-    const handle = typeof chat === 'string' && chat.startsWith('@') ? chat : null;
+    const handle = opts.elig?.firstBlockerHandle || (typeof chat === 'string' && chat.startsWith('@') ? chat : null);
     if (blocker.state === 'no') {
       blockerLine = handle
         ? `\n\n❌ Не хватает подписки: <b>${escapeHtml(handle)}</b>`
@@ -1378,7 +1402,7 @@ function renderParticipantScreen(g, entry, opts = {}) {
   }
 
   // Sponsors list (with simple status icons)
-  const sponsors = Array.isArray(opts.sponsors) ? opts.sponsors : [];
+  const sponsors = normalizeSponsorsList(opts.sponsors);
   const stateMap = {};
   if (opts.elig?.results) {
     for (const r of opts.elig.results) stateMap[String(r.chat)] = r.state;
@@ -1412,7 +1436,7 @@ function renderParticipantScreen(g, entry, opts = {}) {
   const actionHint = opts.checking
     ? ''
     : !entry
-      ? `\n\nНажми “✅ Участвовать”, чтобы записаться.`
+      ? `\n\nНажми “🎟 Участвовать”, чтобы записаться.`
       : !statusEligible
         ? `\n\nНажми “🔄 Проверить”, чтобы подтвердить подписки.`
         : '';
@@ -4543,6 +4567,8 @@ function curatorGwKb(wsId, gwId) {
     .row()
     .text('📣 Напомнить проверить', `a:cur_gw_remind_q|ws:${wsId}|i:${gwId}`)
     .row()
+    .text('📩 Владельцу', `a:cur_gw_owner_q|ws:${wsId}|i:${gwId}`)
+    .row()
     .text('⬅️ Назад', `a:cur_ws|ws:${wsId}`);
 }
 
@@ -4647,19 +4673,102 @@ async function renderCuratorGiveawayRemindSend(ctx, userId, wsId, gwId) {
 Открой бота и нажми <b>«Проверить»</b>, чтобы подтвердить подписки.
 
 🤖 Бот: ${escapeHtml(link)}`;
-  const kb = { inline_keyboard: [[{ text: '✅ Открыть бота', url: link }]] };
+  const kb = { inline_keyboard: [[{ text: '🤖 Открыть бота', url: link }]] };
 
   try {
     await ctx.api.sendMessage(chatId, msg, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
-    await db.auditGiveaway(g.id, userId, 'gw.reminder_posted', { actor_role: 'curator' });
+    await db.auditGiveaway(g.id, g.workspace_id, userId, 'gw.reminder_posted', { actor_role: 'curator' });
     await ctx.answerCallbackQuery({ text: '✅ Отправлено' });
   } catch (e) {
     await ctx.answerCallbackQuery({ text: 'Не удалось отправить в канал.' });
   }
 
-  await renderCuratorGiveawayOpen(ctx, userId, wsId, gwId);
+  
+await renderCuratorGiveawayOpen(ctx, userId, wsId, gwId);
 }
 
+async function renderCuratorGiveawayOwnerNotifyQ(ctx, userId, wsId, gwId) {
+  const g = await db.getGiveawayForCurator(Number(gwId), userId);
+  if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const checked = await getCurGwChecked(g.id);
+  const notes = await getCurGwNotes(g.id, 3);
+  const checkedLine = checked
+    ? `✅ Проверено: <b>${escapeHtml(curatorLabelFromMeta(checked))}</b> · ${fmtTs(checked.at)}`
+    : '✅ Проверено: —';
+
+  const chTitle = g.ws_title || 'канал';
+  const chUser = g.ws_username ? `@${g.ws_username}` : '';
+
+  const msg = `📩 <b>Сообщение владельцу</b>
+
+Отправлю владельцу короткий апдейт по конкурсу <b>#${g.id}</b>.
+
+🏷 Канал: <b>${escapeHtml(chTitle)}</b>${chUser ? ` (${escapeHtml(chUser)})` : ''}
+${checkedLine}
+${curatorNotesBlock(notes)}
+
+⏱ Лимит: 1 раз / 10 минут на конкурс.`;
+
+  const kb = new InlineKeyboard()
+    .text('📩 Отправить', `a:cur_gw_owner_send|ws:${wsId}|i:${gwId}`)
+    .row()
+    .text('❌ Отмена', `a:cur_gw_open|ws:${wsId}|i:${gwId}`);
+
+  await ctx.editMessageText(msg, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
+}
+
+async function renderCuratorGiveawayOwnerNotifySend(ctx, userId, wsId, gwId) {
+  const g = await db.getGiveawayForCurator(Number(gwId), userId);
+  if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  // rate-limit: 1 notify per 10 minutes per giveaway (protect owner from spam)
+  const rlKey = k(['rl', 'cur_owner_notify', String(g.id)]);
+  const rl = await rateLimit(rlKey, { limit: 1, windowSec: 10 * 60 });
+  if (!rl.allowed) {
+    await ctx.answerCallbackQuery({ text: `⏳ Слишком часто. Подожди ${fmtWait(rl.resetSec || 60)}.` });
+    return;
+  }
+
+  const ownerTgId = await db.getUserTgIdByUserId(g.owner_user_id);
+  if (!ownerTgId) {
+    await ctx.answerCallbackQuery({ text: 'Не найден владелец.' });
+    return;
+  }
+
+  const checked = await getCurGwChecked(g.id);
+  const notes = await getCurGwNotes(g.id, 3);
+  const checkedLine = checked
+    ? `✅ Проверено: <b>${escapeHtml(curatorLabelFromMeta(checked))}</b> · ${fmtTs(checked.at)}`
+    : '✅ Проверено: —';
+
+  const actor = ctx.from?.username ? `@${ctx.from.username}` : (ctx.from?.first_name ? ctx.from.first_name : 'куратор');
+  const chTitle = g.ws_title || 'канал';
+  const chUser = g.ws_username ? `@${g.ws_username}` : '';
+
+  const link = `https://t.me/${CFG.BOT_USERNAME}?start=gwo_${g.id}`;
+  const out = `📩 <b>Апдейт от куратора</b>
+
+От: <b>${escapeHtml(actor)}</b>
+Конкурс: <b>#${g.id}</b>
+Канал: <b>${escapeHtml(chTitle)}</b>${chUser ? ` (${escapeHtml(chUser)})` : ''}
+${checkedLine}
+${curatorNotesBlock(notes)}
+
+Открыть конкурс: ${escapeHtml(link)}`;
+
+  const kb = { inline_keyboard: [[{ text: '🧩 Открыть конкурс', url: link }]] };
+
+  try {
+    await ctx.api.sendMessage(ownerTgId, out, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
+    await db.auditGiveaway(g.id, g.workspace_id, userId, 'curator.owner_notified', { actor_role: 'curator' });
+    await ctx.answerCallbackQuery({ text: '📩 Отправлено' });
+  } catch (e) {
+    await ctx.answerCallbackQuery({ text: 'Не удалось отправить владельцу.' });
+  }
+
+  await renderCuratorGiveawayOpen(ctx, userId, wsId, gwId);
+}
 
 
 function formatChatRef(chat) {
@@ -4915,7 +5024,7 @@ async function getChatMemberStateCached(ctx, chat, userTgId) {
   }
 
   // IMPORTANT UX: do NOT cache negative too long, otherwise user subscribes but still sees ❌ for minutes.
-  const ex = state === 'ok' ? 10 * 60 : (state === 'no' ? 45 : 2 * 60);
+  const ex = state === 'ok' ? 10 * 60 : 10;
   try {
     await redis.set(cacheKey, state, { ex });
   } catch {}
@@ -4957,7 +5066,7 @@ async function doEligibilityCheck(ctx, gwId, userTgId) {
     } catch {}
 
     const sponsorRows = await db.listGiveawaySponsors(gwId);
-    const sponsors = (sponsorRows || []).map((s) => String(s.sponsor_text || '')).filter(Boolean);
+    const sponsors = normalizeSponsorsList((sponsorRows || []).map((s) => s?.sponsor_text ?? s?.sponsorText ?? s));
 
     const sponsorChats = [];
     const chatToHandle = new Map();
@@ -4966,7 +5075,7 @@ async function doEligibilityCheck(ctx, gwId, userTgId) {
       if (!chat) continue;
       sponsorChats.push(chat);
       // Prefer @handle for UI when possible
-      chatToHandle.set(String(chat), s.startsWith('@') ? s : (String(chat).startsWith('@') ? String(chat) : null));
+      chatToHandle.set(String(chat), (String(chat).startsWith('@') ? String(chat) : (String(s).startsWith('@') ? String(s) : null)));
     }
 
     const chats = [...new Set([mainChat, ...sponsorChats].filter(Boolean).map((x) => String(x)))];
@@ -4975,24 +5084,41 @@ async function doEligibilityCheck(ctx, gwId, userTgId) {
     let unknown = false;
     let firstBlocker = null;
 
-    // "Fail-fast": stop on first NO / UNKNOWN. This makes the check feel instant for the common case.
-    for (const chat of chats) {
+    const checkChat = async (chat) => {
       const state = await getChatMemberStateCached(ctx, chat, userTgId);
-      results.push({ chat, state });
-      if (state !== 'ok') {
-        if (state === 'unknown') unknown = true;
-        firstBlocker = { chat, state };
-        break;
+      const handle = chatToHandle.get(String(chat)) || (String(chat).startsWith('@') ? String(chat) : null);
+      return { chat, state, handle };
+    };
+
+    // Parallelize for small lists (feels snappier), and keep fail-fast for larger ones.
+    if (chats.length <= 3) {
+      const arr = await Promise.all(chats.map(checkChat));
+      for (const r of arr) results.push({ chat: r.chat, state: r.state, handle: r.handle });
+      const bad = arr.find((r) => r.state !== 'ok');
+      if (bad) {
+        firstBlocker = { chat: bad.chat, state: bad.state };
+        if (bad.state === 'unknown') unknown = true;
+      }
+    } else {
+      for (const chat of chats) {
+        const r = await checkChat(chat);
+        results.push({ chat: r.chat, state: r.state, handle: r.handle });
+        if (r.state !== 'ok') {
+          if (r.state === 'unknown') unknown = true;
+          firstBlocker = { chat: r.chat, state: r.state };
+          break;
+        }
       }
     }
 
     const isEligible = results.length === chats.length && results.every((r) => r.state === 'ok') && !unknown;
-
     const firstBlockerHandle = firstBlocker ? (chatToHandle.get(String(firstBlocker.chat)) || (String(firstBlocker.chat).startsWith('@') ? String(firstBlocker.chat) : null)) : null;
 
     const payload = { isEligible, unknown, results, firstBlocker, firstBlockerHandle, sponsors };
     try {
-      await redis.set(resKey, payload, { ex: 60 });
+      // Cache OK for longer; cache NO/UNKNOWN briefly (so subscribing updates quickly).
+      const ttl = isEligible ? 60 : 10;
+      await redis.set(resKey, payload, { ex: ttl });
     } catch {}
 
     return payload;
@@ -6579,7 +6705,7 @@ ${list}
       // Early feedback for giveaway deep-links (Jobs-style)
       if (payload?.type === 'gw') preMsg = await ctx.reply('⏳ Открываю конкурс…');
       else if (payload?.type === 'gwj') preMsg = await ctx.reply('⏳ Записываю участие…');
-      else if (payload?.type === 'gwc') preMsg = await ctx.reply('⏳ Проверяю подписки…');
+      else if (payload?.type === 'gwc') preMsg = await ctx.reply('⏳ Открываю конкурс…');
 
       const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
       db.trackEvent('start', { userId: u.id, meta: { payloadType: payload?.type || null, hasPayload: !!payload } });
@@ -6599,28 +6725,17 @@ ${list}
       }
     }
     if (payload?.type === 'gwc') {
-      const loading = preMsg || await ctx.reply('⏳ Проверяю подписки…');
+      // Variant A: open the giveaway screen (no auto-check, no auto-join)
+      const loading = preMsg || await ctx.reply('⏳ Открываю конкурс…');
       const g = await db.getGiveawayInfoForUser(payload.id);
       if (!g) return ctx.api.editMessageText(ctx.chat.id, loading.message_id, 'Конкурс не найден.');
-      await db.upsertGiveawayEntry(payload.id, u.id);
       const sponsors = await db.listGiveawaySponsors(payload.id);
-      const entry0 = await db.getEntryStatus(payload.id, u.id);
-      try {
-        const t0 = renderParticipantScreen(g, entry0, { checking: true, sponsors });
-        await ctx.api.editMessageText(ctx.chat.id, loading.message_id, t0, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry0, { pub: true }) });
-      } catch {
-        // ignore
-      }
-
-      const check = await doEligibilityCheck(ctx, payload.id, ctx.from.id);
-      await db.setEntryEligibility(payload.id, u.id, check.isEligible);
-      await db.auditGiveaway(payload.id, g.workspace_id, u.id, 'gw.checked', { from: 'start_link', isEligible: check.isEligible, unknown: check.unknown, results: check.results });
       const entry = await db.getEntryStatus(payload.id, u.id);
-      const text = renderParticipantScreen(g, entry, { hint: true, sponsors, elig: check });
+      const text = renderParticipantScreen(g, entry, { hint: true, sponsors });
       try {
-        return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true, blocker: check.firstBlocker }) });
+        return await ctx.api.editMessageText(ctx.chat.id, loading.message_id, text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
       } catch {
-        return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true, blocker: check.firstBlocker }) });
+        return ctx.reply(text, { parse_mode: 'HTML', reply_markup: participantKb(payload.id, entry, { pub: true }) });
       }
     }
     if (payload?.type === 'gw') {
@@ -7342,7 +7457,28 @@ bot.on('message:successful_payment', async (ctx) => {
       return;
     }
 
-    
+    if (p.a === 'a:cur_gw_owner_q') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await renderCuratorGiveawayOwnerNotifyQ(ctx, u.id, Number(p.ws || 0), Number(p.i || 0));
+      return;
+    }
+
+    if (p.a === 'a:cur_gw_owner_send') {
+      await ctx.answerCallbackQuery();
+      const flags = await getRoleFlags(u, ctx.from.id);
+      if (!flags.isCurator && !flags.isAdmin) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        return;
+      }
+      await renderCuratorGiveawayOwnerNotifySend(ctx, u.id, Number(p.ws || 0), Number(p.i || 0));
+      return;
+    }
+
 
     // CURATOR: safe "checked" mark + note (teamwork helpers)
     if (p.a === 'a:cur_gw_check_q') {
@@ -10446,9 +10582,10 @@ if (p.a === 'a:gw_prize') {
       const prize = (draft.prize_value_text || '').trim() || '—';
       const winners = Number(draft.winners_count || 0) || 1;
       const ends = draft.ends_at ? fmtTs(draft.ends_at) : '—';
-      const sponsorsN = Array.isArray(draft.sponsors) ? draft.sponsors.length : 0;
-      const sponsorsLine = sponsorsN
-        ? `👥 Спонсоры: подписка на <b>${sponsorsN}</b> канал(ов). Проверка — кнопкой «Проверить».`
+      const sponsorsInline = sponsorsInlineText(draft.sponsors, 6);
+      const sponsorsLine = sponsorsInline
+        ? `👥 Спонсоры: <b>${escapeHtml(sponsorsInline)}</b>
+Проверка подписки — внутри бота (кнопка «Проверить»).`
         : `👥 Спонсоры: <b>нет</b> (соло).`;
 
       const text =
@@ -10460,7 +10597,7 @@ if (p.a === 'a:gw_prize') {
 
 ${sponsorsLine}
 
-✅ Нажми “Открыть бота” — там будут кнопки «Участвовать» и «Проверить».
+🤖 Нажми “Открыть бота” — внутри: «🎟 Участвовать» и «🔄 Проверить».
 
 <i>Это превью. Для публикации нажми “📣 Опубликовать” ниже.</i>`;
 
@@ -10536,8 +10673,8 @@ ${sponsorsLine}
 👥 Спонсоры: <b>${escapeHtml(sponsorsInline)}</b>`
         : '';
       const actionHint = sponsorsInline
-        ? '✅ Открой бота → нажми «Проверить»'
-        : '✅ Нажми “Открыть бота” — там будут кнопки «Участвовать» и «Проверить».';
+        ? '🤖 Открой бота — подпишись на спонсоров и нажми «🔄 Проверить».'
+        : '🤖 Нажми “Открыть бота” — внутри: «🎟 Участвовать» и «🔄 Проверить».';
 
       const text =
 `🎀 <b>РОЗЫГРЫШ</b>
@@ -10550,7 +10687,7 @@ ${actionHint}`;
 
       const kb = {
         inline_keyboard: [
-          [{ text: '✅ Открыть бота', url: deepLinkOpen }]
+          [{ text: '🤖 Открыть бота', url: deepLinkOpen }]
         ]
       };
 
@@ -10617,7 +10754,7 @@ ${actionHint}`;
       const sponsors = await db.listGiveawaySponsors(gwId);
       const entryNow = await db.getEntryStatus(gwId, u.id);
 
-      await ctx.answerCallbackQuery({ text: 'Участие записано ✅' });
+      await ctx.answerCallbackQuery({ text: '🎟 Участие записано' });
 
       const screen = renderParticipantScreen(g, entryNow, { hint: true, sponsors });
       const kb = participantKb(gwId, entryNow, { pub });
@@ -10657,7 +10794,7 @@ ${actionHint}`;
       try {
         const entry = await db.getEntryStatus(gwId, u.id);
         const text1 = renderParticipantScreen(g, entry, { hint: true, sponsors, elig: check });
-        await ctx.editMessageText(text1, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry, { pub: isPub, blocker: check.firstBlocker }) });
+        await ctx.editMessageText(text1, { parse_mode: 'HTML', reply_markup: participantKb(gwId, entry, { pub: isPub, blocker: check.firstBlocker, firstBlockerHandle: check.firstBlockerHandle }) });
       } catch {
         const msg = check.isEligible ? '✅ Участие подтверждено!' : '⚠️ Пока не подтверждено.';
         await ctx.reply(msg + (check.unknown ? '\n\n💡 Если бот не может проверить — попроси админа добавить бота в канал-спонсор.' : ''));
@@ -10706,7 +10843,7 @@ ${actionHint}`;
         const sent = await ctx.api.sendMessage(Number(g.published_chat_id), text, {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
-          reply_markup: { inline_keyboard: [[{ text: '✅ Открыть бота', url: link }]] }
+          reply_markup: { inline_keyboard: [[{ text: '🤖 Открыть бота', url: link }]] }
         });
         await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.reminder_posted', { chat_id: g.published_chat_id, message_id: sent.message_id });
         await ctx.answerCallbackQuery({ text: 'Отправлено ✅' });
