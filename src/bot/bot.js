@@ -466,36 +466,18 @@ function curatorLabelFromMeta(meta) {
   return uname || name || (meta.by_tg_id ? `tg:${meta.by_tg_id}` : '—');
 }
 
-function curatorNotesBlock(notes, totalCount = null) {
-  const help = `<i>Заметки — внутренние пометки команды (договорённости, что уточнить, риски). Участникам не показываются.</i>`;
-
-  if (!Array.isArray(notes) || notes.length === 0) {
-    return `📝 <b>Заметки</b>: —
-${help}`;
-  }
-
+function curatorNotesBlock(notes) {
+  if (!Array.isArray(notes) || notes.length === 0) return '📝 Заметки: —';
   const shown = notes.slice(0, 3);
-  const total = (typeof totalCount === 'number' && Number.isFinite(totalCount) && totalCount > 0) ? totalCount : null;
-  const header = total && total > shown.length
-    ? `📝 <b>Заметки</b> (последние ${shown.length} из ${total}):`
-    : `📝 <b>Заметки</b> (последние ${shown.length}):`;
-
   const lines = shown
     .map((n) => {
       const txt = clipText(String(n?.text || ''), 140);
       const who = curatorLabelFromMeta(n);
       const when = n?.at ? fmtTs(n.at) : '—';
-      return `• ${escapeHtml(txt)}
-  — <b>${escapeHtml(who)}</b> · ${escapeHtml(when)}`;
+      return `• ${escapeHtml(txt)}\n  — <b>${escapeHtml(who)}</b> · ${escapeHtml(when)}`;
     })
-    .join('
-
-');
-
-  return `${header}
-${lines}
-
-${help}`;
+    .join('\n\n');
+  return `📝 <b>Заметки</b> (последние ${shown.length}):\n${lines}`;
 }
 
 
@@ -515,7 +497,7 @@ async function setCurGwChecked(gwId, meta) {
 }
 
 async function getCurGwNotes(gwId, limit = 3) {
-  const lim = Math.max(1, Math.min(25, Number(limit) || 3));
+  const lim = Math.max(1, Math.min(10, Number(limit) || 3));
   const listKey = k(['cur_gw_notes', gwId]);
 
   // Prefer list history (new)
@@ -575,21 +557,6 @@ try {
   return [];
 }
 
-
-async function getCurGwNotesCount(gwId) {
-  const listKey = k(['cur_gw_notes', gwId]);
-  try {
-    if (typeof redis.llen === 'function') {
-      const n = await redis.llen(listKey);
-      const nn = Number(n);
-      if (!Number.isNaN(nn) && nn > 0) return nn;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
-
 async function getCurGwNote(gwId) {
   const notes = await getCurGwNotes(gwId, 1);
   return notes && notes.length ? notes[0] : null;
@@ -602,7 +569,7 @@ async function setCurGwNote(gwId, meta) {
     const payload = typeof meta === 'string' ? meta : JSON.stringify(meta);
     if (typeof redis.lpush === 'function') {
       await redis.lpush(listKey, payload);
-      if (typeof redis.ltrim === 'function') await redis.ltrim(listKey, 0, 24);
+      if (typeof redis.ltrim === 'function') await redis.ltrim(listKey, 0, 2);
       if (typeof redis.expire === 'function') await redis.expire(listKey, CUR_GW_META_TTL_SEC);
     }
   } catch {
@@ -4432,13 +4399,12 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
 
   const checked = await getCurGwChecked(g.id);
   const notes = await getCurGwNotes(g.id, 3);
-  const notesTotal = await getCurGwNotesCount(g.id);
 
   const checkedLine = checked
     ? `✅ Проверено: <b>${escapeHtml(curatorLabelFromMeta(checked))}</b> · ${escapeHtml(fmtTs(checked.at))}`
     : '✅ Проверено: —';
 
-  const notesBlock = curatorNotesBlock(notes, notesTotal);
+  const notesBlock = curatorNotesBlock(notes);
 
   const text = `🎁 <b>Конкурс #${g.id}</b>
 
@@ -4562,7 +4528,7 @@ async function renderCuratorHome(ctx, userId) {
 • ✅ — доступ включён, можно работать.
 • ❌ — владелец выключил куратора (попроси включить или выйди из канала).
 
-<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки (пометки для команды)
+<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки
 
 🧹 <b>Режим куратора</b> — прячет лишнее меню (оставляет только кураторское).
 
@@ -4583,7 +4549,7 @@ async function replyCuratorHome(ctx, userId) {
 • ✅ — доступ включён, можно работать.
 • ❌ — владелец выключил куратора (попроси включить или выйди из канала).
 
-<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки (пометки для команды)
+<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки
 
 🧹 <b>Режим куратора</b> — прячет лишнее меню (оставляет только кураторское).
 
@@ -4642,51 +4608,10 @@ function curatorGwKb(wsId, gwId) {
     .text('✅ Проверено', `a:cur_gw_check_q|ws:${wsId}|i:${gwId}`)
     .text('📝 Заметка', `a:cur_gw_note_q|ws:${wsId}|i:${gwId}`)
     .row()
-    .text('⚡ Быстрая заметка', `a:cur_gw_note_quick|ws:${wsId}|i:${gwId}`)
-    .row()
     .text('📣 Напомнить проверить', `a:cur_gw_remind_q|ws:${wsId}|i:${gwId}`)
     .row()
-
-    .text('⬅️ Назад', `a:cur_ws|ws:${wsId}`);
+        .text('⬅️ Назад', `a:cur_ws|ws:${wsId}`);
 }
-
-function curatorQuickNotePresetText(key) {
-  switch (String(key || '')) {
-    case 'ok': return 'Ок ✅';
-    case 'ask': return 'Нужно уточнить ❓';
-    case 'wait': return 'Ждём ответ ⏳';
-    case 'risk': return 'Риск / сомнительно ⚠️';
-    default: return '';
-  }
-}
-
-function curatorQuickNotesKb(wsId, gwId) {
-  return new InlineKeyboard()
-    .text('✅ Ок', `a:cur_gw_note_quick_do|ws:${wsId}|i:${gwId}|k:ok`)
-    .text('❓ Уточнить', `a:cur_gw_note_quick_do|ws:${wsId}|i:${gwId}|k:ask`)
-    .row()
-    .text('⏳ Ждём', `a:cur_gw_note_quick_do|ws:${wsId}|i:${gwId}|k:wait`)
-    .text('⚠️ Риск', `a:cur_gw_note_quick_do|ws:${wsId}|i:${gwId}|k:risk`)
-    .row()
-    .text('✍️ Своя заметка', `a:cur_gw_note_q|ws:${wsId}|i:${gwId}`)
-    .row()
-    .text('⬅️ Назад', `a:cur_gw_open|ws:${wsId}|i:${gwId}`);
-}
-
-async function renderCuratorGiveawayQuickNote(ctx, userId, wsId, gwId) {
-  const g = await db.getGiveawayForCurator(Number(gwId), userId);
-  if (!g || Number(g.workspace_id) !== Number(wsId)) {
-    return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-  }
-
-  const text = `⚡ <b>Быстрая заметка</b> • конкурс #${g.id}
-
-Зачем: фиксируй контекст для команды — договорённости, что уточнить, риски.
-Участникам это не показывается.`;
-
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorQuickNotesKb(Number(wsId), Number(gwId)) });
-}
-
 
 async function renderCuratorGiveawayOpen(ctx, userId, wsId, gwId) {
   const g = await db.getGiveawayForCurator(Number(gwId), userId);
@@ -4696,13 +4621,12 @@ async function renderCuratorGiveawayOpen(ctx, userId, wsId, gwId) {
 
   const checked = await getCurGwChecked(g.id);
   const notes = await getCurGwNotes(g.id, 3);
-  const notesTotal = await getCurGwNotesCount(g.id);
 
   const checkedLine = checked
     ? `✅ Проверено: <b>${escapeHtml(curatorLabelFromMeta(checked))}</b> · ${escapeHtml(fmtTs(checked.at))}`
     : '✅ Проверено: —';
 
-  const notesBlock = curatorNotesBlock(notes, notesTotal);
+  const notesBlock = curatorNotesBlock(notes);
 
   const text = `🎁 <b>Конкурс #${g.id}</b>
 
@@ -4783,17 +4707,32 @@ async function renderCuratorGiveawayRemindSend(ctx, userId, wsId, gwId) {
     return;
   }
 
-  // Use URL button (works reliably inside channel posts and always opens the bot).
+  // Reminder: reply to the original giveaway post when possible (keeps context + media in view).
+  const sponsors = await db.listGiveawaySponsors(g.id);
+  const sponsorsCount = normalizeSponsorsList(sponsors).map(fmtSponsorHandle).filter(Boolean).length;
+  const sponsorsLine = sponsorsCount
+    ? `
+
+👥 Условие: ${sponsorsCountText(sponsors)}
+${sponsorsBulletText(sponsors, 5)}`
+    : '';
   const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${g.id}`;
-  const msg = `🔔 <b>Проверка участия</b>
+  const msg = `🔔 <b>Проверка участия</b> • Конкурс #${g.id}
 
-Открой бота и нажми <b>«Проверить»</b>, чтобы подтвердить подписки.
+🎁 Приз: <b>${escapeHtml(g.prize_value_text || '—')}</b>
+🏆 Мест: <b>${Number(g.winners_count || 1)}</b>
+⏳ Итоги: <b>${escapeHtml(g.ends_at ? fmtTs(g.ends_at) : '—')}</b>${sponsorsLine}
 
-🤖 Бот: ${escapeHtml(link)}`;
+🤖 Открой бота по кнопке ниже и нажми <b>«Проверить»</b>, чтобы подтвердить подписки.`;
+
   const kb = { inline_keyboard: [[{ text: '🤖 Открыть бота', url: link }]] };
 
   try {
-    await ctx.api.sendMessage(chatId, msg, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
+    const opts = { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb };
+    if (g.published_message_id) {
+      opts.reply_parameters = { message_id: Number(g.published_message_id), allow_sending_without_reply: true };
+    }
+    await ctx.api.sendMessage(chatId, msg, opts);
     await db.auditGiveaway(g.id, g.workspace_id, userId, 'gw.reminder_posted', { actor_role: 'curator' });
     await ctx.answerCallbackQuery({ text: '✅ Отправлено' });
   } catch (e) {
@@ -7684,69 +7623,6 @@ IG → лиды. TG → сделки.
       return;
     }
 
-    if (p.a === 'a:cur_gw_note_quick') {
-      await ctx.answerCallbackQuery();
-      const flags = await getRoleFlags(u, ctx.from.id);
-      if (!flags.isCurator && !flags.isAdmin) {
-        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-        return;
-      }
-      const wsId = Number(p.ws || 0);
-      const gwId = Number(p.i || 0);
-      if (!wsId || !gwId) return;
-      await renderCuratorGiveawayQuickNote(ctx, u.id, wsId, gwId);
-      return;
-    }
-
-    if (p.a === 'a:cur_gw_note_quick_do') {
-      await ctx.answerCallbackQuery();
-      const flags = await getRoleFlags(u, ctx.from.id);
-      if (!flags.isCurator && !flags.isAdmin) {
-        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-        return;
-      }
-      const wsId = Number(p.ws || 0);
-      const gwId = Number(p.i || 0);
-      const key = String(p.k || '');
-      if (!wsId || !gwId) return;
-
-      const preset = curatorQuickNotePresetText(key);
-      if (!preset) {
-        await ctx.answerCallbackQuery({ text: 'Неизвестный пресет.' });
-        return;
-      }
-
-      const g = await db.getGiveawayForCurator(gwId, u.id);
-      if (!g || Number(g.workspace_id) !== wsId) {
-        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-        return;
-      }
-
-      const meta = {
-        text: preset,
-        by_tg_id: Number(ctx.from.id),
-        by_username: ctx.from.username ?? null,
-        by_name: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ').trim(),
-        at: Date.now()
-      };
-
-      await setCurGwNote(gwId, meta);
-      try {
-        await db.auditGiveaway(gwId, Number(g.workspace_id), u.id, 'curator.note', {
-          by_tg_id: meta.by_tg_id,
-          by_username: meta.by_username,
-          by_name: meta.by_name,
-          text: preset,
-          len: preset.length,
-          preset: key
-        });
-      } catch {}
-
-      await ctx.answerCallbackQuery({ text: '✅ Сохранено' });
-      await renderCuratorGiveawayOpen(ctx, u.id, wsId, gwId);
-      return;
-    }
-
     if (p.a === 'a:cur_gw_note_q') {
       await ctx.answerCallbackQuery();
       const flags = await getRoleFlags(u, ctx.from.id);
@@ -7774,11 +7650,7 @@ IG → лиды. TG → сделки.
       await ctx.editMessageText(`📝 <b>Заметка к конкурсу #${gwId}</b>
 
 Пришли заметку одним сообщением (до 400 символов).
-
-<b>Зачем:</b> фиксируй договорённости, что уточнить, риски.
-Это видит владелец и кураторы. Участникам не показывается.
-
-Хочешь быстрее — жми “⚡ Быстрая заметка”.
+Она будет видна владельцу и другим кураторам.
 
 Чтобы отменить — нажми “❌ Отмена”.`, { parse_mode: 'HTML', reply_markup: kb });
       return;
@@ -11069,20 +10941,36 @@ ${actionHint}`;
       const sponsors = await db.listGiveawaySponsors(gwId);
       const hasSponsors = Array.isArray(sponsors) && sponsors.length > 0;
 
-      // Use a direct "check" deep-link so the channel button always works and takes the user straight to eligibility check.
+      // Reminder: reply to the original giveaway post when possible (keeps context + media in view).
       const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${gwId}`;
-      const line1 = hasSponsors
-        ? '1) Подпишись на канал конкурса (этот канал) и на все каналы-спонсоры'
-        : '1) Подпишись на канал конкурса (этот канал)';
+      const sponsorsCount = normalizeSponsorsList(sponsors).map(fmtSponsorHandle).filter(Boolean).length;
+      const sponsorsLine = sponsorsCount
+        ? `
+
+👥 Условие: ${sponsorsCountText(sponsors)}
+${sponsorsBulletText(sponsors, 5)}`
+        : '';
       const text =
-`📣 <b>Напоминание участникам</b>\n\nЧтобы участие засчиталось ✅\n${line1}\n2) Открой бота и нажми <b>«Проверить»</b>\n\n🤖 Бот: ${escapeHtml(link)}`;
+`📣 <b>Напоминание</b> • Конкурс #${gwId}
+
+🎁 Приз: <b>${escapeHtml(g.prize_value_text || '—')}</b>
+🏆 Мест: <b>${Number(g.winners_count || 1)}</b>
+⏳ Итоги: <b>${escapeHtml(g.ends_at ? fmtTs(g.ends_at) : '—')}</b>${sponsorsLine}
+
+🤖 Открой бота по кнопке ниже и нажми <b>«Проверить»</b>, чтобы подтвердить подписки.
+
+${escapeHtml(link)}`;
 
       try {
-        const sent = await ctx.api.sendMessage(Number(g.published_chat_id), text, {
+        const opts = {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
           reply_markup: { inline_keyboard: [[{ text: '🤖 Открыть бота', url: link }]] }
-        });
+        };
+        if (g.published_message_id) {
+          opts.reply_parameters = { message_id: Number(g.published_message_id), allow_sending_without_reply: true };
+        }
+        const sent = await ctx.api.sendMessage(Number(g.published_chat_id), text, opts);
         await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.reminder_posted', { chat_id: g.published_chat_id, message_id: sent.message_id });
         await ctx.answerCallbackQuery({ text: 'Отправлено ✅' });
         // Go back to the giveaway card to avoid leaving a "success" message hanging in the chat.
