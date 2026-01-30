@@ -129,6 +129,8 @@ export const CFG = {
   BX_MSG_RATE_WINDOW_SEC: parseIntSafe(process.env.BX_MSG_RATE_WINDOW_SEC, 60),
   INTRO_RATE_LIMIT: parseIntSafe(process.env.INTRO_RATE_LIMIT, 6),
   INTRO_RATE_WINDOW_SEC: parseIntSafe(process.env.INTRO_RATE_WINDOW_SEC, 3600),
+  BRAND_LEAD_RATE_LIMIT: parseIntSafe(process.env.BRAND_LEAD_RATE_LIMIT, 1),
+  BRAND_LEAD_RATE_WINDOW_SEC: parseIntSafe(process.env.BRAND_LEAD_RATE_WINDOW_SEC, 600),
 
   VERIFICATION_ENABLED: parseBoolSafe(process.env.VERIFICATION_ENABLED, false),
   // Brand profile (Brand Mode)
