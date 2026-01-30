@@ -5,17 +5,16 @@
 - Added P1 improvements: analytics events + **👑 Админка → 📈 Метрики**, rate limits (flag), onboarding v2 (flag), presets/templates, verification CTA in paywall.
 - Recommended: generate `package-lock.json` for deterministic installs (`npm install --package-lock-only`).
 
-Telegram bot for creators (channels) + brands (barter marketplace + giveaways):
-- Workspaces = your channels
-- Giveaways with sponsors, join + eligibility check, stats
-- Curator model (optional) + invite links (10 min)
-- Audit trail (workspace + giveaways)
-- Deterministic PRNG (seedHash) for transparency
-- Cron tick endpoint for auto-end + auto-draw (lock in Redis)
-- Mini barter exchange (cosmetics/under care/accessories) + inbox
-- Pro plan (Stars) for bigger limits, faster bump, pinned offer
-- Brand Pass (Stars) for brands: credits to open first contact (new inbox thread)
-- Moderator panel (reports queue) with audit
+UGC/Collab CRM в Telegram:
+- Workspaces = ваши каналы (профиль создателя)
+- Публичная витрина по deep-link (IG → TG)
+- Лиды/запросы от брендов: Inbox + статусы + история
+- 🎬 UGC/офферы: лента, размещение, управление и Inbox
+- 🎁 Розыгрыши (опционально): спонсоры, проверка условий, статистика
+- Кураторская модель (опционально) + инвайты
+- Прозрачность: детерминированный PRNG (seedHash), audit trail
+- Монетизация: PRO (Stars) + Brand Pass/Plan (анти-спам)
+- Модерация: очередь жалоб + audit
 
 > Stack: Node.js (ESM) + grammY + Postgres + Upstash Redis (REST). Designed for Vercel.
 
