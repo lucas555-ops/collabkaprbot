@@ -6960,8 +6960,7 @@ if (payload?.type === 'bxo') {
       '2) Примерное время оплаты',
       '3) Скрин чека (если есть)',
       '4) Твой @username и что случилось'
-    ].join('
-');
+    ].join('\n');
 
     await ctx.reply(msg, { parse_mode: 'HTML', disable_web_page_preview: true });
   });
