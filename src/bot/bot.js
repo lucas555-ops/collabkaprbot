@@ -968,6 +968,14 @@ function bxCategoryKb(wsId) {
   kb.text('🧩 Шаблоны', `a:bx_preset_home|ws:${wsId}`).row();
   kb.text('⬅️ Отмена', `a:bx_open|ws:${wsId}`);
   return kb;
+
+function bxKindKb(wsId) {
+  return new InlineKeyboard()
+    .text('🎬 UGC', `a:bx_kind|ws:${wsId}|k:ugc`).row()
+    .text('📣 Интеграция', `a:bx_kind|ws:${wsId}|k:integration`).row()
+    .text('⬅️ Отмена', `a:bx_open|ws:${wsId}`);
+}
+
 }
 
 const BX_PRESETS = [
@@ -1594,15 +1602,18 @@ const PROFILE_VERTICALS = [
 ];
 
 const PROFILE_FORMATS = [
-  { key: 'reels', title: '🎬 Reels / short video' },
-  { key: 'stories', title: '📲 Stories-пакет' },
-  { key: 'post', title: '🖼️ Пост / карусель' },
-  { key: 'unboxing', title: '📦 Распаковка' },
-  { key: 'tryon', title: '🧥 Примерка / try-on' },
-  { key: 'review', title: '⭐ Честный обзор' },
-  { key: 'howto', title: '🛠️ How-to / туториал' },
+  { key: 'reels', title: '🎬 Вертикальное видео (Reels/TikTok)' },
+  { key: 'stories', title: '📲 Stories / вставки' },
+  { key: 'post', title: '🖼️ Фото / карусель' },
+  { key: 'unboxing', title: '📦 Unboxing / распаковка' },
+  { key: 'tryon', title: '🧥 Try-on / примерка' },
+  { key: 'review', title: '⭐ Review / честный обзор' },
+  { key: 'howto', title: '🧠 How‑to / инструкция' },
+  { key: 'talking', title: '🗣️ Говорящая голова / отзыв' },
+  { key: 'routine', title: '🧴 Routine / «как использую»' },
+  { key: 'voice', title: '🎙️ Voice-over / без лица' },
   { key: 'ugc_ads', title: '🎯 UGC для рекламы (файлы)' },
-  { key: 'giveaway', title: '🎁 Конкурс / розыгрыш (TG)' }
+  { key: 'giveaway', title: '🎁 Розыгрыш (опционально)' }
 ];
 
 const PROFILE_MODE_LABELS = {
@@ -1919,17 +1930,22 @@ function buildLeadTemplateText(ws, lead, key = 'thanks') {
   const formatsShort = wants;
 
   switch (String(key)) {
+    case 'brief':
     case 'need_tz':
-      return `Привет! Спасибо за заявку. Пришли, пожалуйста, ТЗ/референсы + дедлайн. Я отвечу быстро.`;
+      return `Привет! Спасибо за заявку. Пришли, пожалуйста, бриф/ТЗ, референсы и дедлайн — я отвечу с форматом и ценой.`;
+    case 'price':
     case 'budget':
-      return `Привет! Супер. Подскажи бюджет/бартер и дедлайн? Тогда предложу точный формат (UGC/интеграция).`;
+      return `Привет! Чтобы назвать прайс, уточни: 🎬 UGC или 📣 интеграция, длительность/формат, дедлайн и бюджет (или диапазон).`;
+    case 'timing':
+      return `Привет! Подскажи дедлайн и объём (1/3/5 видео или другой пакет). Я скажу сроки производства и варианты.`;
     case 'delivery':
-      return `Привет! Подскажи город/доставка и что за продукт. После этого скажу сроки и формат.`;
+      return `Привет! Подскажи город/доставка и что за продукт — это влияет на сроки.`;
     case 'format':
-      return `Привет! Уточни, пожалуйста, что нужно: UGC или интеграция? По форматам у меня: ${formatsShort}.`;
+      return `Привет! Уточни, пожалуйста, что нужно: 🎬 UGC или 📣 интеграция? По форматам у меня: ${formatsShort}.`;
+    case 'discuss':
     case 'thanks':
     default:
-      return `Привет! Спасибо за заявку. Я на связи — уточни, пожалуйста, что за продукт, дедлайн и условия (бартер/бюджет).`;
+      return `Привет! Спасибо за заявку. Давай обсудим детали: что за продукт, дедлайн, 🎬 UGC или 📣 интеграция и условия (бартер/бюджет).`;
   }
 }
 function normalizeIgHandle(input) {
@@ -2804,13 +2820,13 @@ async function renderLeadTemplates(ctx, actorUserId, leadId, back) {
     `Нажми кнопку — я отправлю бренду готовый ответ + добавлю твою контакт‑карточку (IG / TG / витрина).`;
 
   const kb = new InlineKeyboard()
-    .text('✅ Спасибо, беру', `a:lead_tpl|id:${lead.id}|k:thanks|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .text('✅ Спасибо, обсудим', `a:lead_tpl|id:${lead.id}|k:discuss|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
-    .text('📦 Пришли ТЗ/реф', `a:lead_tpl|id:${lead.id}|k:need_tz|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .text('💰 Прайс / бюджет', `a:lead_tpl|id:${lead.id}|k:price|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
-    .text('💰 Уточни бюджет', `a:lead_tpl|id:${lead.id}|k:budget|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .text('🧾 Пришли бриф', `a:lead_tpl|id:${lead.id}|k:brief|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
-    .text('🚚 Город/доставка?', `a:lead_tpl|id:${lead.id}|k:delivery|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .text('⏱ Сроки / дедлайн', `a:lead_tpl|id:${lead.id}|k:timing|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
     .text('🧩 UGC или интеграция?', `a:lead_tpl|id:${lead.id}|k:format|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
@@ -5635,11 +5651,23 @@ export function getBot() {
         return;
       }
 
-      // Anti-spam: 1 lead per 10 min per (wsId + brand tg)
-      const rl = await rateLimit(k(['lead', wsId, tgId]), { limit: 1, windowSec: 600 });
-      if (!rl.allowed) {
-        await ctx.reply('⏳ Слишком часто. Подожди 10 минут и попробуй снова.');
-        return;
+      // Anti-spam: 1 lead per N minutes per (workspace + brand)
+      const leadLim = Number(CFG.BRAND_LEAD_RATE_LIMIT || 0);
+      const leadWin = Number(CFG.BRAND_LEAD_RATE_WINDOW_SEC || 0);
+      if (Number.isFinite(leadLim) && leadLim > 0 && Number.isFinite(leadWin) && leadWin > 0) {
+        const rl = await rateLimit(k(['rl', 'brandLead', wsId, tgId]), { limit: leadLim, windowSec: leadWin });
+        if (!rl.allowed) {
+          const mins = Math.max(1, Math.ceil(leadWin / 60));
+          const waitMins = Math.max(1, Math.ceil((rl.resetSec || leadWin) / 60));
+          const kb = new InlineKeyboard()
+            .text('⬅️ Назад к витрине', `a:wsp_open|ws:${wsId}`)
+            .text('📋 Меню', 'a:menu');
+          await ctx.reply(
+            `⏳ Слишком часто. Можно отправлять <b>${leadLim}</b> заявку каждые <b>${mins}</b> мин в одну витрину.\nПопробуй снова через <b>${waitMins}</b> мин.`,
+            { parse_mode: 'HTML', reply_markup: kb }
+          );
+          return;
+        }
       }
 
       const details = String(ctx.message.text || '').trim();
@@ -6006,7 +6034,10 @@ export function getBot() {
       const draft = (await getDraft(ctx.from.id)) || {};
       const wsId = Number(exp.wsId || draft.wsId);
       const lines = String(ctx.message.text || '').trim().split(/\n+/);
-      const title = (lines[0] || '').trim().slice(0, 80);
+      const baseTitle = (lines[0] || '').trim().slice(0, 80);
+      const kind = String(draft.kind || '');
+      const kindPrefix = kind === 'integration' ? 'Интеграция: ' : (kind === 'ugc' ? 'UGC: ' : '');
+      const title = (kindPrefix + baseTitle).slice(0, 80);
       const description = (lines.slice(1).join('\n') || '').trim().slice(0, 2000);
 
       if (!wsId || !draft.category || !draft.offer_type || !draft.compensation_type) {
@@ -6055,7 +6086,7 @@ export function getBot() {
         description,
         contact,
       });
-      await db.auditBarterOffer(offer.id, wsId, u.id, 'bx.offer_created', { category: draft.category, offerType: draft.offer_type, compensationType: draft.compensation_type });
+      await db.auditBarterOffer(offer.id, wsId, u.id, 'bx.offer_created', { category: draft.category, offerType: draft.offer_type, compensationType: draft.compensation_type, kind: draft.kind || null });
       db.trackEvent('bx_offer_published', { userId: u.id, wsId, meta: { offerId: offer.id, category: draft.category, offerType: draft.offer_type, compensationType: draft.compensation_type } });
       await clearDraft(ctx.from.id);
 
@@ -9242,9 +9273,9 @@ if (p.a === 'a:bx_retry_help') {
 
       await ctx.answerCallbackQuery();
       await clearDraft(ctx.from.id);
-      await ctx.editMessageText('➕ <b>Новый оффер</b>\n\nВыбери категорию:', {
+      await ctx.editMessageText('➕ <b>Новый оффер</b>\n\nШаг 1/5: выбери тип:\n\n🎬 <b>UGC</b> — контент без аудитории (главное: вкус и качество)\n📣 <b>Интеграция</b> — публикация в TG/IG (нужна аудитория)', {
         parse_mode: 'HTML',
-        reply_markup: bxCategoryKb(wsId)
+        reply_markup: bxKindKb(wsId)
       });
       await setDraft(ctx.from.id, { wsId });
       return;
@@ -9312,6 +9343,21 @@ if (p.a === 'a:bx_retry_help') {
       return;
     }
 
+
+    if (p.a === 'a:bx_kind') {
+      const wsId = Number(p.ws);
+      await ctx.answerCallbackQuery();
+      const draft = (await getDraft(ctx.from.id)) || {};
+      draft.wsId = wsId;
+      draft.kind = String(p.k || 'ugc');
+      await setDraft(ctx.from.id, draft);
+      await ctx.editMessageText('Шаг 2/5: выбери категорию:', {
+        parse_mode: 'HTML',
+        reply_markup: bxCategoryKb(wsId)
+      });
+      return;
+    }
+
 if (p.a === 'a:bx_cat') {
       const wsId = Number(p.ws);
       await ctx.answerCallbackQuery();
@@ -9319,7 +9365,7 @@ if (p.a === 'a:bx_cat') {
       draft.wsId = wsId;
       draft.category = p.c;
       await setDraft(ctx.from.id, draft);
-      await ctx.editMessageText('Шаг 2/4: выбери формат размещения:', {
+      await ctx.editMessageText('Шаг 3/5: выбери формат сотрудничества:', {
         parse_mode: 'HTML',
         reply_markup: bxTypeKb(wsId)
       });
@@ -9333,7 +9379,7 @@ if (p.a === 'a:bx_cat') {
       draft.wsId = wsId;
       draft.offer_type = p.t;
       await setDraft(ctx.from.id, draft);
-      await ctx.editMessageText('Шаг 3/4: выбери тип оплаты:', {
+      await ctx.editMessageText('Шаг 4/5: выбери тип оплаты:', {
         parse_mode: 'HTML',
         reply_markup: bxCompKb(wsId)
       });
@@ -9348,9 +9394,13 @@ if (p.a === 'a:bx_cat') {
       draft.compensation_type = p.p;
       await setDraft(ctx.from.id, draft);
 
-      const example = 'Заголовок: Ищу бартер с магазином уходовой косметики\n\nУсловия: пост+сторис, аудитория 500, Уфа. Хочу: бартер или сертификат. Контакт: @myname';
+      const kind = String(((await getDraft(ctx.from.id)) || {}).kind || 'ugc');
+      const example =
+        kind === 'integration'
+          ? 'Заголовок: Возьму интеграцию в канале/IG\n\nФормат: пост/сторис/репост. Аудитория/охваты: ... Гео: ... Дедлайн: ... Бюджет/условия: ... Контакт: @myname'
+          : 'Заголовок: Сниму UGC для бренда (без публикации)\n\nЧто сделаю: 1–3 вертикальных видео. Сроки: ... Референсы: ... Условия/бюджет: ... Контакт: @myname';
       await ctx.editMessageText(
-        `Шаг 4/4: отправь одним сообщением\n\n1-я строка — <b>заголовок</b>\nсо 2-й строки — <b>детали</b> (условия/гео/что хочешь получить).\n\nПример:\n<code>${escapeHtml(example)}</code>`,
+        `Шаг 5/5: отправь одним сообщением\n\n1-я строка — <b>заголовок</b>\nсо 2-й строки — <b>детали</b> (что нужно / сроки / условия).\n\nПример:\n<code>${escapeHtml(example)}</code>`,
         {
           parse_mode: 'HTML',
           reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_open|ws:${wsId}`)
