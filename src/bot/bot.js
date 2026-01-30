@@ -2170,7 +2170,37 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const text = buildWsShareText(ws, wsId, variant);
 
   // Показываем текст в этом же сообщении (чтобы не оставлять "висящие" сообщения без кнопок)
+  const link = wsBrandLink(wsId) || '';
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
+  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : '';
+  const ig = wsIgHandleFromWs(ws);
+  const igUrl = wsIgUrlFromWs(ws);
+  const plain = (() => {
+    if (String(variant) === 'long') {
+      let t =
+        `👋 Привет! Я беру коллабы / UGC.\n\n` +
+        `👤 ${String(ws.profile_title || channel)}\n` +
+        (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
+        (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+        (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+        `Чтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
+      return t;
+    }
+    // short
+    let t =
+      `👋 Привет! Я беру коллабы / UGC.\n` +
+      (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+      (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
+      (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+      `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
+    return t;
+  })();
+
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link || channelUrl || '')}&text=${encodeURIComponent(plain)}`;
+
   const kb = new InlineKeyboard()
+    .url('📨 Отправить', shareUrl)
+    .row()
     .text('⬅️ Назад', `a:ws_share|ws:${wsId}`)
     .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
 
@@ -2628,7 +2658,8 @@ async function renderWsPublicProfile(ctx, wsId, opts = {}) {
   // Links
   if (ws.channel_username) kb.url('📣 Telegram канал', `https://t.me/${String(ws.channel_username).replace(/^@/, '')}`);
   if (ig) kb.url('📸 Instagram', `https://instagram.com/${ig}`);
-  if (opts?.backCb) kb.row().text('⬅️ Назад', opts.backCb);
+  const backCb = opts?.backCb || (isOwner ? `a:ws_profile|ws:${wsId}` : null);
+  if (backCb) kb.row().text('⬅️ Назад', backCb);
   kb.row().text('📋 Меню', 'a:menu');
 
   const extra = { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true };
@@ -5724,17 +5755,35 @@ export function getBot() {
         .row()
         .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
 
+      let sent = 0;
+      let failed = 0;
+
       for (const toId of targets) {
         try {
           await ctx.api.sendMessage(toId, notif, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
-        } catch {}
+          sent++;
+        } catch (e) {
+          failed++;
+          try { console.error('[LEAD_NOTIFY] failed', { toId, wsId, leadId: lead.id, err: String(e?.message || e) }); } catch {}
+        }
       }
 
       const backKb = new InlineKeyboard()
         .text('⬅️ Назад к витрине', `a:wsp_open|ws:${wsId}`)
         .text('📋 Меню', 'a:menu');
 
-      await ctx.reply('✅ Заявка отправлена. Владелец канала получил уведомление.', { reply_markup: backKb });
+      if (sent > 0) {
+        await ctx.reply('✅ Заявка отправлена. Уведомление владельцу доставлено.', { reply_markup: backKb });
+      } else if (targets.size === 0) {
+        await ctx.reply('✅ Заявка отправлена. (Тест) Ты отправил заявку с аккаунта владельца — уведомление не требуется.', { reply_markup: backKb });
+      } else {
+        await ctx.reply(
+          '⚠️ Заявка отправлена, но уведомление владельцу НЕ доставлено.\n\n' +
+          'Проверь: владелец открыл бота /start (чтобы бот мог писать ему) и не блокировал бота.\n' +
+          'Если нужно — SUPER_ADMIN тоже получит уведомление (если указан в ENV).',
+          { reply_markup: backKb }
+        );
+      }
       return;
     }
 
@@ -5836,7 +5885,12 @@ export function getBot() {
         } else {
           const handle = normalizeIgHandle(raw);
           if (!handle) {
-            await ctx.reply('⚠️ Пришли @handle или ссылку на профиль вида instagram.com/handle.\n\nЧтобы очистить поле — отправь “-”.');
+            {
+            const kb = new InlineKeyboard()
+              .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`)
+              .text('📋 Меню', 'a:menu');
+            await ctx.reply('⚠️ Пришли @handle или ссылку на профиль вида instagram.com/handle.\n\nЧтобы очистить поле — отправь “-”.', { reply_markup: kb });
+          }
             await setExpectText(ctx.from.id, exp);
             return;
           }
@@ -5858,7 +5912,12 @@ export function getBot() {
         } else {
           const urls = parseUrlsFromText(raw, 3);
           if (!urls.length) {
-            await ctx.reply('⚠️ Пришли 1–3 ссылки (https://...). Можно в одном сообщении или по строкам.\n\nЧтобы очистить поле — отправь “-”.');
+            {
+            const kb = new InlineKeyboard()
+              .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`)
+              .text('📋 Меню', 'a:menu');
+            await ctx.reply('⚠️ Пришли 1–3 ссылки (https://...). Можно в одном сообщении или по строкам.\n\nЧтобы очистить поле — отправь “-”.', { reply_markup: kb });
+          }
             await setExpectText(ctx.from.id, exp);
             return;
           }
