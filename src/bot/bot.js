@@ -113,6 +113,32 @@ function sponsorsInlineText(rawSponsors, max = 3) {
   return rest > 0 ? `${inline} +${rest}` : inline;
 }
 
+function ruPlural(n, one, few, many) {
+  const x = Math.abs(Number(n) || 0);
+  const mod10 = x % 10;
+  const mod100 = x % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return few;
+  return many;
+}
+
+function sponsorsBulletText(rawSponsors, max = 5) {
+  const handles = normalizeSponsorsList(rawSponsors).map(fmtSponsorHandle).filter(Boolean);
+  if (!handles.length) return '';
+  const shown = handles.slice(0, max);
+  const rest = handles.length - shown.length;
+  const bullets = shown.map((h) => `• ${escapeHtml(h)}`).join(' ');
+  return rest > 0 ? `${bullets} +${rest}` : bullets;
+}
+
+function sponsorsCountText(rawSponsors) {
+  const handles = normalizeSponsorsList(rawSponsors).map(fmtSponsorHandle).filter(Boolean);
+  const n = handles.length;
+  if (!n) return '';
+  const word = ruPlural(n, 'канал', 'канала', 'каналов');
+  return `подписка на <b>${n}</b> ${word}`;
+}
+
 function sponsorStateIcon(state) {
   if (state === 'ok') return '✅';
   if (state === 'no') return '❌';
@@ -4723,7 +4749,7 @@ async function renderCuratorGiveawayOwnerNotifySend(ctx, userId, wsId, gwId) {
   if (!g) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
 
   // rate-limit: 1 notify per 10 minutes per giveaway (protect owner from spam)
-  const rlKey = k(['rl', 'cur_owner_notify', String(g.id)]);
+  const rlKey = k(['rl', 'cur_owner_notify', String(g.id), String(userId)]);
   const rl = await rateLimit(rlKey, { limit: 1, windowSec: 10 * 60 });
   if (!rl.allowed) {
     await ctx.answerCallbackQuery({ text: `⏳ Слишком часто. Подожди ${fmtWait(rl.resetSec || 60)}.` });
@@ -4757,7 +4783,10 @@ ${curatorNotesBlock(notes)}
 
 Открыть конкурс: ${escapeHtml(link)}`;
 
-  const kb = { inline_keyboard: [[{ text: '🧩 Открыть конкурс', url: link }]] };
+  const kb = new InlineKeyboard()
+    .text('🎁 Открыть конкурс', `a:gw_open|i:${g.id}`)
+    .row()
+    .url('🤖 Открыть бота', link);
 
   try {
     await ctx.api.sendMessage(ownerTgId, out, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
@@ -5091,7 +5120,7 @@ async function doEligibilityCheck(ctx, gwId, userTgId) {
     };
 
     // Parallelize for small lists (feels snappier), and keep fail-fast for larger ones.
-    if (chats.length <= 3) {
+    if (chats.length <= 9) {  // ≤8 sponsors (+ main)
       const arr = await Promise.all(chats.map(checkChat));
       for (const r of arr) results.push({ chat: r.chat, state: r.state, handle: r.handle });
       const bad = arr.find((r) => r.state !== 'ok');
@@ -10582,10 +10611,11 @@ if (p.a === 'a:gw_prize') {
       const prize = (draft.prize_value_text || '').trim() || '—';
       const winners = Number(draft.winners_count || 0) || 1;
       const ends = draft.ends_at ? fmtTs(draft.ends_at) : '—';
-      const sponsorsInline = sponsorsInlineText(draft.sponsors, 6);
-      const sponsorsLine = sponsorsInline
-        ? `👥 Спонсоры: <b>${escapeHtml(sponsorsInline)}</b>
-Проверка подписки — внутри бота (кнопка «Проверить»).`
+      const sponsorsCount = normalizeSponsorsList(draft.sponsors).map(fmtSponsorHandle).filter(Boolean).length;
+      const sponsorsLine = sponsorsCount
+        ? `👥 Условие: ${sponsorsCountText(draft.sponsors)}
+${sponsorsBulletText(draft.sponsors, 5)}
+Проверка подписки — в боте (кнопка «🔄 Проверить»).`
         : `👥 Спонсоры: <b>нет</b> (соло).`;
 
       const text =
@@ -10597,7 +10627,7 @@ if (p.a === 'a:gw_prize') {
 
 ${sponsorsLine}
 
-🤖 Нажми “Открыть бота” — внутри: «🎟 Участвовать» и «🔄 Проверить».
+🤖 Открой бота → 🎟 Участвовать → 🔄 Проверить.
 
 <i>Это превью. Для публикации нажми “📣 Опубликовать” ниже.</i>`;
 
@@ -10665,16 +10695,15 @@ ${sponsorsLine}
       const botUsername = CFG.BOT_USERNAME;
       const deepLinkOpen = `https://t.me/${botUsername}?start=gw_${created.id}`;
 
-      const sponsorsInline = Array.isArray(draft.sponsors) && draft.sponsors.length
-        ? sponsorsInlineText(draft.sponsors, 3)
-        : '';
-      const sponsorsLine = sponsorsInline
+      const sponsorsCount = normalizeSponsorsList(draft.sponsors).map(fmtSponsorHandle).filter(Boolean).length;
+      const sponsorsLine = sponsorsCount
         ? `
-👥 Спонсоры: <b>${escapeHtml(sponsorsInline)}</b>`
+👥 Условие: ${sponsorsCountText(draft.sponsors)}
+${sponsorsBulletText(draft.sponsors, 5)}`
         : '';
-      const actionHint = sponsorsInline
-        ? '🤖 Открой бота — подпишись на спонсоров и нажми «🔄 Проверить».'
-        : '🤖 Нажми “Открыть бота” — внутри: «🎟 Участвовать» и «🔄 Проверить».';
+      const actionHint = sponsorsCount
+        ? '🤖 Открой бота → подпишись → 🔄 Проверить.'
+        : '🤖 Открой бота → 🎟 Участвовать → 🔄 Проверить.';
 
       const text =
 `🎀 <b>РОЗЫГРЫШ</b>
