@@ -466,34 +466,18 @@ function curatorLabelFromMeta(meta) {
   return uname || name || (meta.by_tg_id ? `tg:${meta.by_tg_id}` : '—');
 }
 
-function curatorNotesBlock(notes, totalCount = null) {
-  const help = `<i>Заметки — внутренние пометки команды (договорённости, что уточнить, риски). Участникам не показываются.</i>`;
-
-  if (!Array.isArray(notes) || notes.length === 0) {
-    return `📝 <b>Заметки</b>: —
-${help}`;
-  }
-
+function curatorNotesBlock(notes) {
+  if (!Array.isArray(notes) || notes.length === 0) return '📝 Заметки: —';
   const shown = notes.slice(0, 3);
-  const total = (typeof totalCount === 'number' && Number.isFinite(totalCount) && totalCount > 0) ? totalCount : null;
-  const header = total && total > shown.length
-    ? `📝 <b>Заметки</b> (последние ${shown.length} из ${total}):`
-    : `📝 <b>Заметки</b> (последние ${shown.length}):`;
-
   const lines = shown
     .map((n) => {
       const txt = clipText(String(n?.text || ''), 140);
       const who = curatorLabelFromMeta(n);
       const when = n?.at ? fmtTs(n.at) : '—';
-      return `• ${escapeHtml(txt)}
-  — <b>${escapeHtml(who)}</b> · ${escapeHtml(when)}`;
+      return `• ${escapeHtml(txt)}\n  — <b>${escapeHtml(who)}</b> · ${escapeHtml(when)}`;
     })
     .join('\n\n');
-
-  return `${header}
-${lines}
-
-${help}`;
+  return `📝 <b>Заметки</b> (последние ${shown.length}):\n${lines}`;
 }
 
 
@@ -513,7 +497,7 @@ async function setCurGwChecked(gwId, meta) {
 }
 
 async function getCurGwNotes(gwId, limit = 3) {
-  const lim = Math.max(1, Math.min(25, Number(limit) || 3));
+  const lim = Math.max(1, Math.min(10, Number(limit) || 3));
   const listKey = k(['cur_gw_notes', gwId]);
 
   // Prefer list history (new)
@@ -573,21 +557,6 @@ try {
   return [];
 }
 
-
-async function getCurGwNotesCount(gwId) {
-  const listKey = k(['cur_gw_notes', gwId]);
-  try {
-    if (typeof redis.llen === 'function') {
-      const n = await redis.llen(listKey);
-      const nn = Number(n);
-      if (!Number.isNaN(nn) && nn > 0) return nn;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
-
 async function getCurGwNote(gwId) {
   const notes = await getCurGwNotes(gwId, 1);
   return notes && notes.length ? notes[0] : null;
@@ -600,7 +569,7 @@ async function setCurGwNote(gwId, meta) {
     const payload = typeof meta === 'string' ? meta : JSON.stringify(meta);
     if (typeof redis.lpush === 'function') {
       await redis.lpush(listKey, payload);
-      if (typeof redis.ltrim === 'function') await redis.ltrim(listKey, 0, 24);
+      if (typeof redis.ltrim === 'function') await redis.ltrim(listKey, 0, 2);
       if (typeof redis.expire === 'function') await redis.expire(listKey, CUR_GW_META_TTL_SEC);
     }
   } catch {
@@ -999,14 +968,13 @@ function bxCategoryKb(wsId) {
   kb.text('🧩 Шаблоны', `a:bx_preset_home|ws:${wsId}`).row();
   kb.text('⬅️ Отмена', `a:bx_open|ws:${wsId}`);
   return kb;
+}
 
 function bxKindKb(wsId) {
   return new InlineKeyboard()
     .text('🎬 UGC', `a:bx_kind|ws:${wsId}|k:ugc`).row()
     .text('📣 Интеграция', `a:bx_kind|ws:${wsId}|k:integration`).row()
     .text('⬅️ Отмена', `a:bx_open|ws:${wsId}`);
-}
-
 }
 
 const BX_PRESETS = [
@@ -4430,13 +4398,12 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
 
   const checked = await getCurGwChecked(g.id);
   const notes = await getCurGwNotes(g.id, 3);
-  const notesTotal = await getCurGwNotesCount(g.id);
 
   const checkedLine = checked
     ? `✅ Проверено: <b>${escapeHtml(curatorLabelFromMeta(checked))}</b> · ${escapeHtml(fmtTs(checked.at))}`
     : '✅ Проверено: —';
 
-  const notesBlock = curatorNotesBlock(notes, notesTotal);
+  const notesBlock = curatorNotesBlock(notes);
 
   const text = `🎁 <b>Конкурс #${g.id}</b>
 
@@ -4560,7 +4527,7 @@ async function renderCuratorHome(ctx, userId) {
 • ✅ — доступ включён, можно работать.
 • ❌ — владелец выключил куратора (попроси включить или выйди из канала).
 
-<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки (пометки для команды)
+<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки
 
 🧹 <b>Режим куратора</b> — прячет лишнее меню (оставляет только кураторское).
 
@@ -4581,7 +4548,7 @@ async function replyCuratorHome(ctx, userId) {
 • ✅ — доступ включён, можно работать.
 • ❌ — владелец выключил куратора (попроси включить или выйди из канала).
 
-<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки (пометки для команды)
+<b>Что тебе доступно:</b> 📊 Статистика • 🧾 Лог • 📣 Напомнить проверить • ✅ Проверено • 📝 Заметки
 
 🧹 <b>Режим куратора</b> — прячет лишнее меню (оставляет только кураторское).
 
@@ -4640,51 +4607,12 @@ function curatorGwKb(wsId, gwId) {
     .text('✅ Проверено', `a:cur_gw_check_q|ws:${wsId}|i:${gwId}`)
     .text('📝 Заметки', `a:cur_gw_note_q|ws:${wsId}|i:${gwId}`)
     .row()
-    .text('⚡ Быстрая заметка', `a:cur_gw_note_quick|ws:${wsId}|i:${gwId}`)
-    .row()
     .text('📣 Напомнить проверить', `a:cur_gw_remind_q|ws:${wsId}|i:${gwId}`)
     .row()
-
+    .text('📩 Владельцу', `a:cur_gw_owner_q|ws:${wsId}|i:${gwId}`)
+    .row()
     .text('⬅️ Назад', `a:cur_ws|ws:${wsId}`);
 }
-
-function curatorQuickNotePresetText(key) {
-  switch (String(key || '')) {
-    case 'ok': return 'Ок ✅';
-    case 'ask': return 'Нужно уточнить ❓';
-    case 'wait': return 'Ждём ответ ⏳';
-    case 'risk': return 'Риск / сомнительно ⚠️';
-    default: return '';
-  }
-}
-
-function curatorQuickNotesKb(wsId, gwId) {
-  return new InlineKeyboard()
-    .text('✅ Ок', `a:cur_gw_note_quick_do|ws:${wsId}|i:${gwId}|k:ok`)
-    .text('❓ Уточнить', `a:cur_gw_note_quick_do|ws:${wsId}|i:${gwId}|k:ask`)
-    .row()
-    .text('⏳ Ждём', `a:cur_gw_note_quick_do|ws:${wsId}|i:${gwId}|k:wait`)
-    .text('⚠️ Риск', `a:cur_gw_note_quick_do|ws:${wsId}|i:${gwId}|k:risk`)
-    .row()
-    .text('✍️ Своя заметка', `a:cur_gw_note_q|ws:${wsId}|i:${gwId}`)
-    .row()
-    .text('⬅️ Назад', `a:cur_gw_open|ws:${wsId}|i:${gwId}`);
-}
-
-async function renderCuratorGiveawayQuickNote(ctx, userId, wsId, gwId) {
-  const g = await db.getGiveawayForCurator(Number(gwId), userId);
-  if (!g || Number(g.workspace_id) !== Number(wsId)) {
-    return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-  }
-
-  const text = `⚡ <b>Быстрая заметка</b> • конкурс #${g.id}
-
-Зачем: фиксируй контекст для команды — договорённости, что уточнить, риски.
-Участникам это не показывается.`;
-
-  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: curatorQuickNotesKb(Number(wsId), Number(gwId)) });
-}
-
 
 async function renderCuratorGiveawayOpen(ctx, userId, wsId, gwId) {
   const g = await db.getGiveawayForCurator(Number(gwId), userId);
@@ -4694,13 +4622,12 @@ async function renderCuratorGiveawayOpen(ctx, userId, wsId, gwId) {
 
   const checked = await getCurGwChecked(g.id);
   const notes = await getCurGwNotes(g.id, 3);
-  const notesTotal = await getCurGwNotesCount(g.id);
 
   const checkedLine = checked
     ? `✅ Проверено: <b>${escapeHtml(curatorLabelFromMeta(checked))}</b> · ${escapeHtml(fmtTs(checked.at))}`
     : '✅ Проверено: —';
 
-  const notesBlock = curatorNotesBlock(notes, notesTotal);
+  const notesBlock = curatorNotesBlock(notes);
 
   const text = `🎁 <b>Конкурс #${g.id}</b>
 
@@ -7682,69 +7609,6 @@ IG → лиды. TG → сделки.
       return;
     }
 
-    if (p.a === 'a:cur_gw_note_quick') {
-      await ctx.answerCallbackQuery();
-      const flags = await getRoleFlags(u, ctx.from.id);
-      if (!flags.isCurator && !flags.isAdmin) {
-        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-        return;
-      }
-      const wsId = Number(p.ws || 0);
-      const gwId = Number(p.i || 0);
-      if (!wsId || !gwId) return;
-      await renderCuratorGiveawayQuickNote(ctx, u.id, wsId, gwId);
-      return;
-    }
-
-    if (p.a === 'a:cur_gw_note_quick_do') {
-      await ctx.answerCallbackQuery();
-      const flags = await getRoleFlags(u, ctx.from.id);
-      if (!flags.isCurator && !flags.isAdmin) {
-        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-        return;
-      }
-      const wsId = Number(p.ws || 0);
-      const gwId = Number(p.i || 0);
-      const key = String(p.k || '');
-      if (!wsId || !gwId) return;
-
-      const preset = curatorQuickNotePresetText(key);
-      if (!preset) {
-        await ctx.answerCallbackQuery({ text: 'Неизвестный пресет.' });
-        return;
-      }
-
-      const g = await db.getGiveawayForCurator(gwId, u.id);
-      if (!g || Number(g.workspace_id) !== wsId) {
-        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-        return;
-      }
-
-      const meta = {
-        text: preset,
-        by_tg_id: Number(ctx.from.id),
-        by_username: ctx.from.username ?? null,
-        by_name: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ').trim(),
-        at: Date.now()
-      };
-
-      await setCurGwNote(gwId, meta);
-      try {
-        await db.auditGiveaway(gwId, Number(g.workspace_id), u.id, 'curator.note', {
-          by_tg_id: meta.by_tg_id,
-          by_username: meta.by_username,
-          by_name: meta.by_name,
-          text: preset,
-          len: preset.length,
-          preset: key
-        });
-      } catch {}
-
-      await ctx.answerCallbackQuery({ text: '✅ Сохранено' });
-      await renderCuratorGiveawayOpen(ctx, u.id, wsId, gwId);
-      return;
-    }
-
     if (p.a === 'a:cur_gw_note_q') {
       await ctx.answerCallbackQuery();
       const flags = await getRoleFlags(u, ctx.from.id);
@@ -7769,14 +7633,13 @@ IG → лиды. TG → сделки.
         .row()
         .text('⬅️ Назад', `a:cur_gw_open|ws:${wsId}|i:${gwId}`);
 
-      await ctx.editMessageText(`📝 <b>Заметка к конкурсу #${gwId}</b>
+      await ctx.editMessageText(`📝 <b>Заметки к конкурсу #${gwId}</b>
+
+Это внутренние пометки для владельца и кураторов — участникам не показывается.
+Примеры: «согласовали приз», «ждём фото», «уточнить условия», «риск/сомнительно».
 
 Пришли заметку одним сообщением (до 400 символов).
-
-<b>Зачем:</b> фиксируй договорённости, что уточнить, риски.
-Это видит владелец и кураторы. Участникам не показывается.
-
-Хочешь быстрее — жми “⚡ Быстрая заметка”.
+Она будет видна владельцу и другим кураторам.
 
 Чтобы отменить — нажми “❌ Отмена”.`, { parse_mode: 'HTML', reply_markup: kb });
       return;
