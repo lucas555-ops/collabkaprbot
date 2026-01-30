@@ -10430,6 +10430,7 @@ if (p.a === 'a:gw_prize') {
       const type = p.t;
       await ctx.answerCallbackQuery();
       await ctx.editMessageText(gwPrizePrompt(type), {
+        parse_mode: 'HTML',
         reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:gw_new|ws:${wsId}`)
       });
       await setDraft(ctx.from.id, { wsId, prize_type: type });
