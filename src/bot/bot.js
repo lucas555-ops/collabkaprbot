@@ -6942,18 +6942,18 @@ if (payload?.type === 'bxo') {
 
   bot.command('paysupport', async (ctx) => {
     // Telegram expects bots that accept payments to provide a support contact via /paysupport.
-    const contact = (CFG.PAY_SUPPORT_TEXT && String(CFG.PAY_SUPPORT_TEXT).trim())
+    const contactRaw = (CFG.PAY_SUPPORT_TEXT && String(CFG.PAY_SUPPORT_TEXT).trim())
       ? String(CFG.PAY_SUPPORT_TEXT).trim()
       : '@collabka_support';
 
-    const contactSafe = String(contact)
+    const contactHtml = String(contactRaw)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
 
     const msg = [
       '💬 <b>Поддержка по оплате / Stars</b>',
-      `Если что-то пошло не так — напиши в поддержку: <b>${contactSafe}</b>`,
+      `Если что-то пошло не так — напиши в поддержку: <b>${contactHtml}</b>`,
       '',
       '<b>Что указать:</b>',
       '1) Что покупал (PRO / Brand Pass / Plan / Featured / Matching)',
@@ -6965,8 +6965,6 @@ if (payload?.type === 'bxo') {
 
     await ctx.reply(msg, { parse_mode: 'HTML', disable_web_page_preview: true });
   });
-
-
 
 
 
