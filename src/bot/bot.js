@@ -2779,20 +2779,14 @@ async function renderLeadView(ctx, actorUserId, leadId, back = { wsId: null, sta
 
   const kb = new InlineKeyboard()
     .text('✍️ Ответить', `a:lead_reply|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
-    .text('⚡ Шаблоны', `a:lead_tpls|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`);
-
-  if (lead.reply_text) {
-    kb.row().text('🔁 Отправить ещё раз', `a:lead_resend|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`);
-  }
-
-  kb.row()
+    .text('⚡ Шаблоны', `a:lead_tpls|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
+    .row()
     .text('💬 В работу', `a:lead_set|id:${lead.id}|st:in_progress|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .text('✅ Закрыть', `a:lead_set|id:${lead.id}|st:closed|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
     .text('🗑 Спам', `a:lead_set|id:${lead.id}|st:spam|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
     .text('⬅️ Назад', `a:ws_leads|ws:${wsId}|s:${back.status}|p:${back.page}`);
-
 
   try {
     try {
@@ -2863,7 +2857,7 @@ async function sendLeadTemplateReply(ctx, actorUserId, leadId, key, back) {
   if (!brandTgId) return ctx.answerCallbackQuery({ text: 'У бренда нет TG id.' });
 
   const replyText = buildLeadTemplateText(ws, lead, key);
-  const card = formatWsContactCard(ws, Number(ws.id));
+  const card = formatWsContactCard(ws, wsId);
 
   const out =
     `💬 <b>Ответ от ${escapeHtml(String(ws.profile_title || (ws.channel_username ? '@' + ws.channel_username : ws.title)))}</b>\n\n` +
@@ -5740,12 +5734,7 @@ export function getBot() {
         .text('⬅️ Назад к витрине', `a:wsp_open|ws:${wsId}`)
         .text('📋 Меню', 'a:menu');
 
-      const note = targets.size
-        ? '✅ Заявка отправлена. Владелец канала получил уведомление.'
-        : '✅ Заявка отправлена. (Тест) Ты отправил заявку сам себе — уведомление владельцу не нужно. Открой «📨 Заявки» чтобы увидеть её в списке.';
-
-      backKb.row().text('📨 Заявки', `a:ws_leads|ws:${wsId}|s:new|p:0`);
-      await ctx.reply(note, { reply_markup: backKb });
+      await ctx.reply('✅ Заявка отправлена. Владелец канала получил уведомление.', { reply_markup: backKb });
       return;
     }
 
@@ -5793,27 +5782,15 @@ export function getBot() {
         `<b>Контакты:</b>\n${card}`;
 ;
 
-      let delivered = false;
-      let deliverErr = null;
       try {
         await ctx.api.sendMessage(Number(lead.brand_tg_id), out, { parse_mode: 'HTML', disable_web_page_preview: true });
-        delivered = true;
-      } catch (e) {
-        deliverErr = e;
-        console.error('[LEAD] send reply failed', String(e?.description || e?.message || e));
-      }
+      } catch {}
 
       const kb = new InlineKeyboard()
         .text('🔎 Открыть заявку', `a:lead_view|id:${leadId}|ws:${Number(ws.id)}|s:${String(exp.backStatus || 'new')}|p:${Number(exp.backPage || 0)}`)
         .text('📨 Заявки', `a:ws_leads|ws:${Number(ws.id)}|s:${String(exp.backStatus || 'new')}|p:${Number(exp.backPage || 0)}`);
 
-      kb.row().text('🔁 Отправить ещё раз', `a:lead_resend|id:${leadId}|ws:${Number(ws.id)}|s:${String(exp.backStatus || 'new')}|p:${Number(exp.backPage || 0)}`);
-
-      const note = delivered
-        ? '✅ Ответ отправлен бренду.'
-        : '⚠️ Не удалось доставить ответ бренду. Обычно это значит, что бренд не запускал бота или заблокировал его. Ответ сохранён в заявке — можно попробовать отправить ещё раз.';
-
-      await ctx.reply(note, { reply_markup: kb });
+      await ctx.reply('✅ Ответ отправлен бренду.', { reply_markup: kb });
       return;
     }
 
@@ -6780,6 +6757,51 @@ ${list}
   });
 
   // --- Commands ---
+
+  bot.command('help', async (ctx) => {
+    try {
+      await clearExpectText(ctx.from.id);
+    } catch {}
+
+    const text = `❓ Collabka — UGC/Collab CRM в Telegram
+
+Для Creator’ов
+• 🚀 Подключи канал (бот админ) и перешли любой пост
+• 🪟 Заполни витрину: IG, портфолио, ниши/форматы, гео, контакт
+• 🔗 Поставь ссылку витрины в Instagram (bio / stories)
+• 📨 Запросы брендов → Inbox, статусы, история
+
+Для брендов
+• 🔎 Поиск креаторов → фильтры → кампании (сохранённые поиски)
+• 📩 Запрос можно отправить прямо из списка или из витрины
+• Всё дальше в TG: интро, дедлайны, материалы
+
+UGC vs Интеграция
+🎬 UGC — контент без аудитории (важно качество/вкус)
+📣 Интеграция — публикация у креатора (важны охваты)
+
+Розыгрыши
+• 🎟 «Участвовать» → 🔄 «Проверить»
+• Если подписался только что — подожди 10 сек и проверь снова
+• ❔ в проверке = бот не админ в одном из каналов или канал приватный
+
+Команды
+/start — главное меню
+/help — помощь и быстрый старт
+/paysupport — помощь по оплате и Stars`;
+
+    const kb = new InlineKeyboard()
+      .text('🧭 Быстрый старт', 'a:guide')
+      .text('📋 Меню', 'a:menu')
+      .row()
+      .text('🏷 Для брендов', 'a:bx_open|ws:0')
+      .text('🎬 UGC / Офферы', 'a:bx_home')
+      .row()
+      .text('🎁 Розыгрыши', 'a:gw_list');
+
+    await ctx.reply(text, { disable_web_page_preview: true, reply_markup: kb });
+  });
+
   bot.command('start', async (ctx) => {
     let preMsg = null;
     try {
@@ -7770,77 +7792,15 @@ if (p.a === 'a:wsp_preview') {
       return;
     }
 
-
-    if (p.a === 'a:lead_resend') {
-      await ctx.answerCallbackQuery();
-      const leadId = Number(p.id || 0);
-      if (!leadId) return;
-
-      const lead = await db.getBrandLeadById(leadId);
-      if (!lead) return ctx.answerCallbackQuery({ text: 'Заявка не найдена.' });
-
-      if (!lead.reply_text) return ctx.answerCallbackQuery({ text: 'Нет сохранённого ответа.' });
-
-      const wsId = Number(lead.workspace_id);
-      const ws = await db.getWorkspaceAny(wsId);
-      if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
-
-      const isOwner = Number(ws.owner_user_id) === Number(u.id);
-      const isAdmin = isSuperAdminTg(ctx.from.id);
-      if (!isOwner && !isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-
-      const brandTgId = Number(lead.brand_tg_id || 0);
-      if (!brandTgId) return ctx.answerCallbackQuery({ text: 'У бренда нет TG id.' });
-
-      const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
-      const link = wsBrandLink(Number(ws.id));
-      const card = formatWsContactCard(ws, wsId);
-
-      const out =
-        `💬 <b>Ответ по заявке #${leadId}</b>\n\n` +
-        `Канал: <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
-        (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(shortUrl(link))}</a>\n\n` : `\n`) +
-        `${escapeHtml(String(lead.reply_text))}\n\n` +
-        `<b>Контакты:</b>\n${card}`;
-
-      try {
-        await ctx.api.sendMessage(brandTgId, out, { parse_mode: 'HTML', disable_web_page_preview: true });
-        try { await ctx.answerCallbackQuery({ text: '✅ Отправлено' }); } catch {}
-      } catch (e) {
-        console.error('[LEAD] resend failed', String(e?.description || e?.message || e));
-        await ctx.reply('❌ Не удалось отправить сообщение бренду. Возможно, он не запускал бота или заблокировал его.');
-      }
-
-      await renderLeadView(ctx, u.id, leadId, { wsId, status: String(p.s || normLeadStatus(lead.status)), page: Number(p.p || 0) });
-      return;
-    }
-
 if (p.a === 'a:lead_set') {
       await ctx.answerCallbackQuery();
       const leadId = Number(p.id || 0);
       if (!leadId) return;
-
-      const wsId = Number(p.ws || 0) || 0;
       const st = normLeadStatus(p.st);
-
       await db.updateBrandLeadStatus(leadId, st);
-
-      // show toast with new status (so user sees effect immediately)
-      try {
-        const title = (LEAD_STATUSES[st] || LEAD_STATUSES.new).title;
-        await ctx.answerCallbackQuery({ text: `Статус: ${title}` });
-      } catch {}
-
-      // less confusion: after status change, open the tab where the lead now lives
-      if (wsId && (st === 'closed' || st === 'spam')) {
-        await renderWsLeadsList(ctx, u.id, wsId, st, 0);
-        return;
-      }
-
-      await renderLeadView(ctx, u.id, leadId, { wsId: wsId || null, status: st, page: Number(p.p || 0) });
+      await renderLeadView(ctx, u.id, leadId, { wsId: Number(p.ws || 0) || null, status: String(p.s || st), page: Number(p.p || 0) });
       return;
     }
-
 
     if (p.a === 'a:lead_reply') {
       await ctx.answerCallbackQuery();
