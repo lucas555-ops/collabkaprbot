@@ -2170,37 +2170,7 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const text = buildWsShareText(ws, wsId, variant);
 
   // Показываем текст в этом же сообщении (чтобы не оставлять "висящие" сообщения без кнопок)
-  const link = wsBrandLink(wsId) || '';
-  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
-  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : '';
-  const ig = wsIgHandleFromWs(ws);
-  const igUrl = wsIgUrlFromWs(ws);
-  const plain = (() => {
-    if (String(variant) === 'long') {
-      let t =
-        `👋 Привет! Я беру коллабы / UGC.\n\n` +
-        `👤 ${String(ws.profile_title || channel)}\n` +
-        (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
-        (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
-        (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
-        `Чтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
-      return t;
-    }
-    // short
-    let t =
-      `👋 Привет! Я беру коллабы / UGC.\n` +
-      (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
-      (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
-      (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
-      `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
-    return t;
-  })();
-
-  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link || channelUrl || '')}&text=${encodeURIComponent(plain)}`;
-
   const kb = new InlineKeyboard()
-    .url('📨 Отправить', shareUrl)
-    .row()
     .text('⬅️ Назад', `a:ws_share|ws:${wsId}`)
     .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
 
@@ -2658,8 +2628,7 @@ async function renderWsPublicProfile(ctx, wsId, opts = {}) {
   // Links
   if (ws.channel_username) kb.url('📣 Telegram канал', `https://t.me/${String(ws.channel_username).replace(/^@/, '')}`);
   if (ig) kb.url('📸 Instagram', `https://instagram.com/${ig}`);
-  const backCb = opts?.backCb || (isOwner ? `a:ws_profile|ws:${wsId}` : null);
-  if (backCb) kb.row().text('⬅️ Назад', backCb);
+  if (opts?.backCb) kb.row().text('⬅️ Назад', opts.backCb);
   kb.row().text('📋 Меню', 'a:menu');
 
   const extra = { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true };
@@ -2810,14 +2779,20 @@ async function renderLeadView(ctx, actorUserId, leadId, back = { wsId: null, sta
 
   const kb = new InlineKeyboard()
     .text('✍️ Ответить', `a:lead_reply|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
-    .text('⚡ Шаблоны', `a:lead_tpls|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`)
-    .row()
+    .text('⚡ Шаблоны', `a:lead_tpls|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`);
+
+  if (lead.reply_text) {
+    kb.row().text('🔁 Отправить ещё раз', `a:lead_resend|id:${lead.id}|ws:${wsId}|s:${back.status}|p:${back.page}`);
+  }
+
+  kb.row()
     .text('💬 В работу', `a:lead_set|id:${lead.id}|st:in_progress|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .text('✅ Закрыть', `a:lead_set|id:${lead.id}|st:closed|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
     .text('🗑 Спам', `a:lead_set|id:${lead.id}|st:spam|ws:${wsId}|s:${back.status}|p:${back.page}`)
     .row()
     .text('⬅️ Назад', `a:ws_leads|ws:${wsId}|s:${back.status}|p:${back.page}`);
+
 
   try {
     try {
@@ -2888,7 +2863,7 @@ async function sendLeadTemplateReply(ctx, actorUserId, leadId, key, back) {
   if (!brandTgId) return ctx.answerCallbackQuery({ text: 'У бренда нет TG id.' });
 
   const replyText = buildLeadTemplateText(ws, lead, key);
-  const card = formatWsContactCard(ws, wsId);
+  const card = formatWsContactCard(ws, Number(ws.id));
 
   const out =
     `💬 <b>Ответ от ${escapeHtml(String(ws.profile_title || (ws.channel_username ? '@' + ws.channel_username : ws.title)))}</b>\n\n` +
@@ -5755,35 +5730,22 @@ export function getBot() {
         .row()
         .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
 
-      let sent = 0;
-      let failed = 0;
-
       for (const toId of targets) {
         try {
           await ctx.api.sendMessage(toId, notif, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
-          sent++;
-        } catch (e) {
-          failed++;
-          try { console.error('[LEAD_NOTIFY] failed', { toId, wsId, leadId: lead.id, err: String(e?.message || e) }); } catch {}
-        }
+        } catch {}
       }
 
       const backKb = new InlineKeyboard()
         .text('⬅️ Назад к витрине', `a:wsp_open|ws:${wsId}`)
         .text('📋 Меню', 'a:menu');
 
-      if (sent > 0) {
-        await ctx.reply('✅ Заявка отправлена. Уведомление владельцу доставлено.', { reply_markup: backKb });
-      } else if (targets.size === 0) {
-        await ctx.reply('✅ Заявка отправлена. (Тест) Ты отправил заявку с аккаунта владельца — уведомление не требуется.', { reply_markup: backKb });
-      } else {
-        await ctx.reply(
-          '⚠️ Заявка отправлена, но уведомление владельцу НЕ доставлено.\n\n' +
-          'Проверь: владелец открыл бота /start (чтобы бот мог писать ему) и не блокировал бота.\n' +
-          'Если нужно — SUPER_ADMIN тоже получит уведомление (если указан в ENV).',
-          { reply_markup: backKb }
-        );
-      }
+      const note = targets.size
+        ? '✅ Заявка отправлена. Владелец канала получил уведомление.'
+        : '✅ Заявка отправлена. (Тест) Ты отправил заявку сам себе — уведомление владельцу не нужно. Открой «📨 Заявки» чтобы увидеть её в списке.';
+
+      backKb.row().text('📨 Заявки', `a:ws_leads|ws:${wsId}|s:new|p:0`);
+      await ctx.reply(note, { reply_markup: backKb });
       return;
     }
 
@@ -5831,15 +5793,27 @@ export function getBot() {
         `<b>Контакты:</b>\n${card}`;
 ;
 
+      let delivered = false;
+      let deliverErr = null;
       try {
         await ctx.api.sendMessage(Number(lead.brand_tg_id), out, { parse_mode: 'HTML', disable_web_page_preview: true });
-      } catch {}
+        delivered = true;
+      } catch (e) {
+        deliverErr = e;
+        console.error('[LEAD] send reply failed', String(e?.description || e?.message || e));
+      }
 
       const kb = new InlineKeyboard()
         .text('🔎 Открыть заявку', `a:lead_view|id:${leadId}|ws:${Number(ws.id)}|s:${String(exp.backStatus || 'new')}|p:${Number(exp.backPage || 0)}`)
         .text('📨 Заявки', `a:ws_leads|ws:${Number(ws.id)}|s:${String(exp.backStatus || 'new')}|p:${Number(exp.backPage || 0)}`);
 
-      await ctx.reply('✅ Ответ отправлен бренду.', { reply_markup: kb });
+      kb.row().text('🔁 Отправить ещё раз', `a:lead_resend|id:${leadId}|ws:${Number(ws.id)}|s:${String(exp.backStatus || 'new')}|p:${Number(exp.backPage || 0)}`);
+
+      const note = delivered
+        ? '✅ Ответ отправлен бренду.'
+        : '⚠️ Не удалось доставить ответ бренду. Обычно это значит, что бренд не запускал бота или заблокировал его. Ответ сохранён в заявке — можно попробовать отправить ещё раз.';
+
+      await ctx.reply(note, { reply_markup: kb });
       return;
     }
 
@@ -5885,12 +5859,7 @@ export function getBot() {
         } else {
           const handle = normalizeIgHandle(raw);
           if (!handle) {
-            {
-            const kb = new InlineKeyboard()
-              .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`)
-              .text('📋 Меню', 'a:menu');
-            await ctx.reply('⚠️ Пришли @handle или ссылку на профиль вида instagram.com/handle.\n\nЧтобы очистить поле — отправь “-”.', { reply_markup: kb });
-          }
+            await ctx.reply('⚠️ Пришли @handle или ссылку на профиль вида instagram.com/handle.\n\nЧтобы очистить поле — отправь “-”.');
             await setExpectText(ctx.from.id, exp);
             return;
           }
@@ -5912,12 +5881,7 @@ export function getBot() {
         } else {
           const urls = parseUrlsFromText(raw, 3);
           if (!urls.length) {
-            {
-            const kb = new InlineKeyboard()
-              .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`)
-              .text('📋 Меню', 'a:menu');
-            await ctx.reply('⚠️ Пришли 1–3 ссылки (https://...). Можно в одном сообщении или по строкам.\n\nЧтобы очистить поле — отправь “-”.', { reply_markup: kb });
-          }
+            await ctx.reply('⚠️ Пришли 1–3 ссылки (https://...). Можно в одном сообщении или по строкам.\n\nЧтобы очистить поле — отправь “-”.');
             await setExpectText(ctx.from.id, exp);
             return;
           }
@@ -7806,15 +7770,77 @@ if (p.a === 'a:wsp_preview') {
       return;
     }
 
+
+    if (p.a === 'a:lead_resend') {
+      await ctx.answerCallbackQuery();
+      const leadId = Number(p.id || 0);
+      if (!leadId) return;
+
+      const lead = await db.getBrandLeadById(leadId);
+      if (!lead) return ctx.answerCallbackQuery({ text: 'Заявка не найдена.' });
+
+      if (!lead.reply_text) return ctx.answerCallbackQuery({ text: 'Нет сохранённого ответа.' });
+
+      const wsId = Number(lead.workspace_id);
+      const ws = await db.getWorkspaceAny(wsId);
+      if (!ws) return ctx.answerCallbackQuery({ text: 'Канал не найден.' });
+
+      const isOwner = Number(ws.owner_user_id) === Number(u.id);
+      const isAdmin = isSuperAdminTg(ctx.from.id);
+      if (!isOwner && !isAdmin) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+      const brandTgId = Number(lead.brand_tg_id || 0);
+      if (!brandTgId) return ctx.answerCallbackQuery({ text: 'У бренда нет TG id.' });
+
+      const channel = ws.channel_username ? '@' + ws.channel_username : ws.title;
+      const link = wsBrandLink(Number(ws.id));
+      const card = formatWsContactCard(ws, wsId);
+
+      const out =
+        `💬 <b>Ответ по заявке #${leadId}</b>\n\n` +
+        `Канал: <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
+        (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(shortUrl(link))}</a>\n\n` : `\n`) +
+        `${escapeHtml(String(lead.reply_text))}\n\n` +
+        `<b>Контакты:</b>\n${card}`;
+
+      try {
+        await ctx.api.sendMessage(brandTgId, out, { parse_mode: 'HTML', disable_web_page_preview: true });
+        try { await ctx.answerCallbackQuery({ text: '✅ Отправлено' }); } catch {}
+      } catch (e) {
+        console.error('[LEAD] resend failed', String(e?.description || e?.message || e));
+        await ctx.reply('❌ Не удалось отправить сообщение бренду. Возможно, он не запускал бота или заблокировал его.');
+      }
+
+      await renderLeadView(ctx, u.id, leadId, { wsId, status: String(p.s || normLeadStatus(lead.status)), page: Number(p.p || 0) });
+      return;
+    }
+
 if (p.a === 'a:lead_set') {
       await ctx.answerCallbackQuery();
       const leadId = Number(p.id || 0);
       if (!leadId) return;
+
+      const wsId = Number(p.ws || 0) || 0;
       const st = normLeadStatus(p.st);
+
       await db.updateBrandLeadStatus(leadId, st);
-      await renderLeadView(ctx, u.id, leadId, { wsId: Number(p.ws || 0) || null, status: String(p.s || st), page: Number(p.p || 0) });
+
+      // show toast with new status (so user sees effect immediately)
+      try {
+        const title = (LEAD_STATUSES[st] || LEAD_STATUSES.new).title;
+        await ctx.answerCallbackQuery({ text: `Статус: ${title}` });
+      } catch {}
+
+      // less confusion: after status change, open the tab where the lead now lives
+      if (wsId && (st === 'closed' || st === 'spam')) {
+        await renderWsLeadsList(ctx, u.id, wsId, st, 0);
+        return;
+      }
+
+      await renderLeadView(ctx, u.id, leadId, { wsId: wsId || null, status: st, page: Number(p.p || 0) });
       return;
     }
+
 
     if (p.a === 'a:lead_reply') {
       await ctx.answerCallbackQuery();
