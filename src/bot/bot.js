@@ -4610,9 +4610,7 @@ function curatorGwKb(wsId, gwId) {
     .row()
     .text('📣 Напомнить проверить', `a:cur_gw_remind_q|ws:${wsId}|i:${gwId}`)
     .row()
-    .text('📩 Владельцу', `a:cur_gw_owner_q|ws:${wsId}|i:${gwId}`)
-    .row()
-    .text('⬅️ Назад', `a:cur_ws|ws:${wsId}`);
+        .text('⬅️ Назад', `a:cur_ws|ws:${wsId}`);
 }
 
 async function renderCuratorGiveawayOpen(ctx, userId, wsId, gwId) {
@@ -4709,17 +4707,32 @@ async function renderCuratorGiveawayRemindSend(ctx, userId, wsId, gwId) {
     return;
   }
 
-  // Use URL button (works reliably inside channel posts and always opens the bot).
+  // Reminder: reply to the original giveaway post when possible (keeps context + media in view).
+  const sponsors = await db.listGiveawaySponsors(g.id);
+  const sponsorsCount = normalizeSponsorsList(sponsors).map(fmtSponsorHandle).filter(Boolean).length;
+  const sponsorsLine = sponsorsCount
+    ? `
+
+👥 Условие: ${sponsorsCountText(sponsors)}
+${sponsorsBulletText(sponsors, 5)}`
+    : '';
   const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${g.id}`;
-  const msg = `🔔 <b>Проверка участия</b>
+  const msg = `🔔 <b>Проверка участия</b> • Конкурс #${g.id}
 
-Открой бота и нажми <b>«Проверить»</b>, чтобы подтвердить подписки.
+🎁 Приз: <b>${escapeHtml(g.prize_value_text || '—')}</b>
+🏆 Мест: <b>${Number(g.winners_count || 1)}</b>
+⏳ Итоги: <b>${escapeHtml(g.ends_at ? fmtTs(g.ends_at) : '—')}</b>${sponsorsLine}
 
-🤖 Бот: ${escapeHtml(link)}`;
+🤖 Открой бота по кнопке ниже и нажми <b>«Проверить»</b>, чтобы подтвердить подписки.`;
+
   const kb = { inline_keyboard: [[{ text: '🤖 Открыть бота', url: link }]] };
 
   try {
-    await ctx.api.sendMessage(chatId, msg, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
+    const opts = { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb };
+    if (g.published_message_id) {
+      opts.reply_parameters = { message_id: Number(g.published_message_id), allow_sending_without_reply: true };
+    }
+    await ctx.api.sendMessage(chatId, msg, opts);
     await db.auditGiveaway(g.id, g.workspace_id, userId, 'gw.reminder_posted', { actor_role: 'curator' });
     await ctx.answerCallbackQuery({ text: '✅ Отправлено' });
   } catch (e) {
@@ -10928,20 +10941,36 @@ ${actionHint}`;
       const sponsors = await db.listGiveawaySponsors(gwId);
       const hasSponsors = Array.isArray(sponsors) && sponsors.length > 0;
 
-      // Use a direct "check" deep-link so the channel button always works and takes the user straight to eligibility check.
+      // Reminder: reply to the original giveaway post when possible (keeps context + media in view).
       const link = `https://t.me/${CFG.BOT_USERNAME}?start=gw_${gwId}`;
-      const line1 = hasSponsors
-        ? '1) Подпишись на канал конкурса (этот канал) и на все каналы-спонсоры'
-        : '1) Подпишись на канал конкурса (этот канал)';
+      const sponsorsCount = normalizeSponsorsList(sponsors).map(fmtSponsorHandle).filter(Boolean).length;
+      const sponsorsLine = sponsorsCount
+        ? `
+
+👥 Условие: ${sponsorsCountText(sponsors)}
+${sponsorsBulletText(sponsors, 5)}`
+        : '';
       const text =
-`📣 <b>Напоминание участникам</b>\n\nЧтобы участие засчиталось ✅\n${line1}\n2) Открой бота и нажми <b>«Проверить»</b>\n\n🤖 Бот: ${escapeHtml(link)}`;
+`📣 <b>Напоминание</b> • Конкурс #${gwId}
+
+🎁 Приз: <b>${escapeHtml(g.prize_value_text || '—')}</b>
+🏆 Мест: <b>${Number(g.winners_count || 1)}</b>
+⏳ Итоги: <b>${escapeHtml(g.ends_at ? fmtTs(g.ends_at) : '—')}</b>${sponsorsLine}
+
+🤖 Открой бота по кнопке ниже и нажми <b>«Проверить»</b>, чтобы подтвердить подписки.
+
+${escapeHtml(link)}`;
 
       try {
-        const sent = await ctx.api.sendMessage(Number(g.published_chat_id), text, {
+        const opts = {
           parse_mode: 'HTML',
           disable_web_page_preview: true,
           reply_markup: { inline_keyboard: [[{ text: '🤖 Открыть бота', url: link }]] }
-        });
+        };
+        if (g.published_message_id) {
+          opts.reply_parameters = { message_id: Number(g.published_message_id), allow_sending_without_reply: true };
+        }
+        const sent = await ctx.api.sendMessage(Number(g.published_chat_id), text, opts);
         await db.auditGiveaway(gwId, g.workspace_id, u.id, 'gw.reminder_posted', { chat_id: g.published_chat_id, message_id: sent.message_id });
         await ctx.answerCallbackQuery({ text: 'Отправлено ✅' });
         // Go back to the giveaway card to avoid leaving a "success" message hanging in the chat.
