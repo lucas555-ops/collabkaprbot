@@ -5609,6 +5609,9 @@ export function getBot() {
   // Setup channel expects a forwarded post (any message type). We handle it on `message`
   // so that photo/video-only forwards also work.
   bot.on('message', async (ctx, next) => {
+    // Some update variants may not have ctx.from (e.g., anonymous/channel-sent messages).
+    // In that case we must not touch Redis expectText state.
+    if (!ctx.from) return next();
     const exp = await getExpectText(ctx.from.id);
     if (!exp || String(exp.type) !== 'setup_forward') return next();
 
@@ -5685,6 +5688,8 @@ export function getBot() {
   // If we are waiting for a text input and user sends sticker/photo/voice/etc,
   // respond with a helpful hint + navigation buttons (Back/Menu), instead of a dead-end text.
   bot.on('message', async (ctx, next) => {
+    if (!ctx.from) return next();
+
     const exp = await getExpectText(ctx.from.id);
     if (!exp) return next();
     // Text messages are handled by message:text router below
@@ -5702,6 +5707,7 @@ export function getBot() {
     try { await setExpectText(ctx.from.id, exp); } catch {}
   });
   bot.on('message:text', async (ctx, next) => {
+    if (!ctx.from) return next();
     const text = String(ctx.message?.text || '');
     const isCommand = text.startsWith('/') &&
       Array.isArray(ctx.message?.entities) &&
