@@ -1834,16 +1834,10 @@ function fmtMatrix(keys, dict, empty = '—') {
 
 function fmtMatrixList(ids, dict, empty = '—') {
   const arr = Array.isArray(ids) ? ids : [];
+  // Prefer human labels from dict when available; otherwise keep raw value as fallback.
   const items = arr
-    .map((id) => {
-      if (id === null || id === undefined) return null;
-      // support both "id keys" and already-human-readable strings
-      const key = String(id);
-      const v = (dict && (dict[id] || dict[key])) ? (dict[id] || dict[key]) : key;
-      const t = String(v || '').trim();
-      return t ? t : null;
-    })
-    .filter(Boolean);
+    .map((x) => (dict && dict[x]) ? dict[x] : x)
+    .filter((x) => typeof x === 'string' && x.trim().length);
 
   if (!items.length) return empty;
   return items.map((x) => `• ${x}`).join('\n');
