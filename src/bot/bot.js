@@ -2239,7 +2239,7 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
       `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
     return t;
   })();;
-  const shareUrl = `https://t.me/share/url?url=&text=${encodeURIComponent(plain)}`;
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent('⁠')}&text=${encodeURIComponent(plain)}`;
 
   const kb = new InlineKeyboard()
     .url('📨 Отправить', shareUrl)
