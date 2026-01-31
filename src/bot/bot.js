@@ -8086,6 +8086,7 @@ if (p.a === 'a:ui_mode_set') {
       const v = Number(p.v || 0);
       await setBrandManagerMode(ctx.from.id, v === 1);
       const ret = String(p.ret || 'menu');
+      const flags = await getRoleFlags(u, ctx.from.id);
       if (ret === 'menu') {
         await renderMainMenu(ctx, flags, { edit: true, user: u });
       } else {
@@ -8146,6 +8147,7 @@ if (p.a === 'a:ui_mode_set') {
         const bm = await resolveBmBrandContext(ctx, u);
         await renderBxInbox(ctx, brandUserId, wsId, page, { bm });
       } else {
+        const flags = await getRoleFlags(u, ctx.from.id);
         await renderMainMenu(ctx, flags, { edit: true, user: u });
       }
       return;
