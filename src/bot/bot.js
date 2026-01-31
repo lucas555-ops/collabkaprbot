@@ -1903,7 +1903,7 @@ function buildWsShareText(ws, wsId, variant = 'short') {
 
   if (String(variant) === 'long') {
     let t =
-      `👋 Привет! Я беру коллабы / UGC.\n\n` +
+      `👋 Привет! Я делаю коллабы / UGC.\n\n` +
       `👤 <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
       `📣 TG: ${channelUrl ? `<a href="${escapeHtml(channelUrl)}">${escapeHtml(channel)}</a>` : `<b>${escapeHtml(channel)}</b>`}\n` +
       (igUrl ? `📸 IG: <a href="${escapeHtml(igUrl)}">${escapeHtml(shortUrl(igUrl))}</a> <code>@${escapeHtml(ig)}</code>\n` : '') +
@@ -1918,7 +1918,7 @@ function buildWsShareText(ws, wsId, variant = 'short') {
 
   // short
   let t =
-    `👋 Привет! Я беру коллабы / UGC.\n` +
+    `👋 Привет! Я делаю коллабы / UGC.\n` +
     (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
     (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
     (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
@@ -1935,7 +1935,7 @@ function buildWsSharePlain(ws, wsId, variant = 'short') {
 
   if (String(variant) === 'long') {
     let t =
-      `👋 Привет! Я беру коллабы / UGC.\n\n` +
+      `👋 Привет! Я делаю коллабы / UGC.\n\n` +
       `👤 ${String(ws.profile_title || channel)}\n` +
       (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
       (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
@@ -1946,7 +1946,7 @@ function buildWsSharePlain(ws, wsId, variant = 'short') {
 
   // short
   let t =
-    `👋 Привет! Я беру коллабы / UGC.\n` +
+    `👋 Привет! Я делаю коллабы / UGC.\n` +
     (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
     (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
     (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
@@ -2185,8 +2185,8 @@ async function renderWsShareMenu(ctx, ownerUserId, wsId) {
   const plainShort = buildWsSharePlain(ws, wsId, 'short');
   const plainLong = buildWsSharePlain(ws, wsId, 'long');
 
-  const shareUrlShort = `https://t.me/share/url?url=${encodeURIComponent(link || '')}&text=${encodeURIComponent(plainShort)}`;
-  const shareUrlLong = `https://t.me/share/url?url=${encodeURIComponent(link || '')}&text=${encodeURIComponent(plainLong)}`;
+  const shareUrlShort = `https://t.me/share/url?text=${encodeURIComponent(plainShort)}`;
+  const shareUrlLong = `https://t.me/share/url?text=${encodeURIComponent(plainLong)}`;
 
   const kb = new InlineKeyboard()
     .url('📨 Отправить (коротко)', shareUrlShort)
@@ -2221,7 +2221,7 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const plain = (() => {
     if (String(variant) === 'long') {
       let t =
-        `👋 Привет! Я беру коллабы / UGC.\n\n` +
+        `👋 Привет! Я делаю коллабы / UGC.\n\n` +
         `👤 ${String(ws.profile_title || channel)}\n` +
         (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
         (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
@@ -2231,7 +2231,7 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
     }
     // short
     let t =
-      `👋 Привет! Я беру коллабы / UGC.\n` +
+      `👋 Привет! Я делаю коллабы / UGC.\n` +
       (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
       (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
       (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
@@ -2239,7 +2239,7 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
     return t;
   })();
 
-  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link || channelUrl || '')}&text=${encodeURIComponent(plain)}`;
+  const shareUrl = `https://t.me/share/url?text=${encodeURIComponent(plain)}`;
 
   const kb = new InlineKeyboard()
     .url('📨 Отправить', shareUrl)
