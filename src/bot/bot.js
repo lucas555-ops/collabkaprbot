@@ -4576,7 +4576,7 @@ ${trialLine}${limitLine}${verifyHintLine}
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
 }
 
-async function renderBxInbox(ctx, userId, wsId, page = 0) {
+async function renderBxInbox(ctx, userId, wsId, page = 0, opts = {}) {
 
   const limit = CFG.BARTER_INBOX_PAGE_SIZE;
   const offset = page * limit;
@@ -4584,10 +4584,24 @@ async function renderBxInbox(ctx, userId, wsId, page = 0) {
     ? await safeUserVerifications(() => db.listBarterThreadsForUserWithVerified(userId, limit, offset), () => db.listBarterThreadsForUser(userId, limit, offset))
     : await db.listBarterThreadsForUser(userId, limit, offset);
 
-  const header = `📨 <b>Inbox</b>
+  const brandLabel = opts && opts.brandLabel ? String(opts.brandLabel) : null;
+  const showSwitchBrand = !!(opts && opts.showSwitchBrand);
+
+  const headerBase = `📨 <b>Inbox</b>
 
 Диалоги по офферам (бренд ↔ блогер).`;
+
+  const header = brandLabel ? `📨 <b>Inbox</b>
+
+<b>Бренд:</b> <b>${escapeHtml(brandLabel)}</b>
+
+Диалоги по офферам (бренд ↔ блогер).` : headerBase;
+
   const kb = new InlineKeyboard();
+  if (showSwitchBrand) {
+    kb.text('🔁 Сменить бренд', `a:bm_pick_brand|ret:bx_inbox|ws:${wsId}|p:${page}`).row();
+  }
+
   for (const t of rows) {
     const other = t.other_username ? '@' + t.other_username : ('user #' + t.other_user_id);
     const v = t.other_verified ? ' ✅' : '';
@@ -6777,8 +6791,15 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
       const threadId = Number(exp.threadId);
       const wsId = Number(exp.wsId);
 
+      // stable sender: if manager clicked reply, we store brandUserId in expectText payload
+      const fixedBrandUserId = Number(exp.brandUserId || 0);
+
       const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
-      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+      const dynamicEffectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+
+      const actorUserId = Number(u.id || 0); // who actually types in TG
+      const asUserId = fixedBrandUserId || Number(dynamicEffectiveUserId || actorUserId);
+
       const body = String(ctx.message.text || '').trim().slice(0, 800);
       if (!threadId || !body) {
         await ctx.reply('Пустое сообщение.');
@@ -6788,7 +6809,7 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
       if (CFG.RATE_LIMIT_ENABLED) {
         try {
           const rl = await rateLimit(
-            k(['rl', 'bxmsg', u.id, threadId]),
+            k(['rl', 'bxmsg', actorUserId, threadId]),
             { limit: CFG.BX_MSG_RATE_LIMIT, windowSec: CFG.BX_MSG_RATE_WINDOW_SEC }
           );
           if (!rl.allowed) {
@@ -6800,7 +6821,7 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
         } catch {}
       }
 
-      const built = await buildBxThreadView(u.id, threadId);
+      const built = await buildBxThreadView(asUserId, threadId);
       if (!built) {
         await ctx.reply('Диалог не найден.');
         return;
@@ -6811,12 +6832,19 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
         return;
       }
 
-      await db.addBarterMessage(threadId, u.id, body);
-      await db.auditBarterOffer(thread.offer_id, thread.workspace_id, u.id, 'bx.thread_message', { threadId });
-      db.trackEvent('thread_message_sent', { userId: u.id, wsId: Number(thread.workspace_id) || null, meta: { threadId, offerId: Number(thread.offer_id) } });
+      await db.addBarterMessage(threadId, asUserId, body);
+      await db.auditBarterOffer(thread.offer_id, thread.workspace_id, asUserId, 'bx.thread_message', {
+        threadId,
+        actorUserId: actorUserId !== asUserId ? actorUserId : null
+      });
+      db.trackEvent('thread_message_sent', {
+        userId: actorUserId,
+        wsId: Number(thread.workspace_id) || null,
+        meta: { threadId, offerId: Number(thread.offer_id), asUserId }
+      });
 
       // notify other side (best-effort)
-      const otherUserId = Number(thread.buyer_user_id) == Number(u.id) ? Number(thread.seller_user_id) : Number(thread.buyer_user_id);
+      const otherUserId = Number(thread.buyer_user_id) == Number(asUserId) ? Number(thread.seller_user_id) : Number(thread.buyer_user_id);
       try {
         const otherInfo = await db.getUserTgIdByUserId(otherUserId);
         const otherTgId = otherInfo?.tg_id ? Number(otherInfo.tg_id) : null;
@@ -6829,7 +6857,7 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
       } catch {}
 
       // show updated thread in reply
-      const again = await buildBxThreadView(u.id, threadId);
+      const again = await buildBxThreadView(asUserId, threadId);
       const kb = new InlineKeyboard()
         .text('💬 Открыть диалог', `a:bx_thread|ws:${wsId}|t:${threadId}|p:0`)
         .row()
@@ -8077,6 +8105,10 @@ if (p.a === 'a:ui_mode_set') {
     if (p.a === 'a:bm_pick_brand') {
       await ctx.answerCallbackQuery();
 
+      const ret = String(p.ret || 'menu');
+      const wsId = Number(p.ws || 0);
+      const page = Number(p.p || 0);
+
       let brands = [];
       try {
         brands = await db.listBrandsForManager(u.id);
@@ -8096,9 +8128,14 @@ if (p.a === 'a:ui_mode_set') {
         const id = Number(b.user_id);
         const label = b.brand_name ? String(b.brand_name) : (b.tg_username ? `@${b.tg_username}` : `Бренд #${id}`);
         const prefix = (id === Number(active)) ? '✅ ' : '';
-        kb.text(prefix + label, `a:bm_set_brand|bu:${id}|ret:menu`).row();
+        kb.text(prefix + label, `a:bm_set_brand|bu:${id}|ret:${ret}|ws:${wsId}|p:${page}`).row();
       }
-      kb.row().text('⬅️ Назад', 'a:menu');
+
+      const backCb = (ret === 'bx_inbox')
+        ? `a:bx_inbox|ws:${wsId}|p:${page}`
+        : 'a:menu';
+
+      kb.row().text('⬅️ Назад', backCb);
 
       await ctx.editMessageText('Выбери бренд:', { parse_mode: 'HTML', reply_markup: kb });
       return;
@@ -8109,8 +8146,24 @@ if (p.a === 'a:ui_mode_set') {
       const brandUserId = Number(p.bu || 0);
       if (!brandUserId) return;
 
+      const ret = String(p.ret || 'menu');
+      const wsId = Number(p.ws || 0);
+      const page = Number(p.p || 0);
+
       await setBrandManagerMode(ctx.from.id, true);
       await setBmActiveBrand(ctx.from.id, brandUserId);
+
+      if (ret === 'bx_inbox') {
+        const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+        const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : brandUserId;
+
+        const opts = bm.enabled
+          ? { brandLabel: bm.brandLabel, showSwitchBrand: (bm.brands || []).length > 1 }
+          : undefined;
+
+        await renderBxInbox(ctx, effectiveUserId, wsId, page, opts);
+        return;
+      }
 
       await renderMainMenu(ctx, flags, { edit: true, user: u });
       return;
@@ -10120,7 +10173,11 @@ if (p.a === 'a:match_home') {
       const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
       const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
 
-      await renderBxInbox(ctx, effectiveUserId, wsId, page);
+      const opts = bm.enabled
+        ? { brandLabel: bm.brandLabel, showSwitchBrand: (bm.brands || []).length > 1 }
+        : undefined;
+
+      await renderBxInbox(ctx, effectiveUserId, wsId, page, opts);
       return;
     }
 
@@ -10192,36 +10249,59 @@ if (p.a === 'a:bx_retry_help') {
       const page = Number(p.p || 0);
       const offerId = p.o ? Number(p.o) : null;
 
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+
       const stageOk = CRM_STAGES.some((x) => x.id === stage);
       if (!stageOk) {
         await ctx.answerCallbackQuery({ text: 'Стадия не найдена.' });
         return;
       }
 
-      const hasPlan = await db.isBrandPlanActive(u.id);
+      const hasPlan = await db.isBrandPlanActive(effectiveUserId);
       if (!hasPlan) {
         await ctx.answerCallbackQuery({ text: 'CRM стадии доступны в Brand Plan.', show_alert: true });
         return;
       }
 
-      const updated = await db.setBarterThreadBuyerStage(threadId, u.id, stage);
+      const updated = await db.setBarterThreadBuyerStage(threadId, effectiveUserId, stage);
       if (!updated) {
         await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
         return;
       }
 
       await ctx.answerCallbackQuery({ text: '✅' });
-      await renderBxThread(ctx, u.id, wsId, threadId, { back, offerId, page });
+      await renderBxThread(ctx, effectiveUserId, wsId, threadId, { back, offerId, page });
       return;
     }
 
     if (p.a === 'a:bx_thread_reply') {
       await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const page = Number(p.p || 0);
       const threadId = Number(p.t);
-      await ctx.editMessageText('✍️ Напиши сообщение одним текстом (без медиа).', {
-        reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_thread|ws:${Number(p.ws)}|t:${threadId}|p:${Number(p.p || 0)}`)
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+
+      const brandLine = (wsId === 0 && bm.enabled)
+        ? `\n\n<b>Бренд:</b> <b>${escapeHtml(bm.brandLabel)}</b>`
+        : '';
+
+      await ctx.editMessageText(`✍️ Напиши сообщение одним текстом (без медиа).${brandLine}`, {
+        parse_mode: 'HTML',
+        reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_thread|ws:${wsId}|t:${threadId}|p:${page}`)
       });
-      await setExpectText(ctx.from.id, { type: 'bx_thread_msg', threadId, wsId: Number(p.ws) });
+
+      // IMPORTANT: store fixed brandUserId to avoid brand switching between "reply" click and text send
+      await setExpectText(ctx.from.id, {
+        type: 'bx_thread_msg',
+        threadId,
+        wsId,
+        page,
+        brandUserId: (wsId === 0 && bm.enabled) ? Number(effectiveUserId) : 0,
+        actorUserId: Number(u.id || 0)
+      });
       return;
     }
 
@@ -10236,9 +10316,20 @@ if (p.a === 'a:bx_retry_help') {
 
     if (p.a === 'a:bx_thread_close_do') {
       await ctx.answerCallbackQuery({ text: 'Закрыто.' });
-      const closed = await db.closeBarterThread(Number(p.t), u.id);
+      const wsId = Number(p.ws || 0);
+      const page = Number(p.p || 0);
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+
+      const closed = await db.closeBarterThread(Number(p.t), effectiveUserId);
       if (!closed) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-      await renderBxInbox(ctx, u.id, Number(p.ws), 0);
+
+      const opts = bm.enabled
+        ? { brandLabel: bm.brandLabel, showSwitchBrand: (bm.brands || []).length > 1 }
+        : undefined;
+
+      await renderBxInbox(ctx, effectiveUserId, wsId, 0, opts);
       return;
     }
 
