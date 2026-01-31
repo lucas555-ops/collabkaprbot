@@ -432,6 +432,8 @@ function mainMenuBrandKb(flags = {}) {
     .text('🏷 Профиль бренда', 'a:brand_profile|ws:0|ret:brand')
     .text('⭐️ Подписка', 'a:brand_plan|ws:0')
     .row()
+    .text('👥 Команда бренда', 'a:brand_team|ws:0')
+    .row()
     .text('🧭 Быстрый старт', 'a:guide')
     .text('💬 Поддержка', 'a:support')
     .row()
@@ -533,6 +535,7 @@ function expectBackCb(exp) {
   const gwId = exp.gwId ? Number(exp.gwId) : null;
 
   if (t === 'curator_username') return wsId ? `a:cur_manage|ws:${wsId}` : 'a:menu';
+  if (t === 'bm_username') return 'a:brand_team|ws:0';
   if (t === 'curator_note') return (wsId && gwId) ? `a:cur_gw_open|ws:${wsId}|i:${gwId}` : 'a:cur_home';
 
   if (t.startsWith('folder_')) return wsId ? `a:folders_home|ws:${wsId}` : 'a:menu';
@@ -780,6 +783,36 @@ function curManageKb(wsId) {
     .text('🏠 Меню', 'a:menu');
 }
 
+
+
+function brandTeamKb() {
+  return new InlineKeyboard()
+    .text('👤 Пригласить ссылкой', 'a:bm_invite|ws:0')
+    .row()
+    .text('➕ Добавить по @username', 'a:bm_add_username|ws:0')
+    .row()
+    .text('👥 Список менеджеров', 'a:bm_list|ws:0')
+    .row()
+    .text('⬅️ Назад', 'a:menu');
+}
+
+function brandManagersListKb(managers) {
+  const kb = new InlineKeyboard();
+  for (const m of managers) {
+    const label = m.tg_username ? `@${m.tg_username}` : `id:${m.tg_id}`;
+    kb.text(`🗑 ${label}`, `a:bm_rm_q|ws:0|u:${m.user_id}`).row();
+  }
+  kb.text('⬅️ Назад', 'a:brand_team|ws:0').text('🏠 Меню', 'a:menu');
+  return kb;
+}
+
+function brandManagerRemoveConfirmKb(managerUserId) {
+  return new InlineKeyboard()
+    .text('✅ Удалить', `a:bm_rm_ok|ws:0|u:${managerUserId}`)
+    .row()
+    .text('⬅️ Отмена', 'a:bm_list|ws:0')
+    .text('🏠 Меню', 'a:menu');
+}
 
 function netConfirmKb(wsId, enabled, ret) {
   const actionLabel = enabled ? '❌ Выключить сеть' : '✅ Включить сеть';
@@ -5609,6 +5642,9 @@ export function getBot() {
   // Setup channel expects a forwarded post (any message type). We handle it on `message`
   // so that photo/video-only forwards also work.
   bot.on('message', async (ctx, next) => {
+    // Some update variants may not have ctx.from (e.g., anonymous/channel-sent messages).
+    // In that case we must not touch Redis expectText state.
+    if (!ctx.from) return next();
     const exp = await getExpectText(ctx.from.id);
     if (!exp || String(exp.type) !== 'setup_forward') return next();
 
@@ -5679,7 +5715,32 @@ export function getBot() {
     await sendGwWhyResult(ctx, u.id, Number(exp.gwId), Number(targetId), { forceRecheck: true });
   });
 
+
+
+  // Generic non-text guard for expectText steps
+  // If we are waiting for a text input and user sends sticker/photo/voice/etc,
+  // respond with a helpful hint + navigation buttons (Back/Menu), instead of a dead-end text.
+  bot.on('message', async (ctx, next) => {
+    if (!ctx.from) return next();
+
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp) return next();
+    // Text messages are handled by message:text router below
+    if (ctx.message?.text) return next();
+    const t = String(exp.type || '');
+    // Some expectText steps actually expect media/forwarded messages — do not intercept those.
+    if (t === 'setup_forward' || t === 'gw_why_forward') return next();
+    if (t.endsWith('_photo') || t.endsWith('_gif') || t.endsWith('_video')) return next();
+
+    const backCb = expectBackCb(exp);
+    await ctx.reply('Я жду текст одним сообщением. Пожалуйста, напиши текст (не голос/стикер/фото).', {
+      reply_markup: navKb(backCb),
+    });
+    // Keep ожидание ввода активным (обновим TTL на всякий случай)
+    try { await setExpectText(ctx.from.id, exp); } catch {}
+  });
   bot.on('message:text', async (ctx, next) => {
+    if (!ctx.from) return next();
     const text = String(ctx.message?.text || '');
     const isCommand = text.startsWith('/') &&
       Array.isArray(ctx.message?.entities) &&
@@ -5752,6 +5813,44 @@ ctx.reply = (text, extra) => {
           { parse_mode: 'HTML', reply_markup: kb }
         );
       } catch {}
+
+
+    // Add brand manager by username (Brand Team)
+    if (exp.type === 'bm_username') {
+      const txt = String(ctx.message.text || '').trim();
+      const m = txt.match(/^@?([a-zA-Z0-9_]{5,})$/);
+      if (!m) {
+        await ctx.reply('Введи @username (пример: @manager)');
+        return;
+      }
+      const username = m[1];
+      const manager = await db.findUserByUsername(username);
+      if (!manager) {
+        await ctx.reply(`⚠️ Эта функция требует, чтобы пользователь уже запускал бота.
+Попроси его открыть бота и нажать /start, потом повтори добавление.`);
+        return;
+      }
+      const brandUserId = u.id; // brand owner is the current user
+      if (manager.id === brandUserId) {
+        await ctx.reply('Это твой аккаунт. Нельзя добавить самого себя менеджером.');
+        return;
+      }
+      await db.addBrandManager(brandUserId, manager.id, u.id);
+      await ctx.reply(`✅ Менеджер @${username} добавлен в команду бренда.`);
+      // best-effort notify manager
+      try {
+        const kb = new InlineKeyboard()
+          .text('🏠 Главное меню', 'a:menu');
+        await ctx.api.sendMessage(
+          Number(manager.tg_id),
+          `✅ Тебя добавили в <b>команду бренда</b>.
+Открой бот — скоро появится кабинет “Brand Manager”.`,
+          { parse_mode: 'HTML', reply_markup: kb }
+        );
+      } catch {}
+      return;
+    }
+
       return;
     }
 
@@ -7300,6 +7399,42 @@ ${list}
       return;
     }
 
+
+
+    if (payload?.type === 'bminv') {
+      // brand manager invite flow
+      const key = k(['bm_invite', payload.token]);
+      const val = await consumeOnce(key);
+      if (!val) return ctx.reply('Ссылка устарела, недействительна или уже была использована.');
+
+      const brandUserId = Number(val.brandUserId || val.brand_user_id || val.brand || 0);
+      const addedByUserId = Number(val.addedByUserId || val.added_by_user_id || brandUserId || 0);
+
+      if (!brandUserId) return ctx.reply('Ссылка недействительна.');
+
+      await db.addBrandManager(brandUserId, u.id, addedByUserId || u.id);
+
+      let brandLabel = null;
+      const prof = await safeBrandProfiles(() => db.getBrandProfile(brandUserId), async () => null);
+      if (prof && !prof.__missing_relation && prof.brand_name) brandLabel = prof.brand_name;
+
+      const owner = await db.getUserTgIdByUserId(brandUserId);
+      if (!brandLabel) brandLabel = owner?.tg_username ? `@${owner.tg_username}` : `Бренд #${brandUserId}`;
+
+      const kb = new InlineKeyboard()
+        .text('🏠 Главное меню', 'a:menu');
+
+      await ctx.reply(
+        `✅ Ты добавлен в <b>команду бренда</b>: <b>${escapeHtml(brandLabel)}</b>
+
+Что дальше:
+— Бренд может дать тебе задачи.
+— Кабинет “Brand Manager” (Inbox/Search) добавим следующим патчем.`,
+        { parse_mode: 'HTML', reply_markup: kb }
+      );
+      return;
+    }
+
     if (payload?.type === 'fed') {
       // workspace folder editor invite flow
       const key = k(['ws_editor_invite', payload.wsId, payload.token]);
@@ -8559,6 +8694,121 @@ if (p.a === 'a:ws_prof_mode') {
     }
 
     // Brand Mode tools
+
+
+    // Brand Team (Brand Managers)
+
+    if (p.a === 'a:brand_team') {
+      await ctx.answerCallbackQuery();
+      const managers = await db.listBrandManagers(u.id);
+      const count = managers.length;
+
+      const text = `👥 <b>Команда бренда</b>
+
+Добавь менеджеров — они смогут быстрее отвечать на заявки и закрывать сделки.
+У менеджера нет доступа к оплатам, профилю бренда и управлению командой.
+
+Сейчас менеджеров: <b>${count}</b>`;
+
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: brandTeamKb() });
+      return;
+    }
+
+    if (p.a === 'a:bm_invite') {
+      await ctx.answerCallbackQuery();
+      const token = randomToken(10);
+      await redis.set(
+        k(['bm_invite', token]),
+        { brandUserId: u.id, addedByUserId: u.id },
+        { ex: 24 * 3600 }
+      );
+
+      const link = `https://t.me/${CFG.BOT_USERNAME}?start=bminv_${token}`;
+      const text = `🔗 <b>Приглашение менеджера</b>
+
+Ссылка одноразовая, действует <b>24 часа</b>.
+Отправь её человеку, которого хочешь добавить в команду:
+
+${link}`;
+
+      await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        reply_markup: navKb('a:brand_team|ws:0'),
+      });
+      return;
+    }
+
+    if (p.a === 'a:bm_add_username') {
+      await ctx.answerCallbackQuery();
+      await setExpectText(ctx.from.id, { type: 'bm_username' });
+      await ctx.editMessageText('Введи @username менеджера одним сообщением (пример: @manager).', {
+        reply_markup: navKb('a:brand_team|ws:0'),
+      });
+      return;
+    }
+
+    if (p.a === 'a:bm_list') {
+      await ctx.answerCallbackQuery();
+      const managers = await db.listBrandManagers(u.id);
+      if (!managers.length) {
+        await ctx.editMessageText('Пока менеджеров нет. Добавь менеджера через приглашение или по @username.', {
+          reply_markup: navKb('a:brand_team|ws:0'),
+        });
+        return;
+      }
+
+      const lines = managers.map((m) => {
+        const label = m.tg_username ? `@${m.tg_username}` : `id:${m.tg_id}`;
+        return `• ${escapeHtml(label)}`;
+      }).join('\n');
+
+      await ctx.editMessageText(`👥 <b>Менеджеры бренда</b>\n\n${lines}\n\nНажми на кнопку, чтобы удалить менеджера.`, {
+        parse_mode: 'HTML',
+        reply_markup: brandManagersListKb(managers),
+      });
+      return;
+    }
+
+    if (p.a === 'a:bm_rm_q') {
+      await ctx.answerCallbackQuery();
+      const managerUserId = Number(p.u || 0);
+      if (!managerUserId) return;
+
+      const info = await db.getUserTgIdByUserId(managerUserId);
+      const label = info?.tg_username ? `@${info.tg_username}` : (info?.tg_id ? `id:${info.tg_id}` : `user #${managerUserId}`);
+
+      await ctx.editMessageText(`Удалить менеджера <b>${escapeHtml(label)}</b> из команды бренда?`, {
+        parse_mode: 'HTML',
+        reply_markup: brandManagerRemoveConfirmKb(managerUserId),
+      });
+      return;
+    }
+
+    if (p.a === 'a:bm_rm_ok') {
+      await ctx.answerCallbackQuery();
+      const managerUserId = Number(p.u || 0);
+      if (!managerUserId) return;
+      await db.removeBrandManager(u.id, managerUserId);
+      // refresh list
+      const managers = await db.listBrandManagers(u.id);
+      if (!managers.length) {
+        await ctx.editMessageText('✅ Менеджер удалён. Сейчас менеджеров нет.', {
+          reply_markup: navKb('a:brand_team|ws:0'),
+        });
+        return;
+      }
+      const lines = managers.map((m) => {
+        const label = m.tg_username ? `@${m.tg_username}` : `id:${m.tg_id}`;
+        return `• ${escapeHtml(label)}`;
+      }).join('\n');
+
+      await ctx.editMessageText(`✅ Менеджер удалён.\n\n👥 <b>Менеджеры бренда</b>\n\n${lines}`, {
+        parse_mode: 'HTML',
+        reply_markup: brandManagersListKb(managers),
+      });
+      return;
+    }
 
     if (p.a === 'a:brand_profile') {
       await ctx.answerCallbackQuery();
