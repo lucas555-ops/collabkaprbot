@@ -1834,7 +1834,17 @@ function fmtMatrix(keys, dict, empty = '—') {
 
 function fmtMatrixList(ids, dict, empty = '—') {
   const arr = Array.isArray(ids) ? ids : [];
-  const items = arr.map((id) => dict[id]).filter(Boolean);
+  const items = arr
+    .map((id) => {
+      if (id === null || id === undefined) return null;
+      // support both "id keys" and already-human-readable strings
+      const key = String(id);
+      const v = (dict && (dict[id] || dict[key])) ? (dict[id] || dict[key]) : key;
+      const t = String(v || '').trim();
+      return t ? t : null;
+    })
+    .filter(Boolean);
+
   if (!items.length) return empty;
   return items.map((x) => `• ${x}`).join('\n');
 }
@@ -1912,8 +1922,8 @@ const link = wsBrandLink(wsId);
     let t =
       `👋 Привет! Я делаю коллабы / UGC.\n\n`+
       (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
-      `🏷 Ниши: ${verticals}\n` +
-      `🎬 Форматы: ${formats}\n` +
+      `🏷 Ниши:\n${verticals}\n` +
+      `🎬 Форматы:\n${formats}\n` +
       (about ? `\nКоротко:\n${about}\n` : '') +
       `\nЧтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
     return t;
@@ -1943,8 +1953,8 @@ const link = wsBrandLink(wsId);
     let t =
       `👋 Привет! Я делаю коллабы / UGC.\n\n`+
       (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
-      `🏷 Ниши: ${verticals}\n` +
-      `🎬 Форматы: ${formats}\n` +
+      `🏷 Ниши:\n${verticals}\n` +
+      `🎬 Форматы:\n${formats}\n` +
       (about ? `\nКоротко:\n${about}\n` : '') +
       `\nЧтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
     return t;
@@ -2224,8 +2234,8 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
       let t =
         `👋 Привет! Я делаю коллабы / UGC.\n\n`+
         (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
-        `🏷 Ниши: ${verticals}\n` +
-        `🎬 Форматы: ${formats}\n` +
+        `🏷 Ниши:\n${verticals}\n` +
+        `🎬 Форматы:\n${formats}\n` +
         (about ? `\nКоротко:\n${about}\n` : '') +
         `\nЧтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
       return t;
