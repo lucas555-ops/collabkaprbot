@@ -3818,7 +3818,24 @@ async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
   if (keepExpiry && existing?.slot_expires_at) {
     try { slotExpiresAt = new Date(existing.slot_expires_at).toISOString(); } catch { slotExpiresAt = null; }
   }
-  if (!slotExpiresAt) slotExpiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+  if (!slotExpiresAt) {
+    const extendIfActive = !!opts.extendIfActive;
+    // If the offer is already ACTIVE and user buys again, we can extend from the current expiry (or from now).
+    if (extendIfActive && existing?.slot_expires_at) {
+      try {
+        const now = Date.now();
+        let base = new Date(existing.slot_expires_at).getTime();
+        if (!Number.isFinite(base)) base = now;
+        if (base < now) base = now;
+        slotExpiresAt = new Date(base + days * 24 * 60 * 60 * 1000).toISOString();
+      } catch {
+        slotExpiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+      }
+    } else {
+      slotExpiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    }
+  }
 
   const paymentId = opts.paymentId ? Number(opts.paymentId) : (existing?.payment_id ? Number(existing.payment_id) : null);
   const publishedByUserId = opts.publishedByUserId ? Number(opts.publishedByUserId) : null;
@@ -7292,7 +7309,106 @@ bot.on('message:successful_payment', async (ctx) => {
     }
   };
 
-  // We keep Smart Matching / Featured in UI, but post-payment they are always ORPHANED
+  
+  // Official channel paid placement:
+  // In OFFICIAL_PUBLISH_MODE=mixed we can auto-publish right after payment if OFFICIAL_AUTO_PUBLISH=true (still leaves a trace in official_posts + payments).
+  if (invoicePayload.startsWith('offpub_')) {
+    const offMode = String(CFG.OFFICIAL_PUBLISH_MODE || 'manual').toLowerCase();
+
+    const autoPub = !!CFG.OFFICIAL_AUTO_PUBLISH;
+
+    if (CFG.OFFICIAL_PUBLISH_ENABLED && offMode === 'mixed' && autoPub) {
+      try {
+        const parts = String(invoicePayload).split('_');
+        const payloadUserId = Number(parts[1] || 0);
+        const offerId = Number(parts[2] || 0);
+        const days = Number(parts[3] || 0);
+        const token = String(parts[4] || '').trim();
+
+        const channelChatId = Number(CFG.OFFICIAL_CHANNEL_ID || 0);
+
+        if (payloadUserId && payloadUserId !== Number(u.id)) throw new Error('payload_user_mismatch');
+        if (!offerId || !days || !token || !channelChatId) throw new Error('bad_payload');
+
+        // Validate against short-lived redis token to prevent stale/tampered payloads.
+        const key = k(['pay', 'offpub', token]);
+        const raw = await redis.get(key);
+        if (!raw) throw new Error('token_expired');
+
+        let meta = null;
+        try { meta = JSON.parse(raw); } catch { meta = null; }
+        if (!meta || Number(meta.userId) !== Number(u.id) || Number(meta.offerId) !== offerId) throw new Error('token_mismatch');
+        if (Number(meta.days) !== days) throw new Error('days_mismatch');
+        if (Number(meta.stars) !== Number(sp.total_amount)) throw new Error('amount_mismatch');
+
+        // One-time token (best-effort)
+        try { await redis.del(key); } catch {}
+
+        // Create/refresh PENDING record with payment attached (traceability)
+        try {
+          await db.upsertOfficialPostDraft({
+            offerId,
+            channelChatId,
+            placementType: 'PAID',
+            paymentId,
+            slotDays: days
+          });
+        } catch (_) { /* ignore */ }
+
+        // Publish now (auto apply)
+        const pub = await publishOfferToOfficialChannel(ctx.api, offerId, {
+          placementType: 'PAID',
+          days,
+          paymentId,
+          publishedByUserId: u.id,
+          keepExpiry: false,
+          extendIfActive: true,
+        });
+
+        await markApplied('official_auto_published');
+
+        // Link to the post if channel has username
+        const chUser = String(CFG.OFFICIAL_CHANNEL_USERNAME || '').replace(/^@/, '');
+        const msgLink = chUser && pub?.messageId ? `https://t.me/${chUser}/${pub.messageId}` : '';
+
+        await ctx.reply(
+          msgLink
+            ? `✅ Оплата получена! Оффер опубликован.\n\n📣 Пост: ${msgLink}`
+            : '✅ Оплата получена! Оффер опубликован в официальном канале.'
+        );
+        return;
+      } catch (e) {
+        // Fallback: keep manual queue + orphaned payment so admin can inspect.
+        try {
+          const note = `official_autopublish_failed:${String(e?.message || e)}`.slice(0, 180);
+          await markStatus('ORPHANED', note);
+        } catch (_) { /* ignore */ }
+
+        try {
+          const parts = String(invoicePayload).split('_');
+          const offerId = Number(parts[2]);
+          const days = Number(parts[3] || CFG.OFFICIAL_MANUAL_DEFAULT_DAYS);
+          const channelChatId = Number(CFG.OFFICIAL_CHANNEL_ID || 0);
+          if (offerId && channelChatId) {
+            await db.upsertOfficialPostDraft({
+              offerId,
+              channelChatId,
+              placementType: 'PAID',
+              paymentId,
+              slotDays: days
+            });
+          }
+        } catch (_) { /* ignore */ }
+
+        await ctx.reply('✅ Оплата получена! Оффер поставлен в очередь на публикацию. Если автопубликация не прошла — модератор применит вручную.');
+        return;
+      }
+    }
+
+    // In paid/manual modes we keep the old flow (queue + manual publish) below.
+  }
+
+// We keep Smart Matching / Featured in UI, but post-payment they are always ORPHANED
   // (so the team can decide later; avoids accidental auto-fulfillment).
   if (invoicePayload.startsWith('match_') || invoicePayload.startsWith('feat_') || invoicePayload.startsWith('offpub_')) {
     await markStatus('ORPHANED', 'postpay_orphaned');
@@ -9171,10 +9287,17 @@ if (p.a === 'a:match_home') {
       });
       if (!okInv) return;
 
+      const mode = String(CFG.OFFICIAL_PUBLISH_MODE || 'manual').toLowerCase();
+      const autoPub = !!CFG.OFFICIAL_AUTO_PUBLISH;
+      const afterPay =
+        mode === 'mixed' && autoPub
+          ? 'Оплати Stars — и бот автоматически опубликует оффер в официальном канале (модератор сможет снять/обновить при необходимости).'
+          : 'Оплати Stars — и оффер попадёт в очередь на публикацию. Модератор опубликует его вручную.';
+
       await ctx.editMessageText(
         `💳 Счёт выставлен на **${d.price}⭐️**.
 
-Оплати Stars — и оффер попадёт в очередь на публикацию в офиц.канале.\n\nПосле оплаты модератор нажмёт Apply и поставит пост в канал.`,
+${afterPay}`,
         {
           parse_mode: 'Markdown',
           reply_markup: new InlineKeyboard()
