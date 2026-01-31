@@ -360,6 +360,11 @@ function mainMenuKb(flags = {}) {
     kb.text('🏷 Для брендов', 'a:bx_open|ws:0').row();
   }
 
+  if (CFG.OFFICIAL_CHANNEL_USERNAME) {
+    const uname = String(CFG.OFFICIAL_CHANNEL_USERNAME || '').replace(/^@/, '').trim();
+    if (uname) kb.url('📢 Официальный канал', `https://t.me/${uname}`).row();
+  }
+
   kb.text('🧭 Быстрый старт', 'a:guide').text('💬 Поддержка', 'a:support').row();
   kb.text('🔄 Обновить', 'a:menu').row();
 
@@ -1921,6 +1926,35 @@ function buildWsShareText(ws, wsId, variant = 'short') {
   return escapeHtml(t).replace(/\n/g, '\n');
 }
 
+function buildWsSharePlain(ws, wsId, variant = 'short') {
+  const link = wsBrandLink(wsId) || '';
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
+  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : '';
+  const ig = wsIgHandleFromWs(ws);
+  const igUrl = wsIgUrlFromWs(ws);
+
+  if (String(variant) === 'long') {
+    let t =
+      `👋 Привет! Я беру коллабы / UGC.\n\n` +
+      `👤 ${String(ws.profile_title || channel)}\n` +
+      (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
+      (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+      (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+      `Чтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
+    return t;
+  }
+
+  // short
+  let t =
+    `👋 Привет! Я беру коллабы / UGC.\n` +
+    (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+    (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
+    (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+    `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
+  return t;
+}
+
+
 function buildLeadTemplateText(ws, lead, key = 'thanks') {
   const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : ws.title;
   const to = String(ws.profile_title || channel);
@@ -2148,9 +2182,18 @@ async function renderWsShareMenu(ctx, ownerUserId, wsId) {
     (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '') +
     `Выбери вариант:`;
 
+  const plainShort = buildWsSharePlain(ws, wsId, 'short');
+  const plainLong = buildWsSharePlain(ws, wsId, 'long');
+
+  const shareUrlShort = `https://t.me/share/url?url=${encodeURIComponent(link || '')}&text=${encodeURIComponent(plainShort)}`;
+  const shareUrlLong = `https://t.me/share/url?url=${encodeURIComponent(link || '')}&text=${encodeURIComponent(plainLong)}`;
+
   const kb = new InlineKeyboard()
-    .text('📤 Коротко', `a:ws_share_send|ws:${wsId}|v:short`)
-    .text('📤 Подробно', `a:ws_share_send|ws:${wsId}|v:long`)
+    .url('📨 Отправить (коротко)', shareUrlShort)
+    .url('📨 Отправить (подробно)', shareUrlLong)
+    .row()
+    .text('📄 Коротко', `a:ws_share_send|ws:${wsId}|v:short`)
+    .text('📄 Подробно', `a:ws_share_send|ws:${wsId}|v:long`)
     .row()
     .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`);
 
@@ -2170,7 +2213,37 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const text = buildWsShareText(ws, wsId, variant);
 
   // Показываем текст в этом же сообщении (чтобы не оставлять "висящие" сообщения без кнопок)
+  const link = wsBrandLink(wsId) || '';
+  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
+  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : '';
+  const ig = wsIgHandleFromWs(ws);
+  const igUrl = wsIgUrlFromWs(ws);
+  const plain = (() => {
+    if (String(variant) === 'long') {
+      let t =
+        `👋 Привет! Я беру коллабы / UGC.\n\n` +
+        `👤 ${String(ws.profile_title || channel)}\n` +
+        (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
+        (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+        (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+        `Чтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
+      return t;
+    }
+    // short
+    let t =
+      `👋 Привет! Я беру коллабы / UGC.\n` +
+      (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+      (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
+      (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+      `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
+    return t;
+  })();
+
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link || channelUrl || '')}&text=${encodeURIComponent(plain)}`;
+
   const kb = new InlineKeyboard()
+    .url('📨 Отправить', shareUrl)
+    .row()
     .text('⬅️ Назад', `a:ws_share|ws:${wsId}`)
     .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
 
@@ -2628,7 +2701,8 @@ async function renderWsPublicProfile(ctx, wsId, opts = {}) {
   // Links
   if (ws.channel_username) kb.url('📣 Telegram канал', `https://t.me/${String(ws.channel_username).replace(/^@/, '')}`);
   if (ig) kb.url('📸 Instagram', `https://instagram.com/${ig}`);
-  if (opts?.backCb) kb.row().text('⬅️ Назад', opts.backCb);
+  const backCb = opts?.backCb || (isOwner ? `a:ws_profile|ws:${wsId}` : null);
+  if (backCb) kb.row().text('⬅️ Назад', backCb);
   kb.row().text('📋 Меню', 'a:menu');
 
   const extra = { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true };
@@ -3708,94 +3782,128 @@ async function buildOfficialOfferPost(offerRow, opts = {}) {
 
 async function publishOfferToOfficialChannel(api, offerId, opts = {}) {
   if (!CFG.OFFICIAL_PUBLISH_ENABLED) throw new Error('OFFICIAL_PUBLISH_ENABLED=false');
+
   const channelId = Number(CFG.OFFICIAL_CHANNEL_ID || 0);
   if (!channelId) throw new Error('OFFICIAL_CHANNEL_ID is missing');
+
+  // Normalize placement type.
+  const placementRaw = String(opts.placementType || 'MANUAL').toUpperCase();
+  const keepExpiry = !!opts.keepExpiry;
+
+  // Existing DB record (if any).
+  const existing = await safeOfficialPosts(() => db.getOfficialPostByOfferId(offerId), async () => null);
+  let placementType = placementRaw;
+  if (placementType === 'UPDATE') {
+    placementType = existing?.placement_type ? String(existing.placement_type).toUpperCase() : 'MANUAL';
+  }
+  if (!['MANUAL', 'PAID'].includes(placementType)) placementType = 'MANUAL';
 
   const offer = CFG.VERIFICATION_ENABLED
     ? await safeUserVerifications(() => db.getBarterOfferPublicWithVerified(offerId), () => db.getBarterOfferPublic(offerId))
     : await db.getBarterOfferPublic(offerId);
+
   if (!offer) throw new Error('Offer not found');
   if (String(offer.status || '').toUpperCase() !== 'ACTIVE') throw new Error('Offer is not active');
   if (!offer.network_enabled) throw new Error('Offer is not in network');
 
-
-  const hasMedia = placementType === 'PAID' && offer.media_file_id && String(offer.media_type || '').trim();
-  const { text, kb } = await buildOfficialOfferPost(offer, { forCaption: hasMedia });
-
-
-
-  // Decide expiry
-  const days = Math.max(1, Number(opts.days || existing?.slot_days || CFG.OFFICIAL_MANUAL_DEFAULT_DAYS || 3));
-  const expiresAt = keepExpiry && existing?.slot_expires_at
-    ? new Date(existing.slot_expires_at).toISOString()
-    : new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-
-  let messageId = null;
-  const existingActive = existing
-    && existing.message_id
-    && Number(existing.channel_chat_id) === channelId
-    && String(existing.status || '').toUpperCase() === 'ACTIVE';
-
-  if (existingActive) {
-    try {
-      if (hasMedia) {
-        // Try to update caption first (works if existing post is media)
-        await api.editMessageCaption(channelId, Number(existing.message_id), {
-          caption: text,
-          parse_mode: 'HTML',
-          reply_markup: kb
-        });
-      } else {
-        await api.editMessageText(channelId, Number(existing.message_id), text, {
-          parse_mode: 'HTML',
-          reply_markup: kb,
-          disable_web_page_preview: true
-        });
-      }
-      messageId = Number(existing.message_id);
-    } catch (_) {
-      messageId = null;
-    }
-  }
-
-  if (!messageId) {
-    let msg;
-    if (hasMedia) {
-      const mt = String(offer.media_type || '').toLowerCase();
-      if (mt === 'photo') {
-        msg = await api.sendPhoto(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
-      } else if (mt === 'video') {
-        msg = await api.sendVideo(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
-      } else {
-        msg = await api.sendAnimation(channelId, offer.media_file_id, { caption: text, parse_mode: 'HTML', reply_markup: kb });
-      }
-    } else {
-      msg = await api.sendMessage(channelId, text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
-    }
-    messageId = Number(msg.message_id);
-
-    // If we replaced the post type (text <-> media), try to delete the old one to avoid duplicates
-    if (existingActive && existing?.message_id && Number(existing.message_id) !== messageId) {
-      try { await api.deleteMessage(channelId, Number(existing.message_id)); } catch (_) {}
-    }
-  }
-
-
-  await safeOfficialPosts(
-    () => db.setOfficialPostActive(offerId, {
-            channelChatId: channelId,
-      messageId,
-      placementType,
-      paymentId: opts.paymentId || existing?.payment_id || null,
-      slotDays: days,
-      slotExpiresAt: expiresAt,
-      publishedByUserId: opts.publishedByUserId || null,
-    }),
-    async () => null,
+  // Slot params
+  const defaultDays = Math.max(1, Number(CFG.OFFICIAL_MANUAL_DEFAULT_DAYS || 3));
+  const days = Math.max(
+    1,
+    Number(opts.days || existing?.slot_days || defaultDays)
   );
 
-  return { channelId, messageId, expiresAt, days };
+  // Expiry: keep existing if asked, otherwise (re)compute.
+  let slotExpiresAt = null;
+  if (keepExpiry && existing?.slot_expires_at) {
+    try { slotExpiresAt = new Date(existing.slot_expires_at).toISOString(); } catch { slotExpiresAt = null; }
+  }
+  if (!slotExpiresAt) slotExpiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+  const paymentId = opts.paymentId ? Number(opts.paymentId) : (existing?.payment_id ? Number(existing.payment_id) : null);
+  const publishedByUserId = opts.publishedByUserId ? Number(opts.publishedByUserId) : null;
+
+  // Build message
+  const hasMedia = !!(offer.media_file_id && String(offer.media_type || '').trim());
+  const built = await buildOfficialOfferPost(offer, { forCaption: hasMedia });
+  const text = built.text;
+  const replyMarkup = built.kb;
+
+  const isActive = String(existing?.status || '').toUpperCase() === 'ACTIVE' && existing?.message_id;
+  let messageId = isActive ? Number(existing.message_id) : null;
+
+  async function tryEditExisting() {
+    if (!messageId) return false;
+    // Try both (text vs media).
+    try {
+      await api.editMessageText(channelId, messageId, text, { parse_mode: 'HTML', reply_markup: replyMarkup });
+      return true;
+    } catch {}
+    try {
+      await api.editMessageCaption(channelId, messageId, { caption: text, parse_mode: 'HTML', reply_markup: replyMarkup });
+      return true;
+    } catch {}
+    return false;
+  }
+
+  const edited = await tryEditExisting();
+  if (!edited) {
+    // Send new message
+    let sent;
+    const mt = String(offer.media_type || '').toLowerCase();
+    const fid = String(offer.media_file_id || '').trim();
+
+    if (hasMedia && fid) {
+      if (mt === 'photo') {
+        sent = await api.sendPhoto(channelId, fid, { caption: text, parse_mode: 'HTML', reply_markup: replyMarkup });
+      } else if (mt === 'video') {
+        sent = await api.sendVideo(channelId, fid, { caption: text, parse_mode: 'HTML', reply_markup: replyMarkup });
+      } else if (mt === 'animation' || mt === 'gif') {
+        sent = await api.sendAnimation(channelId, fid, { caption: text, parse_mode: 'HTML', reply_markup: replyMarkup });
+      } else {
+        sent = await api.sendMessage(channelId, text, { parse_mode: 'HTML', reply_markup: replyMarkup });
+      }
+    } else {
+      sent = await api.sendMessage(channelId, text, { parse_mode: 'HTML', reply_markup: replyMarkup });
+    }
+
+    const newId = sent?.message_id ? Number(sent.message_id) : null;
+    if (!newId) throw new Error('Failed to publish: missing message_id');
+
+    // Remove old message (best-effort) if it existed.
+    if (messageId && newId !== messageId) {
+      try { await api.deleteMessage(channelId, messageId); } catch {}
+    }
+    messageId = newId;
+  }
+
+  // Persist ACTIVE post record
+  await safeOfficialPosts(
+    () => db.setOfficialPostActive(offerId, {
+      channelChatId: channelId,
+      messageId,
+      placementType,
+      paymentId,
+      slotDays: days,
+      slotExpiresAt,
+      publishedByUserId
+    }),
+    async () => null
+  );
+
+  // If this was a paid placement, mark payment as "applied" (best-effort).
+  if (placementType === 'PAID' && paymentId) {
+    try {
+      await db.setPaymentApplied(paymentId, { offerId, meta: { official: true } });
+    } catch {
+      // ignore
+    }
+  }
+
+  return { ok: true, messageId, placementType, days, slotExpiresAt };
 }
+
+
 
 async function removeOfficialOfferPost(api, offerId, reason = 'REMOVED') {
   const existing = await safeOfficialPosts(() => db.getOfficialPostByOfferId(offerId), async () => null);
@@ -3871,6 +3979,15 @@ async function renderOfficialManageView(ctx, userId, wsId, offerId, page = 0) {
 
   const kb = new InlineKeyboard();
 
+  const canRequest = isOwner && (mode === 'manual' || mode === 'mixed');
+  if (canRequest) {
+    if (st === 'PENDING') {
+      kb.text('⏳ В очереди (отменить)', `a:off_req_cancel|ws:${wsId}|o:${offerId}|p:${page}`).row();
+    } else if (st !== 'ACTIVE') {
+      kb.text('📝 В очередь публикаций', `a:off_req_home|ws:${wsId}|o:${offerId}|p:${page}`).row();
+    }
+  }
+
   if (isOwner && (mode === 'paid' || mode === 'mixed')) {
     kb.text('💳 Купить размещение', `a:off_buy_home|ws:${wsId}|o:${offerId}|p:${page}`).row();
   }
@@ -3894,6 +4011,62 @@ async function renderOfficialManageView(ctx, userId, wsId, offerId, page = 0) {
   const send = ctx.callbackQuery ? ctx.editMessageText.bind(ctx) : ctx.reply.bind(ctx);
   await send(text, { parse_mode: 'HTML', reply_markup: kb });
 }
+
+
+async function renderOfficialRequestHome(ctx, userId, wsId, offerId, page = 0) {
+  if (!CFG.OFFICIAL_PUBLISH_ENABLED) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: 'Официальный канал выключен.', show_alert: true });
+    return;
+  }
+  const mode = String(CFG.OFFICIAL_PUBLISH_MODE || 'manual').toLowerCase();
+  if (!(mode === 'manual' || mode === 'mixed')) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: 'Очередь доступна только в manual/mixed.', show_alert: true });
+    return;
+  }
+
+  const offer = await db.getBarterOfferPublic(offerId);
+  if (!offer) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: 'Оффер не найден.', show_alert: true });
+    return;
+  }
+
+  const isOwner = Number(offer.owner_user_id) === Number(userId);
+  const isMod = await isModerator({ id: userId }, ctx.from?.id);
+
+  // Allow owner (or moderator) to create a PENDING draft.
+  if (!isOwner && !isMod) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: 'Нет доступа.', show_alert: true });
+    return;
+  }
+
+  const defaultDays = Math.max(1, Number(CFG.OFFICIAL_MANUAL_DEFAULT_DAYS || 3));
+
+  const text = `📝 <b>Заявка в официальный канал</b>
+
+Оффер: <b>#${offerId}</b>
+
+Выбери длительность слота (можно потом продлить/перепостить):
+
+• 1 день — быстрый тест
+• 7 дней — нормальный слот
+• 30 дней — “топ‑слот”`;
+
+  const kb = new InlineKeyboard()
+    .text(`🕒 1 день`, `a:off_req|ws:${wsId}|o:${offerId}|days:1|p:${page}`)
+    .text(`📅 7 дней`, `a:off_req|ws:${wsId}|o:${offerId}|days:7|p:${page}`)
+    .row()
+    .text(`🏆 30 дней`, `a:off_req|ws:${wsId}|o:${offerId}|days:30|p:${page}`)
+    .row()
+    .text(`⚙️ По умолчанию (${defaultDays}д)`, `a:off_req|ws:${wsId}|o:${offerId}|days:${defaultDays}|p:${page}`)
+    .row()
+    .text('⬅️ Назад', `a:off_manage|ws:${wsId}|o:${offerId}|p:${page}`)
+    .text('🏠 Меню', 'a:menu');
+
+  if (ctx.callbackQuery) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+  else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+
 
 async function renderOfficialBuyHome(ctx, userId, wsId, offerId, page = 0) {
   const mode = String(CFG.OFFICIAL_PUBLISH_MODE || 'manual').toLowerCase();
@@ -5724,17 +5897,35 @@ export function getBot() {
         .row()
         .text('👤 Профиль', `a:ws_profile|ws:${wsId}`);
 
+      let sent = 0;
+      let failed = 0;
+
       for (const toId of targets) {
         try {
           await ctx.api.sendMessage(toId, notif, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
-        } catch {}
+          sent++;
+        } catch (e) {
+          failed++;
+          try { console.error('[LEAD_NOTIFY] failed', { toId, wsId, leadId: lead.id, err: String(e?.message || e) }); } catch {}
+        }
       }
 
       const backKb = new InlineKeyboard()
         .text('⬅️ Назад к витрине', `a:wsp_open|ws:${wsId}`)
         .text('📋 Меню', 'a:menu');
 
-      await ctx.reply('✅ Заявка отправлена. Владелец канала получил уведомление.', { reply_markup: backKb });
+      if (sent > 0) {
+        await ctx.reply('✅ Заявка отправлена. Уведомление владельцу доставлено.', { reply_markup: backKb });
+      } else if (targets.size === 0) {
+        await ctx.reply('✅ Заявка отправлена. (Тест) Ты отправил заявку с аккаунта владельца — уведомление не требуется.', { reply_markup: backKb });
+      } else {
+        await ctx.reply(
+          '⚠️ Заявка отправлена, но уведомление владельцу НЕ доставлено.\n\n' +
+          'Проверь: владелец открыл бота /start (чтобы бот мог писать ему) и не блокировал бота.\n' +
+          'Если нужно — SUPER_ADMIN тоже получит уведомление (если указан в ENV).',
+          { reply_markup: backKb }
+        );
+      }
       return;
     }
 
@@ -5836,7 +6027,12 @@ export function getBot() {
         } else {
           const handle = normalizeIgHandle(raw);
           if (!handle) {
-            await ctx.reply('⚠️ Пришли @handle или ссылку на профиль вида instagram.com/handle.\n\nЧтобы очистить поле — отправь “-”.');
+            {
+            const kb = new InlineKeyboard()
+              .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`)
+              .text('📋 Меню', 'a:menu');
+            await ctx.reply('⚠️ Пришли @handle или ссылку на профиль вида instagram.com/handle.\n\nЧтобы очистить поле — отправь “-”.', { reply_markup: kb });
+          }
             await setExpectText(ctx.from.id, exp);
             return;
           }
@@ -5858,7 +6054,12 @@ export function getBot() {
         } else {
           const urls = parseUrlsFromText(raw, 3);
           if (!urls.length) {
-            await ctx.reply('⚠️ Пришли 1–3 ссылки (https://...). Можно в одном сообщении или по строкам.\n\nЧтобы очистить поле — отправь “-”.');
+            {
+            const kb = new InlineKeyboard()
+              .text('⬅️ Назад', `a:ws_profile|ws:${wsId}`)
+              .text('📋 Меню', 'a:menu');
+            await ctx.reply('⚠️ Пришли 1–3 ссылки (https://...). Можно в одном сообщении или по строкам.\n\nЧтобы очистить поле — отправь “-”.', { reply_markup: kb });
+          }
             await setExpectText(ctx.from.id, exp);
             return;
           }
@@ -6757,51 +6958,6 @@ ${list}
   });
 
   // --- Commands ---
-
-  bot.command('help', async (ctx) => {
-    try {
-      await clearExpectText(ctx.from.id);
-    } catch {}
-
-    const text = `❓ Collabka — UGC/Collab CRM в Telegram
-
-Для Creator’ов
-• 🚀 Подключи канал (бот админ) и перешли любой пост
-• 🪟 Заполни витрину: IG, портфолио, ниши/форматы, гео, контакт
-• 🔗 Поставь ссылку витрины в Instagram (bio / stories)
-• 📨 Запросы брендов → Inbox, статусы, история
-
-Для брендов
-• 🔎 Поиск креаторов → фильтры → кампании (сохранённые поиски)
-• 📩 Запрос можно отправить прямо из списка или из витрины
-• Всё дальше в TG: интро, дедлайны, материалы
-
-UGC vs Интеграция
-🎬 UGC — контент без аудитории (важно качество/вкус)
-📣 Интеграция — публикация у креатора (важны охваты)
-
-Розыгрыши
-• 🎟 «Участвовать» → 🔄 «Проверить»
-• Если подписался только что — подожди 10 сек и проверь снова
-• ❔ в проверке = бот не админ в одном из каналов или канал приватный
-
-Команды
-/start — главное меню
-/help — помощь и быстрый старт
-/paysupport — помощь по оплате и Stars`;
-
-    const kb = new InlineKeyboard()
-      .text('🧭 Быстрый старт', 'a:guide')
-      .text('📋 Меню', 'a:menu')
-      .row()
-      .text('🏷 Для брендов', 'a:bx_open|ws:0')
-      .text('🎬 UGC / Офферы', 'a:bx_home')
-      .row()
-      .text('🎁 Розыгрыши', 'a:gw_list');
-
-    await ctx.reply(text, { disable_web_page_preview: true, reply_markup: kb });
-  });
-
   bot.command('start', async (ctx) => {
     let preMsg = null;
     try {
@@ -6978,6 +7134,51 @@ if (payload?.type === 'bxo') {
     }
 
 
+  });
+
+
+  bot.command('help', async (ctx) => {
+    try {
+      await clearExpectText(ctx.from.id);
+    } catch {}
+
+    const text = `❓ Collabka — UGC/Collab CRM в Telegram
+
+Для Creator’ов
+• 🚀 Подключи канал (бот админ) и перешли любой пост
+• 🪟 Заполни витрину: IG, портфолио, ниши/форматы, гео, контакт
+• 🔗 Поставь ссылку витрины в Instagram (bio / stories)
+• 📨 Запросы брендов → Inbox, статусы, история
+
+Для брендов
+• 🔎 Поиск креаторов → фильтры → кампании (сохранённые поиски)
+• 📩 Запрос можно отправить прямо из списка или из витрины
+• Всё дальше в TG: интро, дедлайны, материалы
+
+UGC vs Интеграция
+🎬 UGC — контент без аудитории (важно качество/вкус)
+📣 Интеграция — публикация у креатора (важны охваты)
+
+Розыгрыши
+• 🎟 «Участвовать» → 🔄 «Проверить»
+• Если подписался только что — подожди 10 сек и проверь снова
+• ❔ в проверке = бот не админ в одном из каналов или канал приватный
+
+Команды
+/start — главное меню
+/help — помощь и быстрый старт
+/paysupport — помощь по оплате и Stars`;
+
+    const kb = new InlineKeyboard()
+      .text('🧭 Быстрый старт', 'a:guide')
+      .text('📋 Меню', 'a:menu')
+      .row()
+      .text('🏷 Для брендов', 'a:bx_open|ws:0')
+      .text('🎬 UGC / Офферы', 'a:bx_home')
+      .row()
+      .text('🎁 Розыгрыши', 'a:gw_list');
+
+    await ctx.reply(text, { reply_markup: kb });
   });
 
   bot.command('whoami', async (ctx) => {
@@ -8802,6 +9003,104 @@ if (p.a === 'a:match_home') {
     if (p.a === 'a:off_manage') {
       await ctx.answerCallbackQuery();
       await renderOfficialManageView(ctx, u.id, Number(p.ws), Number(p.o), Number(p.p || 0));
+      return;
+    }
+
+    if (p.a === 'a:off_req_home') {
+      await ctx.answerCallbackQuery();
+      await renderOfficialRequestHome(ctx, u.id, Number(p.ws), Number(p.o), Number(p.p || 0));
+      return;
+    }
+
+    if (p.a === 'a:off_req') {
+      await ctx.answerCallbackQuery();
+      if (!CFG.OFFICIAL_PUBLISH_ENABLED) {
+        await ctx.answerCallbackQuery({ text: 'Фича отключена.', show_alert: true });
+        return;
+      }
+      const mode = String(CFG.OFFICIAL_PUBLISH_MODE || 'manual').toLowerCase();
+      if (!(mode === 'manual' || mode === 'mixed')) {
+        await ctx.answerCallbackQuery({ text: 'Очередь доступна только в manual/mixed.', show_alert: true });
+        return;
+      }
+
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+      const days = Math.max(1, Math.min(365, Number(p.days || 0) || Number(CFG.OFFICIAL_MANUAL_DEFAULT_DAYS || 3)));
+
+      const offer = await db.getBarterOfferPublic(offerId);
+      if (!offer) {
+        await ctx.answerCallbackQuery({ text: 'Оффер не найден.', show_alert: true });
+        return;
+      }
+
+      const isOwner = Number(offer.owner_user_id) === Number(u.id);
+      const isMod = await isModerator(u, ctx.from.id);
+      if (!isOwner && !isMod) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.', show_alert: true });
+        return;
+      }
+
+      const channelId = Number(CFG.OFFICIAL_CHANNEL_ID || 0);
+      if (!channelId) {
+        await ctx.answerCallbackQuery({ text: 'OFFICIAL_CHANNEL_ID не задан.', show_alert: true });
+        return;
+      }
+
+      const slotExpiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+      try {
+        await safeOfficialPosts(
+          () => db.upsertOfficialPostDraft({
+            offerId,
+            channelChatId: channelId,
+            placementType: 'MANUAL',
+            slotDays: days,
+            slotExpiresAt
+          }),
+          async () => null
+        );
+      } catch (e) {
+        await ctx.answerCallbackQuery({ text: `Ошибка: ${String(e?.message || e)}`.slice(0, 190), show_alert: true });
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: '✅ Заявка добавлена в очередь.', show_alert: false });
+      await renderOfficialManageView(ctx, u.id, wsId, offerId, Number(p.p || 0));
+      return;
+    }
+
+    if (p.a === 'a:off_req_cancel') {
+      await ctx.answerCallbackQuery();
+      if (!CFG.OFFICIAL_PUBLISH_ENABLED) {
+        await ctx.answerCallbackQuery({ text: 'Фича отключена.', show_alert: true });
+        return;
+      }
+      const wsId = Number(p.ws);
+      const offerId = Number(p.o);
+
+      const offer = await db.getBarterOfferPublic(offerId);
+      if (!offer) {
+        await ctx.answerCallbackQuery({ text: 'Оффер не найден.', show_alert: true });
+        return;
+      }
+
+      const isOwner = Number(offer.owner_user_id) === Number(u.id);
+      const isMod = await isModerator(u, ctx.from.id);
+      if (!isOwner && !isMod) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа.', show_alert: true });
+        return;
+      }
+
+      try {
+        await safeOfficialPosts(() => db.setOfficialPostStatus(offerId, 'REMOVED'), async () => null);
+      } catch (e) {
+        await ctx.answerCallbackQuery({ text: `Ошибка: ${String(e?.message || e)}`.slice(0, 190), show_alert: true });
+        return;
+      }
+
+      await ctx.answerCallbackQuery({ text: '🗑 Заявка отменена.', show_alert: false });
+      await renderOfficialManageView(ctx, u.id, wsId, offerId, Number(p.p || 0));
       return;
     }
 
