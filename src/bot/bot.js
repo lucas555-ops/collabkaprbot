@@ -9256,6 +9256,36 @@ ${link}`;
       const managerUserId = Number(p.u || 0);
       if (!managerUserId) return;
       await db.removeBrandManager(u.id, managerUserId);
+
+      // Best-effort notification to removed manager
+      let notifyOk = false;
+      try {
+        const mi = await db.getUserTgIdByUserId(managerUserId);
+        const managerTgId = Number(mi?.tg_id || 0);
+        if (managerTgId) {
+          // clean up manager state if this brand was active
+          try {
+            const active = await getBmActiveBrand(managerTgId);
+            if (active === u.id) await clearBmActiveBrand(managerTgId);
+          } catch { }
+
+          // if no more brands left -> disable manager mode
+          try {
+            const still = await db.listBrandsForManager(managerUserId);
+            if (!still || !still.length) await disableBrandManagerState(managerTgId);
+          } catch { }
+
+          const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+          const brandLabel = prof?.brand_name ? String(prof.brand_name).trim()
+            : (prof?.tg_username ? `@${String(prof.tg_username).trim()}` : `Бренд #${u.id}`);
+
+          const msg = `⛔️ <b>Доступ отозван</b>\n\nТебя удалили из команды бренда <b>${escapeHtml(brandLabel)}</b>.\n\nЕсли у тебя есть другие бренды — открой кабинет менеджера и выбери бренд.`;
+          const kb = new InlineKeyboard().text('🧑‍💼 Кабинет менеджера', 'a:bm_home');
+          await ctx.api.sendMessage(managerTgId, msg, { parse_mode: 'HTML', reply_markup: kb });
+          notifyOk = true;
+        }
+      } catch { }
+
       // refresh list
       const managers = await db.listBrandManagers(u.id);
       if (!managers.length) {
@@ -9269,7 +9299,8 @@ ${link}`;
         return `• ${escapeHtml(label)}`;
       }).join('\n');
 
-      await ctx.editMessageText(`✅ Менеджер удалён.\n\n👥 <b>Менеджеры бренда</b>\n\n${lines}`, {
+      const note = notifyOk ? '\n\n📩 Менеджеру отправлено уведомление.' : '';
+      await ctx.editMessageText(`✅ Менеджер удалён.${note}\n\n👥 <b>Менеджеры бренда</b>\n\n${lines}`, {
         parse_mode: 'HTML',
         reply_markup: brandManagersListKb(managers),
       });
