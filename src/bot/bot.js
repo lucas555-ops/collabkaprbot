@@ -498,7 +498,117 @@ async function setBmActiveBrand(tgId, brandUserId) {
   await redis.set(bmActiveBrandKey(tgId), String(n));
 }
 
-async function resolveBmBrandContext(ctx, u) {
+
+function bmBrandLabelFromRow(row) {
+  const id = Number(row?.user_id || 0);
+  const name = row?.brand_name ? String(row.brand_name).trim() : '';
+  const uname = row?.tg_username ? String(row.tg_username).trim() : '';
+  if (name) return name;
+  if (uname) return `@${uname}`;
+  if (id) return `Бренд #${id}`;
+  return 'Бренд';
+}
+
+async function clearBmActiveBrand(tgId) {
+  await redis.del(bmActiveBrandKey(tgId));
+}
+
+async function disableBrandManagerState(tgId) {
+  await setBrandManagerMode(tgId, false);
+  await clearBmActiveBrand(tgId);
+}
+
+async function renderBmPickBrand(ctx, u, params = {}) {
+  const edit = params.edit !== false;
+  const ret = String(params.ret || 'menu');
+  const wsId = Number(params.wsId || 0);
+  const page = Number(params.page || 0);
+
+  const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: true });
+
+  if (bm.dbMissing) {
+    const kb = new InlineKeyboard().text('🏠 Меню', 'a:menu');
+    const text = `⚠️ <b>Нужна миграция 026_brand_managers</b>
+
+В Neon должна быть таблица <code>brand_managers</code>.`;
+    if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+    return;
+  }
+
+  if (bm.revoked || !(bm.brands || []).length) {
+    await disableBrandManagerState(ctx.from.id);
+    const kb = new InlineKeyboard().text('🏠 Меню', 'a:menu');
+    const text = `⛔ <b>Доступ менеджера отозван</b>
+
+Если это ошибка — попроси владельца бренда добавить тебя в «👥 Команда бренда».`;
+    if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+    return;
+  }
+
+  const brands = bm.brands || [];
+  const active = await getBmActiveBrand(ctx.from.id);
+
+  const kb = new InlineKeyboard();
+  for (const b of brands) {
+    const id = Number(b.user_id);
+    const label = bmBrandLabelFromRow(b).slice(0, 32);
+    const prefix = (id && id === Number(active)) ? '✅ ' : '';
+    kb.text(`${prefix}${label}`, `a:bm_set_brand|bu:${id}|ret:${ret}|ws:${wsId}|p:${page}`).row();
+  }
+
+  const backCb = (
+    ret === 'bx_inbox' ? `a:bx_inbox|ws:${wsId}|p:${page}` :
+    ret === 'bx_feed' ? `a:bx_feed|ws:${wsId}|p:${page}` :
+    ret === 'bx_open' ? `a:bx_open|ws:${wsId}` :
+    ret === 'pm_home' ? `a:pm_home|ws:${wsId}` :
+    'a:menu'
+  );
+
+  kb.row().text('⬅️ Назад', backCb).text('🏠 Меню', 'a:menu');
+
+  const text = `🧑‍💼 <b>Выбери бренд для работы</b>
+
+Я запомню выбор и открою кабинет выбранного бренда.`;
+  if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+  else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+}
+
+async function bmResolveAssert(ctx, u, wsId, ret = 'menu', page = 0) {
+  const wsNum = Number(wsId);
+  if (!Number.isFinite(wsNum) || wsNum !== 0) return { bm: { enabled: false }, userId: u.id };
+
+  const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: true });
+
+  if (bm.dbMissing) {
+    const kb = new InlineKeyboard().text('🏠 Меню', 'a:menu');
+    const text = `⚠️ <b>Нужна миграция 026_brand_managers</b>
+
+В Neon должна быть таблица <code>brand_managers</code>.`;
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    return null;
+  }
+
+  if (bm.revoked) {
+    await disableBrandManagerState(ctx.from.id);
+    const kb = new InlineKeyboard().text('🏠 Меню', 'a:menu');
+    const text = `⛔ <b>Доступ менеджера отозван</b>
+
+Если это ошибка — попроси владельца бренда добавить тебя в «👥 Команда бренда».`;
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    return null;
+  }
+
+  if (bm.enabled && bm.needsPick) {
+    await renderBmPickBrand(ctx, u, { ret, wsId: wsNum, page, edit: true });
+    return null;
+  }
+
+  return { bm, userId: (bm.enabled ? bm.brandUserId : u.id) };
+}
+
+async function resolveBmBrandContext(ctx, u, opts = {}) {
   const tgId = Number(ctx.from?.id || 0);
   const enabled = await getBrandManagerMode(tgId);
   if (!enabled) return { enabled: false, brands: [] };
@@ -506,27 +616,35 @@ async function resolveBmBrandContext(ctx, u) {
   let brands = [];
   try {
     brands = await db.listBrandsForManager(u.id);
-  } catch {
-    brands = [];
+  } catch (e) {
+    if (isMissingRelationError(e, 'brand_managers')) {
+      return { enabled: false, brands: [], dbMissing: true };
+    }
+    return { enabled: false, brands: [] };
   }
-  if (!brands.length) return { enabled: false, brands: [] };
+
+  if (!brands.length) {
+    return { enabled: false, brands: [], revoked: true };
+  }
+
+  const requirePickWhenMissingActive = !!opts.requirePickWhenMissingActive;
+  const hasMultiple = brands.length > 1;
 
   let active = await getBmActiveBrand(tgId);
   const has = (id) => brands.some((b) => Number(b.user_id) === Number(id));
+
   if (!active || !has(active)) {
+    if (hasMultiple && requirePickWhenMissingActive) {
+      return { enabled: true, brands, needsPick: true, brandUserId: 0, brandLabel: '' };
+    }
     active = Number(brands[0].user_id);
     await setBmActiveBrand(tgId, active);
   }
 
   const cur = brands.find((b) => Number(b.user_id) === Number(active)) || brands[0];
-  const label = cur.brand_name ? String(cur.brand_name) : (cur.tg_username ? `@${cur.tg_username}` : `Бренд #${cur.user_id}`);
+  const label = bmBrandLabelFromRow(cur);
 
-  return {
-    enabled: true,
-    brandUserId: Number(cur.user_id),
-    brandLabel: label,
-    brands
-  };
+  return { enabled: true, brandUserId: Number(cur.user_id), brandLabel: label, brands };
 }
 
 async function renderMainMenu(ctx, flags, params = {}) {
@@ -539,8 +657,25 @@ async function renderMainMenu(ctx, flags, params = {}) {
   let kb;
 
   if (mode === UI_MODES.BRAND && u) {
-    const bm = await resolveBmBrandContext(ctx, u);
-    if (bm.enabled) {
+    const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: true });
+
+    if (bm.dbMissing) {
+      modeHuman = 'Brand Manager';
+      text = `⚠️ <b>Нужна миграция 026_brand_managers</b>
+
+В Neon должна быть таблица <code>brand_managers</code>.`;
+      kb = new InlineKeyboard().text('🏠 Меню', 'a:menu');
+    } else if (bm.revoked) {
+      await disableBrandManagerState(ctx.from.id);
+      modeHuman = 'Brand Manager';
+      text = `⛔ <b>Доступ менеджера отозван</b>
+
+Если это ошибка — попроси владельца бренда добавить тебя в «👥 Команда бренда».`;
+      kb = new InlineKeyboard().text('🏠 Меню', 'a:menu');
+    } else if (bm.enabled && bm.needsPick) {
+      await renderBmPickBrand(ctx, u, { ret: 'menu', wsId: 0, page: 0, edit });
+      return;
+    } else if (bm.enabled) {
       modeHuman = 'Brand Manager';
       const base = `🏠 <b>Главное меню</b>
 
@@ -6874,18 +7009,20 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
       const back = exp.back ? String(exp.back) : 'inbox';
       const offerId = exp.offerId ? Number(exp.offerId) : null;
       const page = Number(exp.page || 0);
+      const asUserId = Number(exp.asUserId || u.id);
+
 
       const raw = String(ctx.message.text || '').trim();
       // allow bare t.me, https links, or @channel/... patterns
       const ok = raw.length >= 8 && raw.length <= 500 && (/^https?:\/\//i.test(raw) || /t\.me\//i.test(raw) || /^@?[a-zA-Z0-9_]{5,}/.test(raw));
       if (!ok) {
         await ctx.reply('Нужна ссылка на пост (пример: https://t.me/...)');
-        await setExpectText(ctx.from.id, { type: 'bx_proof_link', wsId, threadId, back, offerId, page });
+        await setExpectText(ctx.from.id, { type: 'bx_proof_link', wsId, threadId, back, offerId, page, asUserId });
         return;
       }
 
       try {
-        await db.addBarterThreadProofLink(threadId, u.id, raw);
+        await db.addBarterThreadProofLink(threadId, asUserId, raw);
       } catch (e) {
         if (String(e?.message || '') === 'NO_THREAD_ACCESS') {
           await ctx.reply('Нет доступа к этому диалогу.');
@@ -7165,18 +7302,20 @@ ${list}
       const back = exp.back ? String(exp.back) : 'inbox';
       const offerId = exp.offerId ? Number(exp.offerId) : null;
       const page = Number(exp.page || 0);
+      const asUserId = Number(exp.asUserId || u.id);
+
 
       const photos = ctx.message.photo || [];
       const last = photos.length ? photos[photos.length - 1] : null;
       const fileId = last?.file_id;
       if (!fileId) {
         await ctx.reply('Не вижу фото. Пришли скрин как картинку (не файл).');
-        await setExpectText(ctx.from.id, { type: 'bx_proof_photo', wsId, threadId, back, offerId, page });
+        await setExpectText(ctx.from.id, { type: 'bx_proof_photo', wsId, threadId, back, offerId, page, asUserId });
         return;
       }
 
       try {
-        await db.addBarterThreadProofScreenshot(threadId, u.id, fileId);
+        await db.addBarterThreadProofScreenshot(threadId, asUserId, fileId);
       } catch (e) {
         if (String(e?.message || '') === 'NO_THREAD_ACCESS') {
           await ctx.reply('Нет доступа к этому диалогу.');
@@ -8075,44 +8214,37 @@ if (p.a === 'a:ui_mode_set') {
     if (p.a === 'a:bm_home') {
       await ctx.answerCallbackQuery();
 
-      // включаем manager-mode и переводим UI в Brand
+      // Enter manager cabinet (turn ON manager-mode + set Brand UI)
       await setBrandManagerMode(ctx.from.id, true);
       await setUiMode(ctx.from.id, UI_MODES.BRAND);
 
-      let brands = [];
-      try {
-        brands = await db.listBrandsForManager(u.id);
-      } catch {
-        brands = [];
-      }
+      const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: true });
 
-      if (!brands.length) {
-        await ctx.editMessageText('У тебя нет брендов в команде.', { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
+      if (bm.dbMissing) {
+        const text = `⚠️ <b>Нужна миграция 026_brand_managers</b>
+
+В Neon должна быть таблица <code>brand_managers</code>.`;
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
         return;
       }
 
-      // один бренд — сразу открываем меню Brand Manager
-      if (brands.length === 1) {
-        const brandUserId = Number(brands[0].user_id);
-        await setBmActiveBrand(ctx.from.id, brandUserId);
-        const flags = await getRoleFlags(u, ctx.from.id);
-        await renderMainMenu(ctx, flags, { edit: true, user: u });
+      if (bm.revoked) {
+        await disableBrandManagerState(ctx.from.id);
+        const text = `⛔ <b>Доступ менеджера отозван</b>
+
+Если это ошибка — попроси владельца бренда добавить тебя в «👥 Команда бренда».`;
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
         return;
       }
 
-      // несколько брендов — просим выбрать, затем откроем меню
-      const active = await getBmActiveBrand(ctx.from.id);
-
-      const kb = new InlineKeyboard();
-      for (const b of brands) {
-        const id = Number(b.user_id);
-        const label = b.brand_name ? String(b.brand_name) : (b.tg_username ? `@${b.tg_username}` : `Бренд #${id}`);
-        const prefix = (id === Number(active)) ? '✅ ' : '';
-        kb.text(prefix + label, `a:bm_set_brand|bu:${id}|ret:menu|ws:0|p:0`).row();
+      if (bm.enabled && bm.needsPick) {
+        // Multiple brands and no active brand yet — go to picker
+        await renderBmPickBrand(ctx, u, { ret: 'bx_inbox', wsId: 0, page: 0, edit: true });
+        return;
       }
-      kb.row().text('⬅️ Назад', 'a:menu');
 
-      await ctx.editMessageText('Выбери бренд:', { parse_mode: 'HTML', reply_markup: kb });
+      // One brand (or already chosen) — go straight to Inbox
+      await renderBxInbox(ctx, bm.brandUserId, 0, 0, { bm });
       return;
     }
 
@@ -8158,32 +8290,7 @@ if (p.a === 'a:ui_mode_set') {
       const wsId = Number(p.ws || 0);
       const page = Number(p.p || 0);
 
-      let brands = [];
-      try {
-        brands = await db.listBrandsForManager(u.id);
-      } catch {
-        brands = [];
-      }
-
-      if (!brands.length) {
-        await ctx.editMessageText('У тебя нет брендов в команде.', { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
-        return;
-      }
-
-      const active = await getBmActiveBrand(ctx.from.id);
-
-      const kb = new InlineKeyboard();
-      for (const b of brands) {
-        const id = Number(b.user_id);
-        const label = b.brand_name ? String(b.brand_name) : (b.tg_username ? `@${b.tg_username}` : `Бренд #${id}`);
-        const prefix = (id === Number(active)) ? '✅ ' : '';
-        kb.text(prefix + label, `a:bm_set_brand|bu:${id}|ret:${ret}|ws:${wsId}|p:${page}`).row();
-      }
-
-      const backCb = (ret === 'bx_inbox') ? `a:bx_inbox|ws:${wsId}|p:${page}` : 'a:menu';
-      kb.row().text('⬅️ Назад', backCb);
-
-      await ctx.editMessageText('Выбери бренд:', { parse_mode: 'HTML', reply_markup: kb });
+      await renderBmPickBrand(ctx, u, { ret, wsId, page, edit: true });
       return;
     }
 
@@ -8192,20 +8299,66 @@ if (p.a === 'a:ui_mode_set') {
       const brandUserId = Number(p.bu || 0);
       if (!brandUserId) return;
 
-      await setBrandManagerMode(ctx.from.id, true);
-      await setBmActiveBrand(ctx.from.id, brandUserId);
-
       const ret = String(p.ret || 'menu');
       const wsId = Number(p.ws || 0);
       const page = Number(p.p || 0);
 
+      // Validate that manager is still assigned to this brand
+      let brands = [];
+      try {
+        brands = await db.listBrandsForManager(u.id);
+      } catch (e) {
+        if (isMissingRelationError(e, 'brand_managers')) {
+          const text = `⚠️ <b>Нужна миграция 026_brand_managers</b>
+
+В Neon должна быть таблица <code>brand_managers</code>.`;
+          await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
+          return;
+        }
+        brands = [];
+      }
+
+      if (!brands.length) {
+        await disableBrandManagerState(ctx.from.id);
+        const text = `⛔ <b>Доступ менеджера отозван</b>
+
+Попроси владельца бренда добавить тебя в «👥 Команда бренда».`;
+        await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
+        return;
+      }
+
+      const ok = brands.some((b) => Number(b.user_id) === brandUserId);
+      if (!ok) {
+        await ctx.answerCallbackQuery({ text: 'Нет доступа к этому бренду.' });
+        await renderBmPickBrand(ctx, u, { ret, wsId, page, edit: true });
+        return;
+      }
+
+      await setBrandManagerMode(ctx.from.id, true);
+      await setUiMode(ctx.from.id, UI_MODES.BRAND);
+      await setBmActiveBrand(ctx.from.id, brandUserId);
+
+      // Route after pick
       if (ret === 'bx_inbox') {
         const bm = await resolveBmBrandContext(ctx, u);
         await renderBxInbox(ctx, brandUserId, wsId, page, { bm });
-      } else {
-        const flags = await getRoleFlags(u, ctx.from.id);
-        await renderMainMenu(ctx, flags, { edit: true, user: u });
+        return;
       }
+      if (ret === 'bx_feed') {
+        await renderBxFeed(ctx, brandUserId, wsId, page);
+        return;
+      }
+      if (ret === 'bx_open') {
+        await renderBxOpen(ctx, brandUserId, wsId);
+        return;
+      }
+      if (ret === 'pm_home') {
+        await renderProfileMatchingHome(ctx, brandUserId, wsId);
+        return;
+      }
+
+      const flags = await getRoleFlags(u, ctx.from.id);
+      await renderMainMenu(ctx, flags, { edit: true, user: u });
       return;
     }
 
@@ -9706,7 +9859,11 @@ if (p.a === 'a:match_home') {
       await ctx.answerCallbackQuery();
       if (wsId === 0) await setUiMode(ctx.from.id, UI_MODES.BRAND);
       if (wsId === 0) await maybeSendBanner(ctx, 'brand', CFG.BRAND_BANNER_FILE_ID);
-      await renderBxOpen(ctx, u.id, wsId);
+
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_open', 0);
+      if (!bmRes) return;
+
+      await renderBxOpen(ctx, bmRes.userId, wsId);
       return;
     }
 
@@ -9718,47 +9875,68 @@ if (p.a === 'a:match_home') {
 
     if (p.a === 'a:bx_feed') {
       await ctx.answerCallbackQuery();
-      const wsId = Number(p.ws || 0);
+      const wsId = Number(p.ws);
       const page = Number(p.p || 0);
 
-      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
-      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_feed', page);
+      if (!bmRes) return;
 
-      await renderBxFeed(ctx, effectiveUserId, wsId, page);
+      await renderBxFeed(ctx, bmRes.userId, wsId, page);
       return;
     }
 
     if (p.a === 'a:bx_filters') {
       await ctx.answerCallbackQuery();
-      await renderBxFilters(ctx, u.id, Number(p.ws), Number(p.p || 0));
+      const wsId = Number(p.ws);
+      const page = Number(p.p || 0);
+
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_feed', page);
+      if (!bmRes) return;
+
+      await renderBxFilters(ctx, bmRes.userId, wsId, page);
       return;
     }
 
     if (p.a === 'a:bx_fpick') {
       await ctx.answerCallbackQuery();
-      await renderBxFilterPick(ctx, u.id, Number(p.ws), String(p.k || ''), Number(p.p || 0));
+      const wsId = Number(p.ws);
+      const page = Number(p.p || 0);
+      const key = String(p.k);
+      const v = String(p.v);
+
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_feed', page);
+      if (!bmRes) return;
+
+      await setBxFilter(ctx.from.id, wsId, { [key]: v });
+      await renderBxFilters(ctx, bmRes.userId, wsId, page);
       return;
     }
 
     if (p.a === 'a:bx_fset') {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws);
-      const key = String(p.k || '');
-      const v = (p.v === 'all' || p.v === 'null') ? null : (p.v || null);
-      const patch = {};
-      if (key === 'cat') patch.category = v;
-      if (key === 'type') patch.offerType = v;
-      if (key === 'comp') patch.compensationType = v;
-      await setBxFilter(ctx.from.id, wsId, patch);
-      await renderBxFilters(ctx, u.id, wsId, Number(p.p || 0));
+      const page = Number(p.p || 0);
+      const key = String(p.k);
+      const v = p.v ? String(p.v) : null;
+
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_feed', page);
+      if (!bmRes) return;
+
+      await setBxFilter(ctx.from.id, wsId, { [key]: v });
+      await renderBxFilters(ctx, bmRes.userId, wsId, page);
       return;
     }
 
     if (p.a === 'a:bx_freset') {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws);
+      const page = Number(p.p || 0);
+
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_feed', page);
+      if (!bmRes) return;
+
       await setBxFilter(ctx.from.id, wsId, { category: null, offerType: null, compensationType: null });
-      await renderBxFilters(ctx, u.id, wsId, Number(p.p || 0));
+      await renderBxFilters(ctx, bmRes.userId, wsId, page);
       return;
     }
 
@@ -10108,15 +10286,36 @@ if (p.a === 'a:match_home') {
     if (p.a === 'a:bx_msg') {
       const wsId = Number(p.ws);
       const offerId = Number(p.o);
+      const page = Number(p.p || 0);
+
+      // Brand Manager in Brand Mode (ws:0): act as selected brand (brandUserId)
+      let actorUserId = u.id;
+      let bm = { enabled: false };
+      if (wsId === 0) {
+        const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_feed', page);
+        if (!bmRes) return;
+        actorUserId = bmRes.userId;
+        bm = bmRes.bm || { enabled: false };
+      }
+
       // Brand profile gate (Brand Mode): require 3-step basic profile before messaging creators
       if (wsId === 0 && CFG.BRAND_PROFILE_REQUIRED) {
-        const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+        const prof = await safeBrandProfiles(() => db.getBrandProfile(actorUserId), async () => null);
         if (!isBrandBasicComplete(prof)) {
+          if (bm.enabled) {
+            await ctx.answerCallbackQuery({
+              text: '⚠️ Профиль бренда не заполнен. Попроси владельца бренда заполнить 3 базовых поля (Название, Ссылка, Контакт).',
+              show_alert: true
+            });
+            await renderBxPublicView(ctx, actorUserId, wsId, offerId, page);
+            return;
+          }
+
           await ctx.answerCallbackQuery({
             text: '⚠️ Заполни профиль бренда (3 шага), чтобы писать креаторам.',
             show_alert: true
           });
-          await renderBrandProfileHome(ctx, u.id, { wsId, ret: 'offer', backOfferId: offerId, backPage: Number(p.p || 0), edit: true });
+          await renderBrandProfileHome(ctx, actorUserId, { wsId, ret: 'offer', backOfferId: offerId, backPage: page, edit: true });
           return;
         }
       }
@@ -10124,7 +10323,7 @@ if (p.a === 'a:match_home') {
       if (CFG.RATE_LIMIT_ENABLED) {
         try {
           const rl = await rateLimit(
-            k(['rl', 'intro', u.id]),
+            k(['rl', 'intro', actorUserId]),
             { limit: CFG.INTRO_RATE_LIMIT, windowSec: CFG.INTRO_RATE_WINDOW_SEC }
           );
           if (!rl.allowed) {
@@ -10138,7 +10337,15 @@ if (p.a === 'a:match_home') {
       }
 
       await ctx.answerCallbackQuery();
-      db.trackEvent('intro_attempt', { userId: u.id, wsId: wsId || null, meta: { offerId, brandMode: wsId === 0 } });
+      db.trackEvent('intro_attempt', {
+        userId: actorUserId,
+        wsId: wsId || null,
+        meta: {
+          offerId,
+          brandMode: wsId === 0,
+          ...(bm.enabled ? { actingManagerTgId: Number(u.tg_id || 0) || Number(ctx.from?.id || 0) } : {})
+        }
+      });
 
       // Pricing / limits (configurable)
       const cost = Math.max(1, Number(CFG.INTRO_COST_PER_INTRO || 1));
@@ -10146,14 +10353,14 @@ if (p.a === 'a:match_home') {
 
       let isVerified = false;
       if (CFG.VERIFICATION_ENABLED) {
-        const v = await safeUserVerifications(() => db.getUserVerification(u.id), async () => null);
+        const v = await safeUserVerifications(() => db.getUserVerification(actorUserId), async () => null);
         isVerified = String(v?.status || '').toUpperCase() === 'APPROVED';
       }
       const dailyLimit = Math.max(0, Number(isVerified ? CFG.INTRO_DAILY_LIMIT : CFG.INTRO_DAILY_LIMIT_UNVERIFIED));
 
       const res = await db.getOrCreateBarterThreadWithCredits(
         offerId,
-        u.id,
+        actorUserId,
         {
           ...(wsId === 0 ? { forceBrand: true } : {}),
           cost,
@@ -10170,14 +10377,14 @@ if (p.a === 'a:match_home') {
       if (res.limitReached) {
         const lim = Number(res.dailyLimit || dailyLimit || 0);
         const used = Number(res.dailyUsed || 0);
-        db.trackEvent('intro_blocked_daily_limit', { userId: u.id, wsId: wsId || null, meta: { offerId, lim, used } });
+        db.trackEvent('intro_blocked_daily_limit', { userId: actorUserId, wsId: wsId || null, meta: { offerId, lim, used } });
         await ctx.answerCallbackQuery({ text: `Лимит интро на сегодня: ${lim} (использовано: ${used}). Попробуй завтра.`, show_alert: true });
         return;
       }
 
       if (res.needPaywall) {
-        db.trackEvent('paywall_shown', { userId: u.id, wsId: wsId || null, meta: { offerId, cost, balance: Number(res.balance ?? 0), usedToday: Number(res.dailyUsed ?? 0), dailyLimit: Number(res.dailyLimit ?? dailyLimit ?? 0) } });
-        await renderBrandPaywall(ctx, u.id, wsId, offerId, Number(p.p || 0));
+        db.trackEvent('paywall_shown', { userId: actorUserId, wsId: wsId || null, meta: { offerId, cost, balance: Number(res.balance ?? 0), usedToday: Number(res.dailyUsed ?? 0), dailyLimit: Number(res.dailyLimit ?? dailyLimit ?? 0) } });
+        await renderBrandPaywall(ctx, actorUserId, wsId, offerId, page);
         return;
       }
 
@@ -10185,7 +10392,7 @@ if (p.a === 'a:match_home') {
         return ctx.answerCallbackQuery({ text: 'Не получилось открыть диалог. Возможно оффер закрыт.' });
       }
 
-      db.trackEvent('thread_opened', { userId: u.id, wsId: wsId || null, meta: { offerId, threadId: res.thread.id, charged: !!res.charged, chargedAmount: Number(res.chargedAmount || cost || 1) } });
+      db.trackEvent('thread_opened', { userId: actorUserId, wsId: wsId || null, meta: { offerId, threadId: res.thread.id, charged: !!res.charged, chargedAmount: Number(res.chargedAmount || cost || 1) } });
 
       if (res.charged) {
         const left = Number(res.balance ?? 0);
@@ -10197,7 +10404,7 @@ if (p.a === 'a:match_home') {
         await ctx.answerCallbackQuery({ text: `🎟 Диалог открыт. Использован Retry credit.`, show_alert: true });
       }
 
-      await renderBxThread(ctx, u.id, wsId, res.thread.id, { back: 'offer', offerId, page: Number(p.p || 0) });
+      await renderBxThread(ctx, actorUserId, wsId, res.thread.id, { back: 'offer', offerId, page });
       return;
     }
 
@@ -10206,22 +10413,24 @@ if (p.a === 'a:match_home') {
       const wsId = Number(p.ws || 0);
       const page = Number(p.p || 0);
 
-      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
-      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_inbox', page);
+      if (!bmRes) return;
 
-      await renderBxInbox(ctx, effectiveUserId, wsId, page, { bm });
+      await renderBxInbox(ctx, bmRes.userId, wsId, page, { bm: bmRes.bm });
       return;
     }
 
     if (p.a === 'a:bx_thread') {
       await ctx.answerCallbackQuery();
-      const wsId = Number(p.ws || 0);
-      const threadId = Number(p.t || 0);
+      const wsId = Number(p.ws);
+      const threadId = Number(p.t);
+      const back = p.b ? String(p.b) : 'inbox';
+      const offerId = p.o ? Number(p.o) : null;
 
-      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
-      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_inbox', Number(p.p || 0));
+      if (!bmRes) return;
 
-      await renderBxThread(ctx, effectiveUserId, wsId, threadId);
+      await renderBxThread(ctx, bmRes.userId, wsId, threadId, { back, offerId });
       return;
     }
 
@@ -10240,7 +10449,12 @@ if (p.a === 'a:bx_retry_help') {
       const threadId = Number(p.t);
       const back = p.b ? String(p.b) : 'inbox';
       const offerId = p.o ? Number(p.o) : null;
-      await renderBxProofs(ctx, u.id, wsId, threadId, { back, offerId, page: Number(p.p || 0) });
+      const page = Number(p.p || 0);
+
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_inbox', page);
+      if (!bmRes) return;
+
+      await renderBxProofs(ctx, bmRes.userId, wsId, threadId, { back, offerId, page });
       return;
     }
 
@@ -10250,11 +10464,15 @@ if (p.a === 'a:bx_retry_help') {
       const threadId = Number(p.t);
       const back = p.b ? String(p.b) : 'inbox';
       const offerId = p.o ? Number(p.o) : null;
+      const page = Number(p.p || 0);
+
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_inbox', page);
+      if (!bmRes) return;
 
       await ctx.editMessageText('🔗 Пришли ссылку на пост (пример: https://t.me/... )', {
-        reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_proofs|ws:${wsId}|t:${threadId}|p:${Number(p.p || 0)}${offerId ? `|o:${offerId}` : ''}|b:${back}`)
+        reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_proofs|ws:${wsId}|t:${threadId}|p:${page}${offerId ? `|o:${offerId}` : ''}|b:${back}`)
       });
-      await setExpectText(ctx.from.id, { type: 'bx_proof_link', wsId, threadId, back, offerId, page: Number(p.p || 0) });
+      await setExpectText(ctx.from.id, { type: 'bx_proof_link', wsId, threadId, back, offerId, page, asUserId: bmRes.userId });
       return;
     }
 
@@ -10264,12 +10482,15 @@ if (p.a === 'a:bx_retry_help') {
       const threadId = Number(p.t);
       const back = p.b ? String(p.b) : 'inbox';
       const offerId = p.o ? Number(p.o) : null;
+      const page = Number(p.p || 0);
 
-      await ctx.editMessageText('📎 Пришли скрин как <b>фото</b> (обычная картинка).', {
-        parse_mode: 'HTML',
-        reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_proofs|ws:${wsId}|t:${threadId}|p:${Number(p.p || 0)}${offerId ? `|o:${offerId}` : ''}|b:${back}`)
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_inbox', page);
+      if (!bmRes) return;
+
+      await ctx.editMessageText('🖼️ Пришли скриншот (как фото)', {
+        reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_proofs|ws:${wsId}|t:${threadId}|p:${page}${offerId ? `|o:${offerId}` : ''}|b:${back}`)
       });
-      await setExpectText(ctx.from.id, { type: 'bx_proof_photo', wsId, threadId, back, offerId, page: Number(p.p || 0) });
+      await setExpectText(ctx.from.id, { type: 'bx_proof_photo', wsId, threadId, back, offerId, page, asUserId: bmRes.userId });
       return;
     }
 
@@ -10277,46 +10498,47 @@ if (p.a === 'a:bx_retry_help') {
       const wsId = Number(p.ws);
       const threadId = Number(p.t);
       const stage = String(p.s || '');
-      const back = String(p.b || 'inbox');
-      const page = Number(p.p || 0);
+      const back = p.b ? String(p.b) : 'inbox';
       const offerId = p.o ? Number(p.o) : null;
 
-      const stageOk = CRM_STAGES.some((x) => x.id === stage);
-      if (!stageOk) {
-        await ctx.answerCallbackQuery({ text: 'Стадия не найдена.' });
-        return;
-      }
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_inbox', 0);
+      if (!bmRes) return;
 
-      const hasPlan = await db.isBrandPlanActive(u.id);
+      const stageOk = ['new', 'in_progress', 'done'].includes(stage);
+      const hasPlan = wsId === 0 ? await db.isBrandPlanActive(bmRes.userId) : true;
       if (!hasPlan) {
-        await ctx.answerCallbackQuery({ text: 'CRM стадии доступны в Brand Plan.', show_alert: true });
+        await ctx.answerCallbackQuery({ text: '⛔ Нужен активный Brand Plan для стадий.' });
+        return;
+      }
+      if (!stageOk) {
+        await ctx.answerCallbackQuery({ text: 'Invalid stage' });
         return;
       }
 
-      const updated = await db.setBarterThreadBuyerStage(threadId, u.id, stage);
+      const updated = await db.setBarterThreadBuyerStage(threadId, bmRes.userId, stage);
       if (!updated) {
-        await ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+        await ctx.answerCallbackQuery({ text: 'Не удалось обновить стадию.' });
         return;
       }
-
-      await ctx.answerCallbackQuery({ text: '✅' });
-      await renderBxThread(ctx, u.id, wsId, threadId, { back, offerId, page });
+      await ctx.answerCallbackQuery({ text: '✅ Обновлено' });
+      await renderBxThread(ctx, bmRes.userId, wsId, threadId, { back, offerId });
       return;
     }
 
     if (p.a === 'a:bx_thread_reply') {
       await ctx.answerCallbackQuery();
-      const threadId = Number(p.t);
       const wsId = Number(p.ws || 0);
-      const page = Number(p.p || 0);
+      const threadId = Number(p.t);
+      const back = p.b ? String(p.b) : 'inbox';
+      const offerId = p.o ? Number(p.o) : null;
 
-      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
-      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_inbox', 0);
+      if (!bmRes) return;
 
-      await ctx.editMessageText('✍️ Напиши сообщение одним текстом (без медиа).', {
-        reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_thread|ws:${wsId}|t:${threadId}|p:${page}`)
+      await ctx.editMessageText('✍️ Напиши сообщение покупателю:', {
+        reply_markup: new InlineKeyboard().text('⬅️ Отмена', `a:bx_thread|ws:${wsId}|t:${threadId}${offerId ? `|o:${offerId}` : ''}|b:${back}`)
       });
-      await setExpectText(ctx.from.id, { type: 'bx_thread_msg', threadId, wsId, asUserId: effectiveUserId });
+      await setExpectText(ctx.from.id, { type: 'bx_thread_msg', wsId, threadId, back, offerId, asUserId: bmRes.userId });
       return;
     }
 
@@ -10330,10 +10552,20 @@ if (p.a === 'a:bx_retry_help') {
     }
 
     if (p.a === 'a:bx_thread_close_do') {
-      await ctx.answerCallbackQuery({ text: 'Закрыто.' });
-      const closed = await db.closeBarterThread(Number(p.t), u.id);
-      if (!closed) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
-      await renderBxInbox(ctx, u.id, Number(p.ws), 0);
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws);
+      const threadId = Number(p.t);
+
+      const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_inbox', 0);
+      if (!bmRes) return;
+
+      const ok = await db.closeBarterThread(threadId, bmRes.userId);
+      if (!ok) {
+        await ctx.answerCallbackQuery({ text: 'Не удалось закрыть тред.' });
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: '✅ Тред закрыт' });
+      await renderBxInbox(ctx, bmRes.userId, wsId, 0, { bm: bmRes.bm });
       return;
     }
 
