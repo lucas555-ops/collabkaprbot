@@ -559,99 +559,6 @@ export async function getGiveawayForCurator(giveawayId, userId) {
   return r.rows[0] || null;
 }
 
-// -----------------------------
-// Brand Team (Brand Managers) — single role (FIX6d)
-// Brands (user accounts) can grant manager access to handle Inbox/Search on their behalf.
-// -----------------------------
-
-export async function addBrandManager(brandUserId, managerUserId, addedByUserId) {
-  const r = await pool.query(
-    `insert into brand_managers (brand_user_id, manager_user_id, added_by_user_id)
-     values ($1,$2,$3)
-     on conflict (brand_user_id, manager_user_id) do nothing
-     returning brand_user_id, manager_user_id, added_by_user_id, created_at`,
-    [Number(brandUserId), Number(managerUserId), addedByUserId ? Number(addedByUserId) : null]
-  );
-  return r.rowCount ? (r.rows[0] || null) : null;
-}
-
-export async function removeBrandManager(brandUserId, managerUserId) {
-  const r = await pool.query(
-    `delete from brand_managers
-     where brand_user_id=$1 and manager_user_id=$2
-     returning brand_user_id, manager_user_id`,
-    [Number(brandUserId), Number(managerUserId)]
-  );
-  return r.rows[0] || null;
-}
-
-export async function listBrandManagers(brandUserId) {
-  const r = await pool.query(
-    `select
-       bm.manager_user_id as user_id,
-       u.tg_id,
-       u.tg_username,
-       bm.added_by_user_id,
-       bm.created_at
-     from brand_managers bm
-     join users u on u.id = bm.manager_user_id
-     where bm.brand_user_id=$1
-     order by bm.created_at desc`,
-    [Number(brandUserId)]
-  );
-  return r.rows || [];
-}
-
-export async function isBrandManager(brandUserId, managerUserId) {
-  const r = await pool.query(
-    `select 1
-     from brand_managers
-     where brand_user_id=$1 and manager_user_id=$2
-     limit 1`,
-    [Number(brandUserId), Number(managerUserId)]
-  );
-  return r.rowCount > 0;
-}
-
-export async function hasAnyBrandManagerRole(userId) {
-  const r = await pool.query(
-    `select 1
-     from brand_managers
-     where manager_user_id=$1
-     limit 1`,
-    [Number(userId)]
-  );
-  return r.rowCount > 0;
-}
-
-export async function listBrandsForManager(userId) {
-  const r = await pool.query(
-    `select
-       bm.brand_user_id as brand_user_id,
-       b.tg_id as brand_tg_id,
-       b.tg_username as brand_tg_username,
-       bp.brand_name,
-       bp.brand_link,
-       bp.contact,
-       bm.created_at
-     from brand_managers bm
-     join users b on b.id = bm.brand_user_id
-     left join brand_profiles bp on bp.user_id = bm.brand_user_id
-     where bm.manager_user_id=$1
-     order by bm.created_at desc`,
-    [Number(userId)]
-  );
-  return r.rows || [];
-}
-
-export async function isBrandOwnerOrManager(brandUserId, actorUserId) {
-  const b = Number(brandUserId);
-  const a = Number(actorUserId);
-  if (!b || !a) return false;
-  if (b === a) return true;
-  return await isBrandManager(b, a);
-}
-
 // Workspace audit
 export async function auditWorkspace(workspaceId, actorUserId, action, payload = {}) {
   await pool.query(
@@ -2343,6 +2250,100 @@ export async function upsertBrandProfile(userId, patch = {}) {
   }
 
   return getBrandProfile(userId);
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Brand Managers (team access)
+// ───────────────────────────────────────────────────────────────────────────────
+
+export async function addBrandManager(brandUserId, managerUserId, addedByUserId = null) {
+  brandUserId = Number(brandUserId);
+  managerUserId = Number(managerUserId);
+  addedByUserId = addedByUserId == null ? null : Number(addedByUserId);
+
+  if (!brandUserId || !managerUserId) throw new Error('addBrandManager: bad ids');
+
+  await q(
+    `insert into brand_managers (brand_user_id, manager_user_id, added_by_user_id)
+     values ($1, $2, $3)
+     on conflict (brand_user_id, manager_user_id) do nothing`,
+    [brandUserId, managerUserId, addedByUserId]
+  );
+
+  return true;
+}
+
+export async function removeBrandManager(brandUserId, managerUserId) {
+  brandUserId = Number(brandUserId);
+  managerUserId = Number(managerUserId);
+
+  if (!brandUserId || !managerUserId) throw new Error('removeBrandManager: bad ids');
+
+  await q(
+    `delete from brand_managers
+     where brand_user_id = $1 and manager_user_id = $2`,
+    [brandUserId, managerUserId]
+  );
+
+  return true;
+}
+
+export async function isBrandManager(brandUserId, managerUserId) {
+  brandUserId = Number(brandUserId);
+  managerUserId = Number(managerUserId);
+  if (!brandUserId || !managerUserId) return false;
+
+  const r = await q(
+    `select 1 as ok
+     from brand_managers
+     where brand_user_id = $1 and manager_user_id = $2
+     limit 1`,
+    [brandUserId, managerUserId]
+  );
+
+  return (r.rows || []).length > 0;
+}
+
+export async function listBrandManagers(brandUserId) {
+  brandUserId = Number(brandUserId);
+  if (!brandUserId) throw new Error('listBrandManagers: bad brandUserId');
+
+  const r = await q(
+    `select
+        bm.manager_user_id as user_id,
+        u.tg_id,
+        u.tg_username,
+        bm.created_at
+     from brand_managers bm
+     join users u on u.id = bm.manager_user_id
+     where bm.brand_user_id = $1
+     order by bm.created_at desc`,
+    [brandUserId]
+  );
+
+  return r.rows || [];
+}
+
+export async function listBrandsForManager(managerUserId) {
+  managerUserId = Number(managerUserId);
+  if (!managerUserId) throw new Error('listBrandsForManager: bad managerUserId');
+
+  const r = await q(
+    `select
+        bm.brand_user_id as user_id,
+        u.tg_id,
+        u.tg_username,
+        bp.brand_name,
+        bm.created_at
+     from brand_managers bm
+     left join users u on u.id = bm.brand_user_id
+     left join brand_profiles bp on bp.user_id = bm.brand_user_id
+     where bm.manager_user_id = $1
+     order by bm.created_at desc`,
+    [managerUserId]
+  );
+
+  return r.rows || [];
 }
 
 export async function deleteBrandProfile(userId) {
