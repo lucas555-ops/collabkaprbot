@@ -386,7 +386,7 @@ function mainMenuKb(flags = {}) {
 }
 
 
-function mainMenuCreatorKb(flags = {}) {
+function mainMenuCreatorKb(flags = {}, opts = {}) {
   const { isModerator = false, isAdmin = false, isFolderEditor = false, isCurator = false } = flags;
 
   const kb = new InlineKeyboard()
@@ -398,8 +398,10 @@ function mainMenuCreatorKb(flags = {}) {
     .row()
     .text('🧭 Быстрый старт', 'a:guide')
     .text('💬 Поддержка', 'a:support')
-    .row()
-    .text('🏷 Я бренд', 'a:ui_mode_set|m:brand|ret:menu');
+    .row();
+
+  if (opts.canManager) kb.text('🧑‍💼 Кабинет менеджера', 'a:bm_home');
+  kb.text('🏷 Я бренд', 'a:ui_mode_set|m:brand|ret:menu');
 
   const extra = [];
   if (CFG.VERIFICATION_ENABLED) extra.push(['✅ Верификация', 'a:verify_home']);
@@ -582,7 +584,11 @@ async function renderMainMenu(ctx, flags, params = {}) {
 Для Creator/UGC — подключение канала, витрина, лента и розыгрыши.
 
 Выбери действие:`;
-    kb = mainMenuCreatorKb(flags);
+    let canManager = false;
+    if (u) {
+      try { canManager = (await db.listBrandsForManager(u.id)).length > 0; } catch { canManager = false; }
+    }
+    kb = mainMenuCreatorKb(flags, { canManager });
   }
 
   const opts = { parse_mode: 'HTML', reply_markup: kb };
@@ -5967,11 +5973,14 @@ ctx.reply = (text, extra) => {
       // best-effort notify manager
       try {
         const kb = new InlineKeyboard()
+          .text('🧑‍💼 Открыть кабинет менеджера', 'a:bm_home')
+          .row()
           .text('🏠 Главное меню', 'a:menu');
         await ctx.api.sendMessage(
           Number(manager.tg_id),
           `✅ Тебя добавили в <b>команду бренда</b>.
-Открой бот — скоро появится кабинет “Brand Manager”.`,
+
+Нажми <b>«🧑‍💼 Открыть кабинет менеджера»</b> — там будут Inbox и поиск креаторов.`,
           { parse_mode: 'HTML', reply_markup: kb }
         );
       } catch {}
@@ -7565,6 +7574,8 @@ ${list}
       await setUiMode(ctx.from.id, UI_MODES.BRAND);
 
       const kb = new InlineKeyboard()
+        .text('🧑‍💼 Кабинет менеджера', 'a:bm_home')
+        .row()
         .text('📨 Inbox', 'a:bx_inbox|ws:0|p:0')
         .text('🔎 Поиск креаторов', 'a:pm_home|ws:0')
         .row()
@@ -8060,6 +8071,51 @@ if (p.a === 'a:ui_mode_set') {
 
     // MENU
         // BRAND MANAGER MODE (Brand Team)
+
+    if (p.a === 'a:bm_home') {
+      await ctx.answerCallbackQuery();
+
+      // включаем manager-mode и переводим UI в Brand
+      await setBrandManagerMode(ctx.from.id, true);
+      await setUiMode(ctx.from.id, UI_MODES.BRAND);
+
+      let brands = [];
+      try {
+        brands = await db.listBrandsForManager(u.id);
+      } catch {
+        brands = [];
+      }
+
+      if (!brands.length) {
+        await ctx.editMessageText('У тебя нет брендов в команде.', { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
+        return;
+      }
+
+      // один бренд — сразу открываем меню Brand Manager
+      if (brands.length === 1) {
+        const brandUserId = Number(brands[0].user_id);
+        await setBmActiveBrand(ctx.from.id, brandUserId);
+        const flags = await getRoleFlags(u, ctx.from.id);
+        await renderMainMenu(ctx, flags, { edit: true, user: u });
+        return;
+      }
+
+      // несколько брендов — просим выбрать, затем откроем меню
+      const active = await getBmActiveBrand(ctx.from.id);
+
+      const kb = new InlineKeyboard();
+      for (const b of brands) {
+        const id = Number(b.user_id);
+        const label = b.brand_name ? String(b.brand_name) : (b.tg_username ? `@${b.tg_username}` : `Бренд #${id}`);
+        const prefix = (id === Number(active)) ? '✅ ' : '';
+        kb.text(prefix + label, `a:bm_set_brand|bu:${id}|ret:menu|ws:0|p:0`).row();
+      }
+      kb.row().text('⬅️ Назад', 'a:menu');
+
+      await ctx.editMessageText('Выбери бренд:', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
     if (p.a === 'a:bm_help') {
       await ctx.answerCallbackQuery();
       const text = `🧑‍💼 <b>Brand Manager</b>
