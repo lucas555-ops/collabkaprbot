@@ -595,7 +595,7 @@ function wsMenuKb(wsId) {
     .text('👤 Профиль', `a:ws_profile|ws:${wsId}`)
     .text('⭐️ PRO', `a:ws_pro|ws:${wsId}`)
     .row()
-    .text('⚙️ Настройки', `a:ws_settings|ws:${wsId}`)
+    .text('👥 Кураторы', `a:ws_settings|ws:${wsId}`)
     .text('🧾 История', `a:ws_history|ws:${wsId}`)
     .row()
     .text('⬅️ Назад', 'a:ws_list');
@@ -1660,6 +1660,13 @@ function pmHumanList(keys, dict) {
   return keys.map(k => map.get(k) || k).join(', ');
 }
 
+function pmHumanBullets(keys, dict) {
+  if (!Array.isArray(keys) || !keys.length) return '—';
+  const map = new Map(dict.map(d => [d.key, d.title]));
+  return keys.map(k => `• ${map.get(k) || k}`).join('\n');
+}
+
+
 function contactUrlFromRaw(contactRaw) {
   const c = contactRaw ? String(contactRaw).trim() : '';
   if (!c) return null;
@@ -1690,8 +1697,13 @@ async function renderProfileMatchingHome(ctx, ownerUserId, wsId) {
   const text =
     `🔎 <b>Поиск креаторов</b>\n\n` +
     `Выбираешь ниши и форматы — бот показывает подходящие витрины.\n\n` +
-    `🏷 Ниши: <b>${escapeHtml(pmHumanList(st.v, PROFILE_VERTICALS))}</b>\n` +
-    `🎬 Форматы: <b>${escapeHtml(pmHumanList(st.f, PROFILE_FORMATS))}</b>\n\n` +
+    `🏷 Ниши:
+${escapeHtml(pmHumanBullets(st.v, PROFILE_VERTICALS))}
+`
+    + `🎬 Форматы:
+${escapeHtml(pmHumanBullets(st.f, PROFILE_FORMATS))}
+
+` +
     `Нажми «🔎 Найти», чтобы открыть список.\n` +
     `Подсказка: 1–2 ниши + 2–3 формата обычно дают лучший результат.`;
 
@@ -1745,8 +1757,13 @@ async function renderProfileMatchingResults(ctx, ownerUserId, wsId, page = 0) {
 
   const head =
     `🔎 <b>Результаты поиска</b>\n\n` +
-    `🏷 Ниши: <b>${escapeHtml(pmHumanList(st.v, PROFILE_VERTICALS))}</b>\n` +
-    `🎬 Форматы: <b>${escapeHtml(pmHumanList(st.f, PROFILE_FORMATS))}</b>\n\n`;
+    `🏷 Ниши:
+${escapeHtml(pmHumanBullets(st.v, PROFILE_VERTICALS))}
+`
+    + `🎬 Форматы:
+${escapeHtml(pmHumanBullets(st.f, PROFILE_FORMATS))}
+
+`;
 
   if (!items.length) {
     const kb = new InlineKeyboard()
@@ -2085,26 +2102,27 @@ function wsProfileKb(wsId, ws) {
   const vCount = Array.isArray(ws.profile_verticals) ? ws.profile_verticals.length : 0;
   const fCount = Array.isArray(ws.profile_formats) ? ws.profile_formats.length : 0;
 
+  // UX: "Витрина" — главный CTA, дальше парные кнопки по смыслу.
   const kb = new InlineKeyboard()
-    .text('✏️ Название', `a:ws_prof_edit|ws:${wsId}|f:title`)
-    .text('🧩 Режим', `a:ws_prof_mode|ws:${wsId}`)
-    .row()
-    .text('📨 Заявки', `a:ws_leads|ws:${wsId}|s:new|p:0`)
     .text('🪟 Витрина', `a:wsp_preview|ws:${wsId}`)
     .row()
-    .text('🔗 Поделиться', `a:ws_share|ws:${wsId}`)
-    .text('📌 IG шаблоны', `a:ws_ig_templates|ws:${wsId}`)
-    .row()
-    .text('📸 Instagram', `a:ws_prof_edit|ws:${wsId}|f:ig`)
     .text(`🏷 Ниши (${vCount}/3)`, `a:ws_prof_verticals|ws:${wsId}`)
-    .row()
     .text(`🎬 Форматы (${fCount}/5)`, `a:ws_prof_formats|ws:${wsId}`)
-    .text('🔗 Портфолио', `a:ws_prof_edit|ws:${wsId}|f:portfolio`)
     .row()
-    .text('📝 Описание', `a:ws_prof_edit|ws:${wsId}|f:about`)
+    .text('✏️ Название', `a:ws_prof_edit|ws:${wsId}|f:title`)
     .text('✏️ Контакт', `a:ws_prof_edit|ws:${wsId}|f:contact`)
     .row()
+    .text('📸 Instagram', `a:ws_prof_edit|ws:${wsId}|f:ig`)
+    .text('🔗 Портфолио', `a:ws_prof_edit|ws:${wsId}|f:portfolio`)
+    .row()
     .text('✏️ Гео', `a:ws_prof_edit|ws:${wsId}|f:geo`)
+    .text('📝 Описание', `a:ws_prof_edit|ws:${wsId}|f:about`)
+    .row()
+    .text('📨 Заявки', `a:ws_leads|ws:${wsId}|s:new|p:0`)
+    .text('🔗 Поделиться', `a:ws_share|ws:${wsId}`)
+    .row()
+    .text('🧩 Режим', `a:ws_prof_mode|ws:${wsId}`)
+    .text('📌 IG шаблоны', `a:ws_ig_templates|ws:${wsId}`)
     .row()
     .text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
 
@@ -4644,7 +4662,7 @@ async function renderGwOpen(ctx, ownerUserId, gwId) {
 ${checkedLine}
 ${notesBlock}
 
-Если ведёшь конкурс не один — пригласи помощника (⚙️ Настройки канала → 👤 Пригласить куратора).`;
+Если ведёшь конкурс не один — пригласи помощника (👥 Кураторы канала → 👤 Пригласить куратора).`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: gwOpenKb(g, { isAdmin: isSuperAdminTg(ctx.from?.id) }) });
 }
 
@@ -7601,7 +7619,7 @@ IG → лиды. TG → сделки.
 6) 🎁 Розыгрыши — опционально, если нужны активации/промо
 7) 🏷 Для брендов: Brand Pass/Plan (анти‑спам)
 
-👤 Если ведёшь канал с командой — добавь куратора: Мои каналы → ⚙️ Настройки → Пригласить куратора
+👤 Если ведёшь канал с командой — добавь куратора: Мои каналы → 👥 Кураторы → Пригласить куратора
 
 Выбери раздел:`;
 
