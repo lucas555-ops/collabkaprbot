@@ -2256,6 +2256,25 @@ export async function upsertBrandProfile(userId, patch = {}) {
 // Brand Managers (team access)
 // ───────────────────────────────────────────────────────────────────────────────
 
+function _isMissingBrandManagersTable(e) {
+  const msg = String(e?.message || e || '');
+  return (
+    msg.includes('relation "brand_managers" does not exist') ||
+    msg.includes("relation 'brand_managers' does not exist") ||
+    (msg.includes('brand_managers') && msg.includes('does not exist'))
+  );
+}
+
+// Safe check that does not throw when the table is missing.
+export async function brandManagersTableReady() {
+  try {
+    const r = await pool.query(`select to_regclass('public.brand_managers') as reg`);
+    return Boolean(r.rows?.[0]?.reg);
+  } catch {
+    return false;
+  }
+}
+
 export async function addBrandManager(brandUserId, managerUserId, addedByUserId = null) {
   brandUserId = Number(brandUserId);
   managerUserId = Number(managerUserId);
@@ -2263,12 +2282,21 @@ export async function addBrandManager(brandUserId, managerUserId, addedByUserId 
 
   if (!brandUserId || !managerUserId) throw new Error('addBrandManager: bad ids');
 
-  await pool.query(
-    `insert into brand_managers (brand_user_id, manager_user_id, added_by_user_id)
-     values ($1, $2, $3)
-     on conflict (brand_user_id, manager_user_id) do nothing`,
-    [brandUserId, managerUserId, addedByUserId]
-  );
+  try {
+    await pool.query(
+      `insert into brand_managers (brand_user_id, manager_user_id, added_by_user_id)
+       values ($1, $2, $3)
+       on conflict (brand_user_id, manager_user_id) do nothing`,
+      [brandUserId, managerUserId, addedByUserId]
+    );
+  } catch (e) {
+    if (_isMissingBrandManagersTable(e)) {
+      const err = new Error('MIGRATION_MISSING_BRAND_MANAGERS');
+      err.code = 'MIGRATION_MISSING_BRAND_MANAGERS';
+      throw err;
+    }
+    throw e;
+  }
 
   return true;
 }
@@ -2279,11 +2307,20 @@ export async function removeBrandManager(brandUserId, managerUserId) {
 
   if (!brandUserId || !managerUserId) throw new Error('removeBrandManager: bad ids');
 
-  await pool.query(
-    `delete from brand_managers
-     where brand_user_id = $1 and manager_user_id = $2`,
-    [brandUserId, managerUserId]
-  );
+  try {
+    await pool.query(
+      `delete from brand_managers
+       where brand_user_id = $1 and manager_user_id = $2`,
+      [brandUserId, managerUserId]
+    );
+  } catch (e) {
+    if (_isMissingBrandManagersTable(e)) {
+      const err = new Error('MIGRATION_MISSING_BRAND_MANAGERS');
+      err.code = 'MIGRATION_MISSING_BRAND_MANAGERS';
+      throw err;
+    }
+    throw e;
+  }
 
   return true;
 }
@@ -2293,57 +2330,71 @@ export async function isBrandManager(brandUserId, managerUserId) {
   managerUserId = Number(managerUserId);
   if (!brandUserId || !managerUserId) return false;
 
-  const r = await pool.query(
-    `select 1 as ok
-     from brand_managers
-     where brand_user_id = $1 and manager_user_id = $2
-     limit 1`,
-    [brandUserId, managerUserId]
-  );
-
-  return (r.rows || []).length > 0;
+  try {
+    const r = await pool.query(
+      `select 1 as ok
+       from brand_managers
+       where brand_user_id = $1 and manager_user_id = $2
+       limit 1`,
+      [brandUserId, managerUserId]
+    );
+    return (r.rows || []).length > 0;
+  } catch (e) {
+    if (_isMissingBrandManagersTable(e)) return false;
+    throw e;
+  }
 }
 
 export async function listBrandManagers(brandUserId) {
   brandUserId = Number(brandUserId);
   if (!brandUserId) throw new Error('listBrandManagers: bad brandUserId');
 
-  const r = await pool.query(
-    `select
-        bm.manager_user_id as user_id,
-        u.tg_id,
-        u.tg_username,
-        bm.created_at
-     from brand_managers bm
-     join users u on u.id = bm.manager_user_id
-     where bm.brand_user_id = $1
-     order by bm.created_at desc`,
-    [brandUserId]
-  );
+  try {
+    const r = await pool.query(
+      `select
+          bm.manager_user_id as user_id,
+          u.tg_id,
+          u.tg_username,
+          bm.created_at
+       from brand_managers bm
+       join users u on u.id = bm.manager_user_id
+       where bm.brand_user_id = $1
+       order by bm.created_at desc`,
+      [brandUserId]
+    );
 
-  return r.rows || [];
+    return r.rows || [];
+  } catch (e) {
+    if (_isMissingBrandManagersTable(e)) return [];
+    throw e;
+  }
 }
 
 export async function listBrandsForManager(managerUserId) {
   managerUserId = Number(managerUserId);
   if (!managerUserId) throw new Error('listBrandsForManager: bad managerUserId');
 
-  const r = await pool.query(
-    `select
-        bm.brand_user_id as user_id,
-        u.tg_id,
-        u.tg_username,
-        bp.brand_name,
-        bm.created_at
-     from brand_managers bm
-     left join users u on u.id = bm.brand_user_id
-     left join brand_profiles bp on bp.user_id = bm.brand_user_id
-     where bm.manager_user_id = $1
-     order by bm.created_at desc`,
-    [managerUserId]
-  );
+  try {
+    const r = await pool.query(
+      `select
+          bm.brand_user_id as user_id,
+          u.tg_id,
+          u.tg_username,
+          bp.brand_name,
+          bm.created_at
+       from brand_managers bm
+       left join users u on u.id = bm.brand_user_id
+       left join brand_profiles bp on bp.user_id = bm.brand_user_id
+       where bm.manager_user_id = $1
+       order by bm.created_at desc`,
+      [managerUserId]
+    );
 
-  return r.rows || [];
+    return r.rows || [];
+  } catch (e) {
+    if (_isMissingBrandManagersTable(e)) return [];
+    throw e;
+  }
 }
 
 export async function deleteBrandProfile(userId) {
