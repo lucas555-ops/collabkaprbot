@@ -386,6 +386,97 @@ function mainMenuKb(flags = {}) {
 }
 
 
+function mainMenuCreatorKb(flags = {}) {
+  const { isModerator = false, isAdmin = false, isFolderEditor = false, isCurator = false } = flags;
+
+  const kb = new InlineKeyboard()
+    .text('🚀 Подключить канал', 'a:setup')
+    .text('📣 Мои каналы', 'a:ws_list')
+    .row()
+    .text('🎬 UGC / Офферы', 'a:bx_home')
+    .text('🎁 Розыгрыши', 'a:gw_list')
+    .row()
+    .text('🧭 Быстрый старт', 'a:guide')
+    .text('💬 Поддержка', 'a:support')
+    .row()
+    .text('🏷 Я бренд', 'a:ui_mode_set|m:brand|ret:menu');
+
+  const extra = [];
+  if (CFG.VERIFICATION_ENABLED) extra.push(['✅ Верификация', 'a:verify_home']);
+  if (isCurator) extra.push(['👤 Куратор', 'a:cur_home']);
+  if (isModerator) extra.push(['🛡 Модерация', 'a:mod_home']);
+  if (isAdmin) extra.push(['👑 Админка', 'a:admin_home']);
+
+  for (let i = 0; i < extra.length; i += 2) {
+    const a = extra[i];
+    const b = extra[i + 1];
+    kb.row().text(a[0], a[1]);
+    if (b) kb.text(b[0], b[1]);
+  }
+
+  if (isFolderEditor) kb.row().text('📁 Папки', 'a:folders_my');
+
+  return kb;
+}
+
+function mainMenuBrandKb(flags = {}) {
+  const { isModerator = false, isAdmin = false } = flags;
+
+  const kb = new InlineKeyboard()
+    .text('🛍 Лента', 'a:bx_feed|ws:0|p:0')
+    .text('🔎 Поиск креаторов', 'a:pm_home|ws:0')
+    .row()
+    .text('📨 Inbox', 'a:bx_inbox|ws:0|p:0')
+    .text('🎫 Brand Pass', 'a:brand_pass|ws:0')
+    .row()
+    .text('🏷 Профиль бренда', 'a:brand_profile|ws:0|ret:brand')
+    .text('⭐️ Подписка', 'a:brand_plan|ws:0')
+    .row()
+    .text('🧭 Быстрый старт', 'a:guide')
+    .text('💬 Поддержка', 'a:support')
+    .row()
+    .text('✨ Я Creator / канал', 'a:ui_mode_set|m:creator|ret:menu');
+
+  const extra = [];
+  if (CFG.VERIFICATION_ENABLED) extra.push(['✅ Верификация', 'a:verify_home']);
+  if (isModerator) extra.push(['🛡 Модерация', 'a:mod_home']);
+  if (isAdmin) extra.push(['👑 Админка', 'a:admin_home']);
+
+  for (let i = 0; i < extra.length; i += 2) {
+    const a = extra[i];
+    const b = extra[i + 1];
+    kb.row().text(a[0], a[1]);
+    if (b) kb.text(b[0], b[1]);
+  }
+
+  return kb;
+}
+
+async function renderMainMenu(ctx, flags, params = {}) {
+  const edit = params.edit !== false; // default true
+  const mode = await resolveUiMode(ctx.from?.id);
+  const modeHuman = uiModeHuman(mode);
+  const base = `🏠 <b>Главное меню</b>\n\n<b>Ты сейчас в режиме:</b> <b>${modeHuman}</b>\n`;
+  let text;
+  let kb;
+
+  if (mode === UI_MODES.BRAND) {
+    text = base + `\nДля брендов — поиск креаторов, лента офферов и Inbox.\n\nВыбери действие:`;
+    kb = mainMenuBrandKb(flags);
+  } else {
+    text = base + `\nДля Creator/UGC — подключение канала, витрина, лента и розыгрыши.\n\nВыбери действие:`;
+    kb = mainMenuCreatorKb(flags);
+  }
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (edit && ctx.callbackQuery?.message) {
+    await ctx.editMessageText(text, opts);
+  } else {
+    await ctx.reply(text, opts);
+  }
+}
+
+
 function curatorModeMenuKb(flags = {}) {
   const { isModerator = false, isAdmin = false } = flags;
   const kb = new InlineKeyboard()
@@ -426,6 +517,38 @@ function onboardingKb(flags = {}) {
   return kb;
 }
 
+function navKb(backCb) {
+  const kb = new InlineKeyboard();
+  if (backCb) kb.text('⬅️ Назад', backCb);
+  kb.text('🏠 Меню', 'a:menu');
+  return kb;
+}
+
+function expectBackCb(exp) {
+  if (!exp || !exp.type) return 'a:menu';
+  if (exp.backCb) return String(exp.backCb);
+  if (exp.back) return String(exp.back);
+  const t = String(exp.type || '');
+  const wsId = exp.wsId ? Number(exp.wsId) : null;
+  const gwId = exp.gwId ? Number(exp.gwId) : null;
+
+  if (t === 'curator_username') return wsId ? `a:cur_manage|ws:${wsId}` : 'a:menu';
+  if (t === 'curator_note') return (wsId && gwId) ? `a:cur_gw_open|ws:${wsId}|i:${gwId}` : 'a:cur_home';
+
+  if (t.startsWith('folder_')) return wsId ? `a:folders_home|ws:${wsId}` : 'a:menu';
+
+  if (t.startsWith('brand_')) return 'a:bx_open|ws:0';
+  if (t.startsWith('verify_')) return 'a:verify_home';
+
+  if (t.startsWith('wsp_')) return wsId ? `a:wsp_open|ws:${wsId}` : 'a:ws_list';
+  if (t.startsWith('gw_')) return wsId ? `a:gw_list_ws|ws:${wsId}` : 'a:gw_list';
+  if (t.startsWith('bx_')) return exp.back ? String(exp.back) : 'a:bx_open|ws:0';
+
+  if (t.startsWith('mod_verif_')) return 'a:mod_home';
+
+  return 'a:menu';
+}
+
 async function setActiveWorkspace(tgId, wsId) {
   await redis.set(k(['active_ws', tgId]), String(wsId), { ex: 30 * 24 * 3600 });
 }
@@ -443,6 +566,36 @@ async function setCuratorMode(tgId, enabled) {
 async function getCuratorMode(tgId) {
   const v = await redis.get(k(['cur_mode', tgId]));
   return String(v || '') === '1';
+}
+
+// UI mode: Creator vs Brand (reduce main menu overload)
+const UI_MODES = { CREATOR: 'creator', BRAND: 'brand' };
+
+function normalizeUiMode(mode) {
+  const m = String(mode || '').toLowerCase().trim();
+  if (m === 'brand') return UI_MODES.BRAND;
+  return UI_MODES.CREATOR;
+}
+
+async function setUiMode(tgId, mode) {
+  await redis.set(k(['ui_mode', tgId]), normalizeUiMode(mode), { ex: 365 * 24 * 3600 });
+}
+
+async function getUiMode(tgId) {
+  const v = await redis.get(k(['ui_mode', tgId]));
+  return normalizeUiMode(v || '');
+}
+
+async function resolveUiMode(tgId) {
+  // Default: Creator. Onboarding / explicit switch sets Brand.
+  const v = await redis.get(k(['ui_mode', tgId]));
+  if (v) return normalizeUiMode(v);
+  return UI_MODES.CREATOR;
+}
+
+function uiModeHuman(mode) {
+  const m = normalizeUiMode(mode);
+  return m === UI_MODES.BRAND ? 'Brand' : 'Creator';
 }
 
 
@@ -610,14 +763,23 @@ function wsSettingsKb(wsId, s) {
     .row()
     .text(cur, `a:ws_toggle_cur|ws:${wsId}`)
     .row()
-    .text('👤 Пригласить куратора', `a:cur_invite|ws:${wsId}`)
-    .row()
-    .text('➕ Добавить куратора по @username', `a:cur_add_username|ws:${wsId}`)
-    .row()
-    .text('👥 Список кураторов', `a:cur_list|ws:${wsId}`)
+    .text('👥 Управление кураторами', `a:cur_manage|ws:${wsId}`)
     .row()
     .text('⬅️ Назад', `a:ws_open|ws:${wsId}`);
 }
+
+function curManageKb(wsId) {
+  return new InlineKeyboard()
+    .text('👤 Пригласить ссылкой', `a:cur_invite|ws:${wsId}`)
+    .row()
+    .text('➕ Добавить по @username', `a:cur_add_username|ws:${wsId}`)
+    .row()
+    .text('👥 Список кураторов', `a:cur_list|ws:${wsId}`)
+    .row()
+    .text('⬅️ Назад', `a:ws_settings|ws:${wsId}`)
+    .text('🏠 Меню', 'a:menu');
+}
+
 
 function netConfirmKb(wsId, enabled, ret) {
   const actionLabel = enabled ? '❌ Выключить сеть' : '✅ Включить сеть';
@@ -648,14 +810,11 @@ async function renderNetConfirm(ctx, ownerUserId, wsId, ret = 'ws') {
 
 function curListKb(wsId, curators) {
   const kb = new InlineKeyboard();
-  kb.text('👤 Пригласить', `a:cur_invite|ws:${wsId}`)
-    .text('➕ Добавить', `a:cur_add_username|ws:${wsId}`)
-    .row();
   for (const c of curators) {
     const label = c.tg_username ? `@${c.tg_username}` : `id:${c.tg_id}`;
     kb.text(`🗑 ${label}`, `a:cur_rm_q|ws:${wsId}|u:${c.user_id}`).row();
   }
-  kb.text('⬅️ Назад', `a:ws_settings|ws:${wsId}`);
+  kb.text('⬅️ Назад', `a:cur_manage|ws:${wsId}`).text('🏠 Меню', 'a:menu');
   return kb;
 }
 
@@ -1503,6 +1662,7 @@ async function ensureWorkspaceForOwner(ctx, ownerUserId) {
   const wsList = await db.listWorkspaces(ownerUserId);
   if (!wsList.length) {
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+    try { await clearExpectText(ctx.from.id); } catch {}
     const flags = await getRoleFlags(u, ctx.from.id);
     await ctx.reply('Сначала подключи канал: нажми “🚀 Подключить канал”.', { reply_markup: mainMenuKb(flags) });
     return null;
@@ -1568,7 +1728,7 @@ async function renderWsSettings(ctx, ownerUserId, wsId) {
     network_enabled: s.network_enabled,
     curator_enabled: s.curator_enabled
   };
-  await ctx.editMessageText(`⚙️ <b>Настройки</b>
+  await ctx.editMessageText(`👥 <b>Кураторы и сеть</b>
 
 Канал: <b>${escapeHtml(ws.channel_username ? '@' + ws.channel_username : ws.title)}</b>`, {
     parse_mode: 'HTML',
@@ -5526,7 +5686,12 @@ export function getBot() {
       ctx.message.entities.some((e) => e.type === 'bot_command' && e.offset === 0);
 
     const exp = await getExpectText(ctx.from.id);
-    if (!exp) return next(); // allow commands like /start to reach bot.command()
+if (!exp) {
+  if (isCommand) return next(); // allow commands like /start to reach bot.command()
+  const flags = await getRoleFlags(null, ctx.from.id);
+  await renderMainMenu(ctx, flags, { edit: false });
+  return;
+}
 
     // If user sends a command while мы ждали ввод — не блокируем команду.
     if (isCommand) {
@@ -5538,7 +5703,17 @@ export function getBot() {
     const tgId = Number(ctx.from.id);
     await clearExpectText(ctx.from.id);
 
-    // Add curator by username
+// Default navigation keyboard for any "text input" step.
+// Prevents "what next?" dead-ends when we ask user to type something.
+const backCb = expectBackCb(exp);
+const _reply = ctx.reply.bind(ctx);
+ctx.reply = (text, extra) => {
+  const opts = extra ? { ...extra } : {};
+  if (!opts.reply_markup) opts.reply_markup = navKb(backCb);
+  return _reply(text, opts);
+};
+
+// Add curator by username
     if (exp.type === 'curator_username') {
       const txt = String(ctx.message.text || '').trim();
       const m = txt.match(/^@?([a-zA-Z0-9_]{5,})$/);
@@ -7181,11 +7356,15 @@ if (payload?.type === 'bxo') {
       return;
     }
     if (CFG.ONBOARDING_V2_ENABLED) {
-      await ctx.reply('Привет! 👋\n\nЭто <b>UGC/Collab CRM</b> в Telegram.\nIG → лиды. TG → сделки.\n\nВыбери роль — и я покажу быстрый старт:', { parse_mode: 'HTML', reply_markup: onboardingKb(flags) });
-      return;
-    }
-    await ctx.reply(`🏠 <b>Главное меню</b>\n\nЭто <b>UGC/Collab CRM</b> в Telegram.\nIG → лиды. TG → сделки.\n\nЗдесь ты можешь:\n• 🚀 подключить канал (workspace)\n• 🪟 сделать витрину (профиль) и поставить ссылку в IG\n• 📨 принимать заявки брендов и вести статусы (CRM)\n• 🎬 смотреть ленту UGC/офферов, размещать свои, вести Inbox\n• 🎁 запускать розыгрыши (опционально — для активаций)\n• 🏷 брендам: Brand Pass/Plan (анти‑спам + инструменты)\n\nВыбери действие:`, { parse_mode: 'HTML', reply_markup: mainMenuKb(flags) });
-    await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
+  const existingMode = await redis.get(k(['ui_mode', ctx.from.id]));
+  if (!existingMode) {
+    await ctx.reply('Привет! 👋\n\nЭто <b>UGC/Collab CRM</b> в Telegram.\nIG → лиды. TG → сделки.\n\nВыбери роль — и я покажу быстрый старт:', { parse_mode: 'HTML', reply_markup: onboardingKb(flags) });
+    return;
+  }
+}
+
+await renderMainMenu(ctx, flags, { edit: false });
+await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
 
     } catch (e) {
       console.error('[START] error', {
@@ -7568,6 +7747,28 @@ bot.on('message:successful_payment', async (ctx) => {
 
   const p = parseCb(ctx.callbackQuery.data);
     const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+    // Cancel any pending text input step when user clicks an inline button
+    try { await clearExpectText(ctx.from.id); } catch {}
+if (p.a === 'a:ui_mode_set') {
+  await ctx.answerCallbackQuery();
+  const mode = normalizeUiMode(p.m);
+  await setUiMode(ctx.from.id, mode);
+
+  const flags = await getRoleFlags(u, ctx.from.id);
+  const curMode = !!flags.isCurator && (await getCuratorMode(ctx.from.id));
+  if (curMode) {
+    await ctx.editMessageText(
+      `🧹 <b>Режим куратора</b> включен.\n\nДля простоты я скрываю лишнее меню.\n\nТы сейчас в режиме: <b>Curator</b>`,
+      { parse_mode: 'HTML', reply_markup: curatorModeMenuKb(flags) }
+    );
+    return;
+  }
+
+  await renderMainMenu(ctx, flags, { edit: true });
+  return;
+}
+
+
 
     // MENU
     if (p.a === 'a:menu') {
@@ -7584,118 +7785,7 @@ bot.on('message:successful_payment', async (ctx) => {
         });
         return;
       }
-      await ctx.editMessageText(`🏠 <b>Главное меню</b>
-
-Это <b>UGC/Collab CRM</b> в Telegram.
-IG → лиды. TG → сделки.
-
-Здесь ты можешь:
-• 🚀 подключить канал (workspace)
-• 🪟 сделать витрину (профиль) и поставить ссылку в IG
-• 📨 принимать заявки брендов и вести статусы (CRM)
-• 🎬 смотреть ленту UGC/офферов, размещать свои, вести Inbox
-• 🎁 запускать розыгрыши (опционально — для активаций)
-• 🏷 брендам: Brand Pass/Plan (анти‑спам + инструменты)
-
-Выбери действие:`, { parse_mode: 'HTML', reply_markup: mainMenuKb(flags) });
-      await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
-      return;
-    }
-
-    
-    
-    if (p.a === 'a:guide') {
-      await ctx.answerCallbackQuery();
-      await clearExpectText(ctx.from.id);
-
-      const text =
-`🧭 <b>Быстрый старт</b>
-
-1) 🚀 Подключи канал (workspace)
-2) 🪟 Заполни витрину: IG, портфолио, ниши/форматы, контакт
-3) 🔗 Поставь ссылку витрины в Instagram bio / stories
-4) 📨 Принимай заявки брендов и веди статусы (CRM)
-5) 🎬 UGC / Офферы: лента, размещение, Inbox
-6) 🎁 Розыгрыши — опционально, если нужны активации/промо
-7) 🏷 Для брендов: Brand Pass/Plan (анти‑спам)
-
-👤 Если ведёшь канал с командой — добавь куратора: Мои каналы → 👥 Кураторы → Пригласить куратора
-
-Выбери раздел:`;
-
-      const kb = new InlineKeyboard()
-        .text('🚀 Подключить канал', 'a:setup')
-        .text('📣 Мои каналы', 'a:ws_list')
-        .row()
-        .text('🎁 Розыгрыши', 'a:gw_list')
-        .text('🎬 UGC / Офферы', 'a:bx_home')
-        .row()
-        .text('⬅️ Меню', 'a:menu');
-
-      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
-      await maybeSendBanner(ctx, 'guide', CFG.GUIDE_BANNER_FILE_ID);
-      return;
-    }
-
-    if (p.a === 'a:support') {
-      await ctx.answerCallbackQuery();
-      await clearExpectText(ctx.from.id);
-
-      const text = String(CFG.PAY_SUPPORT_TEXT || '').trim() ||
-        `💬 <b>Support</b>\n\nНапиши сюда: @collabka_support`;
-
-      const kb = new InlineKeyboard().text('⬅️ Меню', 'a:menu');
-      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
-      return;
-    }
-
-    // Curator UI mode toggle
-    if (p.a === 'a:cur_mode_set') {
-      const enabled = String(p.v) === '1';
-      const ret = String(p.ret || 'menu');
-      await setCuratorMode(ctx.from.id, enabled);
-      await ctx.answerCallbackQuery({ text: enabled ? '✅ Режим куратора включен' : '🔓 Обычный режим' });
-
-      const flags = await getRoleFlags(u, ctx.from.id);
-      if (enabled) {
-        if (ret === 'cur') {
-          await renderCuratorHome(ctx, u.id);
-          return;
-        }
-        await ctx.editMessageText(`👤 <b>Режим куратора</b>
-
-Здесь показаны только действия куратора, чтобы не путаться.
-Чтобы вернуть полное меню — нажми “🔓 Обычный режим”.`, {
-          parse_mode: 'HTML',
-          reply_markup: curatorModeMenuKb(flags)
-        });
-        return;
-      }
-
-      // back to full menu
-      if (ret === 'cur') {
-        // if user toggled from curator cabinet, return there but with full mode
-        await renderCuratorHome(ctx, u.id);
-        return;
-      }
-
-      await ctx.editMessageText(`🏠 <b>Главное меню</b>
-
-Это <b>UGC/Collab CRM</b> в Telegram.
-IG → лиды. TG → сделки.
-
-Здесь ты можешь:
-• 🚀 подключить канал (workspace)
-• 🪟 сделать витрину (профиль) и поставить ссылку в IG
-• 📨 принимать заявки брендов и вести статусы (CRM)
-• 🎬 смотреть ленту UGC/офферов, размещать свои, вести Inbox
-• 🎁 запускать розыгрыши (опционально — для активаций)
-• 🏷 брендам: Brand Pass/Plan (анти‑спам + инструменты)
-
-Выбери действие:`, {
-        parse_mode: 'HTML',
-        reply_markup: mainMenuKb(flags)
-      });
+      await renderMainMenu(ctx, flags, { edit: true });
       await maybeSendBanner(ctx, 'menu', CFG.MENU_BANNER_FILE_ID);
       return;
     }
@@ -8106,6 +8196,7 @@ if (p.a === 'a:lead_set') {
 // ONBOARDING V2 (feature-flag)
     if (p.a === 'a:onb_creator') {
       await ctx.answerCallbackQuery();
+      await setUiMode(ctx.from.id, UI_MODES.CREATOR);
       const text =
         '✨ <b>Creator / Канал</b>\n\n' +
         'Это UGC/Collab CRM: IG → лиды, TG → сделки.\n\n' +
@@ -8128,6 +8219,7 @@ if (p.a === 'a:lead_set') {
 
     if (p.a === 'a:onb_brand') {
       await ctx.answerCallbackQuery();
+      await setUiMode(ctx.from.id, UI_MODES.BRAND);
       const text =
         '🏷 <b>Brand / Бренд</b>\n\n' +
         'Нашли креатора в Instagram → открываете витрину → закрываете сделку в Telegram.\n\n' +
@@ -9012,6 +9104,7 @@ if (p.a === 'a:match_home') {
     if (p.a === 'a:bx_open') {
       const wsId = Number(p.ws);
       await ctx.answerCallbackQuery();
+      if (wsId === 0) await setUiMode(ctx.from.id, UI_MODES.BRAND);
       if (wsId === 0) await maybeSendBanner(ctx, 'brand', CFG.BRAND_BANNER_FILE_ID);
       await renderBxOpen(ctx, u.id, wsId);
       return;
@@ -10054,6 +10147,22 @@ if (p.a === 'a:bx_cat') {
     }
 
     // Curators
+if (p.a === 'a:cur_manage') {
+  const wsId = Number(p.ws);
+  const ws = await db.getWorkspace(u.id, wsId);
+  if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
+
+  const curators = await db.listCurators(wsId);
+  const count = curators?.length || 0;
+
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(
+    `👥 <b>Кураторы</b>\n\nКураторы помогают проверять конкурсы и заявки.\n\nСейчас в списке: <b>${count}</b>`,
+    { parse_mode: 'HTML', reply_markup: curManageKb(wsId) }
+  );
+  return;
+}
+
     if (p.a === 'a:cur_invite') {
       const wsId = Number(p.ws);
       const ws = await db.getWorkspace(u.id, wsId);
@@ -10075,7 +10184,7 @@ if (p.a === 'a:bx_cat') {
         reply_markup: new InlineKeyboard()
           .url('📤 Поделиться', shareUrl)
           .row()
-          .text('⬅️ Назад', `a:ws_settings|ws:${wsId}`)
+          .text('⬅️ Назад', `a:cur_manage|ws:${wsId}`)
       });
       return;
     }
@@ -10086,7 +10195,9 @@ if (p.a === 'a:bx_cat') {
       if (!ws) return ctx.answerCallbackQuery({ text: 'Нет доступа.' });
       await ctx.answerCallbackQuery();
       await ctx.editMessageText('➕ Введи @username куратора (он должен уже запускать бота /start).', {
-        reply_markup: new InlineKeyboard().text('⬅️ Назад', `a:ws_settings|ws:${wsId}`)
+        reply_markup: new InlineKeyboard()
+          .text('⬅️ Назад', `a:cur_manage|ws:${wsId}`)
+          .text('🏠 Меню', 'a:menu')
       });
       await setExpectText(ctx.from.id, { type: 'curator_username', wsId });
       return;
