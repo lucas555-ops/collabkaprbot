@@ -1834,9 +1834,59 @@ function fmtMatrix(keys, dict, empty = '—') {
 
 function fmtMatrixList(ids, dict, empty = '—') {
   const arr = Array.isArray(ids) ? ids : [];
-  // Prefer human labels from dict when available; otherwise keep raw value as fallback.
+
+  // Aliases for legacy / short keys (some DB rows store simplified enums like 'kids', 'jewelry', 'reels').
+  const ALIAS_VERTICALS = {
+    kids: '🧸 Дети / семья',
+    jewelry: '💍 Украшения / аксессуары',
+    accessories: '💍 Украшения / аксессуары',
+    beauty: '💄 Косметика / уход',
+    fitness: '🧘 Фитнес / здоровье',
+    health: '🧘 Фитнес / здоровье',
+    tech: '📱 Тех / гаджеты',
+    food: '🍽 Еда / кафе / FMCG',
+    cafe: '🍽 Еда / кафе / FMCG',
+    home: '🏠 Дом / декор',
+    decor: '🏠 Дом / декор',
+    services: '🎓 Сервисы / обучение',
+    education: '🎓 Сервисы / обучение',
+    fashion: '👗 Одежда / обувь',
+    clothes: '👗 Одежда / обувь',
+    shoes: '👗 Одежда / обувь',
+  };
+
+  const ALIAS_FORMATS = {
+    reels: '🎬 Вертикальное видео (Reels/TikTok)',
+    tiktok: '🎬 Вертикальное видео (Reels/TikTok)',
+    vertical_video: '🎬 Вертикальное видео (Reels/TikTok)',
+    howto: '🧠 How‑to / инструкция',
+    how_to: '🧠 How‑to / инструкция',
+    instruction: '🧠 How‑to / инструкция',
+    voice: '🎙 Voice-over / без лица',
+    voice_over: '🎙 Voice-over / без лица',
+    talking: '🗣 Говорящая голова / отзыв',
+    ugc_ads: '🎯 UGC для рекламы (файлы)',
+    ugc: '🎯 UGC для рекламы (файлы)',
+    giveaway: '🎁 Розыгрыш (опционально)',
+    unboxing: '📦 Unboxing / распаковка',
+    photo: '🖼 Фото / карусель',
+    tryon: '👗 Try-on / примерка',
+    review: '⭐ Review / честный обзор',
+    stories: '📰 Stories / вставки',
+  };
+
+  const useAlias = (x) => {
+    if (!x) return null;
+    const key = String(x).trim();
+    const isVert = (typeof PROFILE_VERTICALS !== 'undefined') && (dict === PROFILE_VERTICALS);
+    const isFmt  = (typeof PROFILE_FORMATS !== 'undefined') && (dict === PROFILE_FORMATS);
+    if (isVert) return ALIAS_VERTICALS[key] || null;
+    if (isFmt)  return ALIAS_FORMATS[key] || null;
+    return null;
+  };
+
   const items = arr
-    .map((x) => (dict && dict[x]) ? dict[x] : x)
+    .map((x) => (dict && dict[x]) ? dict[x] : (useAlias(x) || x))
     .filter((x) => typeof x === 'string' && x.trim().length);
 
   if (!items.length) return empty;
