@@ -1832,6 +1832,14 @@ function fmtMatrix(keys, dict, empty = '—') {
   return titles.length ? titles.join(', ') : empty;
 }
 
+function fmtMatrixList(ids, dict, empty = '—') {
+  const arr = Array.isArray(ids) ? ids : [];
+  const items = arr.map((id) => dict[id]).filter(Boolean);
+  if (!items.length) return empty;
+  return items.map((x) => `• ${x}`).join('\n');
+}
+
+
 
 
 function wsIgHandleFromWs(ws) {
@@ -1896,14 +1904,13 @@ const link = wsBrandLink(wsId);
   const titleRaw = String(ws.profile_title || fallbackTitle || 'Creator');
   const title = titleRaw.replace(/^@/, '').trim();
 
-  const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
-  const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
+  const verticals = fmtMatrixList(ws.profile_verticals, PROFILE_VERTICALS, '—');
+  const formats = fmtMatrixList(ws.profile_formats, PROFILE_FORMATS, '—');
   const about = String(ws.profile_about || '').trim();
 
   if (v === 'long') {
     let t =
-      `👋 Привет! Я делаю коллабы / UGC.\n\n` +
-      `👤 ${title}\n` +
+      `👋 Привет! Я делаю коллабы / UGC.\n\n`+
       (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
       `🏷 Ниши: ${verticals}\n` +
       `🎬 Форматы: ${formats}\n` +
@@ -1928,14 +1935,13 @@ const link = wsBrandLink(wsId);
   const titleRaw = String(ws.profile_title || fallbackTitle || 'Creator');
   const title = titleRaw.replace(/^@/, '').trim();
 
-  const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
-  const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
+  const verticals = fmtMatrixList(ws.profile_verticals, PROFILE_VERTICALS, '—');
+  const formats = fmtMatrixList(ws.profile_formats, PROFILE_FORMATS, '—');
   const about = String(ws.profile_about || '').trim();
 
   if (v === 'long') {
     let t =
-      `👋 Привет! Я делаю коллабы / UGC.\n\n` +
-      `👤 ${title}\n` +
+      `👋 Привет! Я делаю коллабы / UGC.\n\n`+
       (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
       `🏷 Ниши: ${verticals}\n` +
       `🎬 Форматы: ${formats}\n` +
@@ -2210,14 +2216,13 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const fallbackTitle = ws.channel_username ? ('@' + String(ws.channel_username).replace(/^@/, '')) : (ws.title || 'Creator');
   const titleRaw = String(ws.profile_title || fallbackTitle || 'Creator');
     const title = titleRaw.replace(/^@/, '').trim();
-    const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
-    const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
+    const verticals = fmtMatrixList(ws.profile_verticals, PROFILE_VERTICALS, '—');
+    const formats = fmtMatrixList(ws.profile_formats, PROFILE_FORMATS, '—');
     const about = String(ws.profile_about || '').trim();
 
     if (String(variant) === 'long') {
       let t =
-        `👋 Привет! Я делаю коллабы / UGC.\n\n` +
-        `👤 ${title}\n` +
+        `👋 Привет! Я делаю коллабы / UGC.\n\n`+
         (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
         `🏷 Ниши: ${verticals}\n` +
         `🎬 Форматы: ${formats}\n` +
