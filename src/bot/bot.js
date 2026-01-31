@@ -2210,6 +2210,11 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const ig = wsIgHandleFromWs(ws);
   const igUrl = wsIgUrlFromWs(ws);
   const plain = (() => {
+    const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
+    const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
+    const about = String(ws.profile_about || '').trim();
+    const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls.filter(Boolean).slice(0, 3) : [];
+
     if (String(variant) === 'long') {
       let t =
         `👋 Привет! Я делаю коллабы / UGC.\n\n` +
@@ -2217,9 +2222,14 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
         (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
         (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
         (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
-        `Чтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
+        `🏷 Ниши: ${verticals}\n` +
+        `🎬 Форматы: ${formats}\n` +
+        (about ? `\nКоротко:\n${about}\n` : '') +
+        (ports.length ? `\nПортфолио:\n` + ports.map(u => `• ${String(u)}`).join('\n') + `\n` : '') +
+        `\nЧтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
       return t;
     }
+
     // short
     let t =
       `👋 Привет! Я делаю коллабы / UGC.\n` +
@@ -2228,11 +2238,8 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
       (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
       `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
     return t;
-  })();
-
-  const plainShare = plain.replace(/^🔗\s*Витрина:.*\n?/m, '').trim();
-
-  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link || '')}&text=${encodeURIComponent(plainShare)}`;
+  })();;
+  const shareUrl = `https://t.me/share/url?url=&text=${encodeURIComponent(plain)}`;
 
   const kb = new InlineKeyboard()
     .url('📨 Отправить', shareUrl)
@@ -9989,7 +9996,7 @@ if (p.a === 'a:bx_cat') {
       const text = `👤 <b>Приглашение куратора</b>\n\nСсылка (одноразовая • 10 минут):\n${escapeHtml(link)}\n\nНажми “Поделиться” и отправь приглашение нужному человеку.`;
 
       const shareText = `Приглашение куратора (одноразовая, 10 минут).\nОткрой ссылку: ${link}`;
-      const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`;
+      const shareUrl = `https://t.me/share/url?url=&text=${encodeURIComponent(shareText)}`;
       await ctx.answerCallbackQuery();
       await ctx.editMessageText(text, {
         parse_mode: 'HTML',
