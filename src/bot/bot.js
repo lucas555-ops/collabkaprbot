@@ -1888,30 +1888,25 @@ function formatWsContactCard(ws, wsId) {
 }
 
 function buildWsShareText(ws, wsId, variant = 'short') {
-  const link = wsBrandLink(wsId);
-  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
-  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : null;
+const link = wsBrandLink(wsId);
 
-  const ig = wsIgHandleFromWs(ws);
-  const igUrl = wsIgUrlFromWs(ws);
+  // UI text shown inside bot (short/long preview).
+  const v = String(variant || 'short');
+  const titleRaw = String(ws.profile_title || channel || 'Creator');
+  const title = titleRaw.replace(/^@/, '').trim();
 
   const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
   const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
-
   const about = String(ws.profile_about || '').trim();
-  const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls.filter(Boolean).slice(0, 3) : [];
 
-  if (String(variant) === 'long') {
+  if (v === 'long') {
     let t =
       `👋 Привет! Я делаю коллабы / UGC.\n\n` +
-      `👤 <b>${escapeHtml(String(ws.profile_title || channel))}</b>\n` +
-      `📣 TG: ${channelUrl ? `<a href="${escapeHtml(channelUrl)}">${escapeHtml(channel)}</a>` : `<b>${escapeHtml(channel)}</b>`}\n` +
-      (igUrl ? `📸 IG: <a href="${escapeHtml(igUrl)}">${escapeHtml(shortUrl(igUrl))}</a> <code>@${escapeHtml(ig)}</code>\n` : '') +
-      (link ? `🔗 Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '\n') +
-      `🏷 Ниши: <b>${escapeHtml(verticals)}</b>\n` +
-      `🎬 Форматы: <b>${escapeHtml(formats)}</b>\n` +
-      (about ? `\n<b>Коротко:</b>\n${escapeHtml(about)}\n` : '') +
-      (ports.length ? `\n<b>Портфолио:</b>\n` + ports.map(u => `• ${escapeHtml(String(u))}`).join('\n') + '\n' : '\n') +
+      `👤 ${title}\n` +
+      (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
+      `🏷 Ниши: ${verticals}\n` +
+      `🎬 Форматы: ${formats}\n` +
+      (about ? `\nКоротко:\n${about}\n` : '') +
       `\nЧтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
     return t;
   }
@@ -1919,36 +1914,36 @@ function buildWsShareText(ws, wsId, variant = 'short') {
   // short
   let t =
     `👋 Привет! Я делаю коллабы / UGC.\n` +
-    (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
-    (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
     (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
     `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
-  return escapeHtml(t).replace(/\n/g, '\n');
+  return t;
 }
 
 function buildWsSharePlain(ws, wsId, variant = 'short') {
-  const link = wsBrandLink(wsId) || '';
-  const channel = ws.channel_username ? '@' + String(ws.channel_username).replace(/^@/, '') : (ws.title || 'канал');
-  const channelUrl = ws.channel_username ? `https://t.me/${String(ws.channel_username).replace(/^@/, '')}` : '';
-  const ig = wsIgHandleFromWs(ws);
-  const igUrl = wsIgUrlFromWs(ws);
+const link = wsBrandLink(wsId);
 
-  if (String(variant) === 'long') {
+  const v = String(variant || 'short');
+  const titleRaw = String(ws.profile_title || channel || 'Creator');
+  const title = titleRaw.replace(/^@/, '').trim();
+
+  const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
+  const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
+  const about = String(ws.profile_about || '').trim();
+
+  if (v === 'long') {
     let t =
       `👋 Привет! Я делаю коллабы / UGC.\n\n` +
-      `👤 ${String(ws.profile_title || channel)}\n` +
-      (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
-      (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+      `👤 ${title}\n` +
       (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
-      `Чтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
+      `🏷 Ниши: ${verticals}\n` +
+      `🎬 Форматы: ${formats}\n` +
+      (about ? `\nКоротко:\n${about}\n` : '') +
+      `\nЧтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
     return t;
   }
 
-  // short
   let t =
     `👋 Привет! Я делаю коллабы / UGC.\n` +
-    (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
-    (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
     (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
     `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
   return t;
@@ -2210,22 +2205,20 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const ig = wsIgHandleFromWs(ws);
   const igUrl = wsIgUrlFromWs(ws);
   const plain = (() => {
+    const titleRaw = String(ws.profile_title || channel || 'Creator');
+    const title = titleRaw.replace(/^@/, '').trim();
     const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
     const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
     const about = String(ws.profile_about || '').trim();
-    const ports = Array.isArray(ws.profile_portfolio_urls) ? ws.profile_portfolio_urls.filter(Boolean).slice(0, 3) : [];
 
     if (String(variant) === 'long') {
       let t =
         `👋 Привет! Я делаю коллабы / UGC.\n\n` +
-        `👤 ${String(ws.profile_title || channel)}\n` +
-        (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
-        (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
+        `👤 ${title}\n` +
         (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
         `🏷 Ниши: ${verticals}\n` +
         `🎬 Форматы: ${formats}\n` +
         (about ? `\nКоротко:\n${about}\n` : '') +
-        (ports.length ? `\nПортфолио:\n` + ports.map(u => `• ${String(u)}`).join('\n') + `\n` : '') +
         `\nЧтобы оставить заявку: открой витрину и нажми «📝 Оставить заявку».`;
       return t;
     }
@@ -2233,12 +2226,10 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
     // short
     let t =
       `👋 Привет! Я делаю коллабы / UGC.\n` +
-      (igUrl ? `📸 IG: ${igUrl} (@${ig})\n` : '') +
-      (channelUrl ? `📣 TG: ${channelUrl}\n` : '') +
       (link ? `🔗 Витрина: ${link}\n\n` : '\n') +
       `Оставь заявку: открой витрину и нажми «📝 Оставить заявку».`;
     return t;
-  })();;
+  })();;;
   const shareUrl = `https://t.me/share/url?url=${encodeURIComponent('⁠')}&text=${encodeURIComponent(plain)}`;
 
   const kb = new InlineKeyboard()
