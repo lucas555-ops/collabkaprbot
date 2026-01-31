@@ -54,6 +54,9 @@ export function parseStartPayload(text) {
   m = t.match(/\/start\s+bxth_(\d+)/);
   if (m) return { type: 'bxth', id: Number(m[1]) };
 
+  m = t.match(/\/start\s+bminv_(\w+)/);
+  if (m) return { type: 'bminv', token: m[1] };
+
   m = t.match(/\/start\s+wsp_(\d+)/);
   if (m) return { type: 'wsp', wsId: Number(m[1]) };
 
