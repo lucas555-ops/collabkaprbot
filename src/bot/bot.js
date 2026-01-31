@@ -911,6 +911,38 @@ function brandTeamKb() {
     .text('⬅️ Назад', 'a:menu');
 }
 
+function brandManagersMissingText() {
+  const sql = `create table if not exists brand_managers (
+  brand_user_id bigint not null references users(id) on delete cascade,
+  manager_user_id bigint not null references users(id) on delete cascade,
+  added_by_user_id bigint references users(id),
+  created_at timestamptz not null default now(),
+  primary key (brand_user_id, manager_user_id)
+);
+
+create index if not exists idx_brand_managers_manager
+  on brand_managers(manager_user_id);`;
+
+  return `⚠️ <b>Команда бренда ещё не включена</b>
+
+В базе данных нет таблицы <code>brand_managers</code>.
+Нужно применить миграцию <b>026_brand_managers.sql</b>.
+
+Как сделать (через браузер):
+1) Открой Neon → SQL Editor
+2) Вставь SQL ниже и выполни
+
+<pre>${escapeHtml(sql)}</pre>
+
+После этого раздел «👥 Команда бренда» и инвайты заработают.`;
+}
+
+function brandManagersMissingKb() {
+  return new InlineKeyboard()
+    .text('🏠 Меню', 'a:menu')
+    .text('⬅️ Назад', 'a:menu');
+}
+
 function brandManagersListKb(managers) {
   const kb = new InlineKeyboard();
   for (const m of managers) {
@@ -7552,7 +7584,15 @@ ${list}
 
       if (!brandUserId) return ctx.reply('Ссылка недействительна.');
 
-      await db.addBrandManager(brandUserId, u.id, addedByUserId || u.id);
+      try {
+        await db.addBrandManager(brandUserId, u.id, addedByUserId || u.id);
+      } catch (e) {
+        if (e?.code === 'MIGRATION_MISSING_BRAND_MANAGERS' || String(e?.message || '').includes('MIGRATION_MISSING_BRAND_MANAGERS')) {
+          await ctx.reply(brandManagersMissingText(), { parse_mode: 'HTML', reply_markup: brandManagersMissingKb() });
+          return;
+        }
+        throw e;
+      }
 
       let brandLabel = null;
       const prof = await safeBrandProfiles(() => db.getBrandProfile(brandUserId), async () => null);
@@ -8957,6 +8997,16 @@ if (p.a === 'a:ws_prof_mode') {
         return;
       }
 
+      const ready = (typeof db.brandManagersTableReady === 'function') ? await db.brandManagersTableReady() : true;
+      if (!ready) {
+        await ctx.editMessageText(brandManagersMissingText(), {
+          parse_mode: 'HTML',
+          reply_markup: brandManagersMissingKb(),
+          disable_web_page_preview: true,
+        });
+        return;
+      }
+
       const managers = await db.listBrandManagers(u.id);
       const count = managers.length;
 
@@ -8973,6 +9023,15 @@ if (p.a === 'a:ws_prof_mode') {
 
     if (p.a === 'a:bm_invite') {
       await ctx.answerCallbackQuery();
+      const ready = (typeof db.brandManagersTableReady === 'function') ? await db.brandManagersTableReady() : true;
+      if (!ready) {
+        await ctx.editMessageText(brandManagersMissingText(), {
+          parse_mode: 'HTML',
+          reply_markup: brandManagersMissingKb(),
+          disable_web_page_preview: true,
+        });
+        return;
+      }
       const token = randomToken(10);
       await redis.set(
         k(['bm_invite', token]),
@@ -8998,6 +9057,15 @@ ${link}`;
 
     if (p.a === 'a:bm_add_username') {
       await ctx.answerCallbackQuery();
+      const ready = (typeof db.brandManagersTableReady === 'function') ? await db.brandManagersTableReady() : true;
+      if (!ready) {
+        await ctx.editMessageText(brandManagersMissingText(), {
+          parse_mode: 'HTML',
+          reply_markup: brandManagersMissingKb(),
+          disable_web_page_preview: true,
+        });
+        return;
+      }
       await setExpectText(ctx.from.id, { type: 'bm_username' });
       await ctx.editMessageText('Введи @username менеджера одним сообщением (пример: @manager).', {
         reply_markup: navKb('a:brand_team|ws:0'),
@@ -9007,6 +9075,15 @@ ${link}`;
 
     if (p.a === 'a:bm_list') {
       await ctx.answerCallbackQuery();
+      const ready = (typeof db.brandManagersTableReady === 'function') ? await db.brandManagersTableReady() : true;
+      if (!ready) {
+        await ctx.editMessageText(brandManagersMissingText(), {
+          parse_mode: 'HTML',
+          reply_markup: brandManagersMissingKb(),
+          disable_web_page_preview: true,
+        });
+        return;
+      }
       const managers = await db.listBrandManagers(u.id);
       if (!managers.length) {
         await ctx.editMessageText('Пока менеджеров нет. Добавь менеджера через приглашение или по @username.', {
@@ -9046,6 +9123,15 @@ ${link}`;
       await ctx.answerCallbackQuery();
       const managerUserId = Number(p.u || 0);
       if (!managerUserId) return;
+      const ready = (typeof db.brandManagersTableReady === 'function') ? await db.brandManagersTableReady() : true;
+      if (!ready) {
+        await ctx.editMessageText(brandManagersMissingText(), {
+          parse_mode: 'HTML',
+          reply_markup: brandManagersMissingKb(),
+          disable_web_page_preview: true,
+        });
+        return;
+      }
       await db.removeBrandManager(u.id, managerUserId);
       // refresh list
       const managers = await db.listBrandManagers(u.id);
