@@ -2182,16 +2182,7 @@ async function renderWsShareMenu(ctx, ownerUserId, wsId) {
     (link ? `Витрина: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a>\n\n` : '') +
     `Выбери вариант:`;
 
-  const plainShort = buildWsSharePlain(ws, wsId, 'short');
-  const plainLong = buildWsSharePlain(ws, wsId, 'long');
-
-  const shareUrlShort = `https://t.me/share/url?url=&text=${encodeURIComponent(plainShort)}`;
-  const shareUrlLong = `https://t.me/share/url?url=&text=${encodeURIComponent(plainLong)}`;
-
   const kb = new InlineKeyboard()
-    .url('📨 Отправить (коротко)', shareUrlShort)
-    .url('📨 Отправить (подробно)', shareUrlLong)
-    .row()
     .text('📄 Коротко', `a:ws_share_send|ws:${wsId}|v:short`)
     .text('📄 Подробно', `a:ws_share_send|ws:${wsId}|v:long`)
     .row()
@@ -2239,7 +2230,9 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
     return t;
   })();
 
-  const shareUrl = `https://t.me/share/url?url=&text=${encodeURIComponent(plain)}`;
+  const plainShare = plain.replace(/^🔗\s*Витрина:.*\n?/m, '').trim();
+
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link || '')}&text=${encodeURIComponent(plainShare)}`;
 
   const kb = new InlineKeyboard()
     .url('📨 Отправить', shareUrl)
