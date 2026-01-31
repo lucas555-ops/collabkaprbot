@@ -2263,7 +2263,7 @@ export async function addBrandManager(brandUserId, managerUserId, addedByUserId 
 
   if (!brandUserId || !managerUserId) throw new Error('addBrandManager: bad ids');
 
-  await q(
+  await pool.query(
     `insert into brand_managers (brand_user_id, manager_user_id, added_by_user_id)
      values ($1, $2, $3)
      on conflict (brand_user_id, manager_user_id) do nothing`,
@@ -2279,7 +2279,7 @@ export async function removeBrandManager(brandUserId, managerUserId) {
 
   if (!brandUserId || !managerUserId) throw new Error('removeBrandManager: bad ids');
 
-  await q(
+  await pool.query(
     `delete from brand_managers
      where brand_user_id = $1 and manager_user_id = $2`,
     [brandUserId, managerUserId]
@@ -2293,7 +2293,7 @@ export async function isBrandManager(brandUserId, managerUserId) {
   managerUserId = Number(managerUserId);
   if (!brandUserId || !managerUserId) return false;
 
-  const r = await q(
+  const r = await pool.query(
     `select 1 as ok
      from brand_managers
      where brand_user_id = $1 and manager_user_id = $2
@@ -2308,7 +2308,7 @@ export async function listBrandManagers(brandUserId) {
   brandUserId = Number(brandUserId);
   if (!brandUserId) throw new Error('listBrandManagers: bad brandUserId');
 
-  const r = await q(
+  const r = await pool.query(
     `select
         bm.manager_user_id as user_id,
         u.tg_id,
@@ -2328,7 +2328,7 @@ export async function listBrandsForManager(managerUserId) {
   managerUserId = Number(managerUserId);
   if (!managerUserId) throw new Error('listBrandsForManager: bad managerUserId');
 
-  const r = await q(
+  const r = await pool.query(
     `select
         bm.brand_user_id as user_id,
         u.tg_id,
