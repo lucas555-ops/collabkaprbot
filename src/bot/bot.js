@@ -419,21 +419,34 @@ function mainMenuCreatorKb(flags = {}) {
   return kb;
 }
 
-function mainMenuBrandKb(flags = {}) {
+function mainMenuBrandKb(flags = {}, opts = {}) {
   const { isModerator = false, isAdmin = false } = flags;
+  const { isManager = false, hasMultipleBrands = false, canManager = false } = opts;
 
   const kb = new InlineKeyboard()
     .text('🛍 Лента', 'a:bx_feed|ws:0|p:0')
     .text('🔎 Поиск креаторов', 'a:pm_home|ws:0')
     .row()
-    .text('📨 Inbox', 'a:bx_inbox|ws:0|p:0')
-    .text('🎫 Brand Pass', 'a:brand_pass|ws:0')
-    .row()
-    .text('🏷 Профиль бренда', 'a:brand_profile|ws:0|ret:brand')
-    .text('⭐️ Подписка', 'a:brand_plan|ws:0')
-    .row()
-    .text('👥 Команда бренда', 'a:brand_team|ws:0')
-    .row()
+    .text('📨 Inbox', 'a:bx_inbox|ws:0|p:0');
+
+  if (!isManager) {
+    kb.text('🎫 Brand Pass', 'a:brand_pass|ws:0')
+      .row()
+      .text('🏷 Профиль бренда', 'a:brand_profile|ws:0|ret:brand')
+      .text('⭐️ Подписка', 'a:brand_plan|ws:0')
+      .row()
+      .text('👥 Команда бренда', 'a:brand_team|ws:0');
+  } else {
+    kb.text('ℹ️ Права менеджера', 'a:bm_help')
+      .row();
+    if (hasMultipleBrands) {
+      kb.text('🔁 Сменить бренд', 'a:bm_pick_brand|ret:menu')
+        .row();
+    }
+    kb.text('🔓 Режим владельца', 'a:bm_mode_set|v:0|ret:menu');
+  }
+
+  kb.row()
     .text('🧭 Быстрый старт', 'a:guide')
     .text('💬 Поддержка', 'a:support')
     .row()
@@ -451,22 +464,124 @@ function mainMenuBrandKb(flags = {}) {
     if (b) kb.text(b[0], b[1]);
   }
 
-  return kb;
+  
+  if (!isManager && canManager) {
+    kb.row().text('🧑‍💼 Режим менеджера', 'a:bm_mode_set|v:1|ret:menu');
+  }
+return kb;
+}
+
+function bmModeKey(tgId) {
+  return k(['bm_mode', Number(tgId || 0)]);
+}
+function bmActiveBrandKey(tgId) {
+  return k(['bm_active_brand', Number(tgId || 0)]);
+}
+async function getBrandManagerMode(tgId) {
+  const v = await redis.get(bmModeKey(tgId));
+  return v === '1' || v === 1 || v === true;
+}
+async function setBrandManagerMode(tgId, enabled) {
+  if (enabled) await redis.set(bmModeKey(tgId), '1');
+  else await redis.del(bmModeKey(tgId));
+}
+async function getBmActiveBrand(tgId) {
+  const v = await redis.get(bmActiveBrandKey(tgId));
+  const n = Number(v || 0);
+  return n || 0;
+}
+async function setBmActiveBrand(tgId, brandUserId) {
+  const n = Number(brandUserId || 0);
+  if (!n) return;
+  await redis.set(bmActiveBrandKey(tgId), String(n));
+}
+
+async function resolveBmBrandContext(ctx, u) {
+  const tgId = Number(ctx.from?.id || 0);
+  const enabled = await getBrandManagerMode(tgId);
+  if (!enabled) return { enabled: false, brands: [] };
+
+  let brands = [];
+  try {
+    brands = await db.listBrandsForManager(u.id);
+  } catch {
+    brands = [];
+  }
+  if (!brands.length) return { enabled: false, brands: [] };
+
+  let active = await getBmActiveBrand(tgId);
+  const has = (id) => brands.some((b) => Number(b.user_id) === Number(id));
+  if (!active || !has(active)) {
+    active = Number(brands[0].user_id);
+    await setBmActiveBrand(tgId, active);
+  }
+
+  const cur = brands.find((b) => Number(b.user_id) === Number(active)) || brands[0];
+  const label = cur.brand_name ? String(cur.brand_name) : (cur.tg_username ? `@${cur.tg_username}` : `Бренд #${cur.user_id}`);
+
+  return {
+    enabled: true,
+    brandUserId: Number(cur.user_id),
+    brandLabel: label,
+    brands
+  };
 }
 
 async function renderMainMenu(ctx, flags, params = {}) {
   const edit = params.edit !== false; // default true
+  const u = params.user || (ctx.from ? await db.upsertUser(ctx.from.id, ctx.from.username ?? null) : null);
+
   const mode = await resolveUiMode(ctx.from?.id);
-  const modeHuman = uiModeHuman(mode);
-  const base = `🏠 <b>Главное меню</b>\n\n<b>Ты сейчас в режиме:</b> <b>${modeHuman}</b>\n`;
+  let modeHuman = uiModeHuman(mode);
   let text;
   let kb;
 
-  if (mode === UI_MODES.BRAND) {
-    text = base + `\nДля брендов — поиск креаторов, лента офферов и Inbox.\n\nВыбери действие:`;
-    kb = mainMenuBrandKb(flags);
+  if (mode === UI_MODES.BRAND && u) {
+    const bm = await resolveBmBrandContext(ctx, u);
+    if (bm.enabled) {
+      modeHuman = 'Brand Manager';
+      const base = `🏠 <b>Главное меню</b>
+
+<b>Ты сейчас в режиме:</b> <b>${modeHuman}</b>
+<b>Бренд:</b> <b>${escapeHtml(bm.brandLabel)}</b>
+`;
+      text = base + `
+Для команды бренда — Inbox и поиск креаторов.
+
+Выбери действие:`;
+      kb = mainMenuBrandKb(flags, { isManager: true, hasMultipleBrands: (bm.brands || []).length > 1 });
+    } else {
+      const base = `🏠 <b>Главное меню</b>
+
+<b>Ты сейчас в режиме:</b> <b>${modeHuman}</b>
+`;
+      text = base + `
+Для брендов — поиск креаторов, лента офферов и Inbox.
+
+Выбери действие:`;
+      let canManager = false;
+      try { canManager = (await db.listBrandsForManager(u.id)).length > 0; } catch { canManager = false; }
+      kb = mainMenuBrandKb(flags, { isManager: false, canManager });
+    }
+  } else if (mode === UI_MODES.BRAND) {
+    const base = `🏠 <b>Главное меню</b>
+
+<b>Ты сейчас в режиме:</b> <b>${modeHuman}</b>
+`;
+    text = base + `
+Для брендов — поиск креаторов, лента офферов и Inbox.
+
+Выбери действие:`;
+    kb = mainMenuBrandKb(flags, { isManager: false });
   } else {
-    text = base + `\nДля Creator/UGC — подключение канала, витрина, лента и розыгрыши.\n\nВыбери действие:`;
+    const base = `🏠 <b>Главное меню</b>
+
+<b>Ты сейчас в режиме:</b> <b>${modeHuman}</b>
+`;
+    text = base + `
+Для Creator/UGC — подключение канала, витрина, лента и розыгрыши.
+
+Выбери действие:`;
     kb = mainMenuCreatorKb(flags);
   }
 
@@ -6661,6 +6776,9 @@ ${escapeHtml(bxTypeLabel(offer.offer_type))} · ${escapeHtml(bxCompLabel(offer.c
     if (exp.type === 'bx_thread_msg') {
       const threadId = Number(exp.threadId);
       const wsId = Number(exp.wsId);
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
       const body = String(ctx.message.text || '').trim().slice(0, 800);
       if (!threadId || !body) {
         await ctx.reply('Пустое сообщение.');
@@ -7421,15 +7539,30 @@ ${list}
       const owner = await db.getUserTgIdByUserId(brandUserId);
       if (!brandLabel) brandLabel = owner?.tg_username ? `@${owner.tg_username}` : `Бренд #${brandUserId}`;
 
+      // включаем режим Brand Manager + ставим текущий бренд + переключаем UI в Brand
+      await setBrandManagerMode(ctx.from.id, true);
+      await setBmActiveBrand(ctx.from.id, brandUserId);
+      await setUiMode(ctx.from.id, UI_MODES.BRAND);
+
       const kb = new InlineKeyboard()
-        .text('🏠 Главное меню', 'a:menu');
+        .text('📨 Inbox', 'a:bx_inbox|ws:0|p:0')
+        .text('🔎 Поиск креаторов', 'a:pm_home|ws:0')
+        .row()
+        .text('🏠 Меню', 'a:menu');
 
       await ctx.reply(
         `✅ Ты добавлен в <b>команду бренда</b>: <b>${escapeHtml(brandLabel)}</b>
 
-Что дальше:
-— Бренд может дать тебе задачи.
-— Кабинет “Brand Manager” (Inbox/Search) добавим следующим патчем.`,
+<b>Ты сейчас в режиме:</b> <b>Brand Manager</b>
+
+Доступ:
+• 📩 Inbox
+• 🔎 Поиск креаторов
+
+Ограничения:
+• нельзя менять профиль бренда
+• нельзя управлять оплатами/подпиской
+• нельзя управлять командой`,
         { parse_mode: 'HTML', reply_markup: kb }
       );
       return;
@@ -7906,7 +8039,84 @@ if (p.a === 'a:ui_mode_set') {
 
 
     // MENU
-    if (p.a === 'a:menu') {
+        // BRAND MANAGER MODE (Brand Team)
+    if (p.a === 'a:bm_help') {
+      await ctx.answerCallbackQuery();
+      const text = `🧑‍💼 <b>Brand Manager</b>
+
+Это роль для команды бренда.
+
+✅ Можно:
+• 📩 Inbox (переписка по заявкам/сделкам)
+• 🔎 Поиск креаторов (подбор)
+
+⛔️ Нельзя:
+• менять профиль бренда
+• управлять оплатами / подпиской
+• управлять командой бренда
+
+Если у тебя несколько брендов — используй «🔁 Сменить бренд» в меню.`;
+
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
+      return;
+    }
+
+    if (p.a === 'a:bm_mode_set') {
+      await ctx.answerCallbackQuery();
+      const v = Number(p.v || 0);
+      await setBrandManagerMode(ctx.from.id, v === 1);
+      const ret = String(p.ret || 'menu');
+      if (ret === 'menu') {
+        await renderMainMenu(ctx, flags, { edit: true, user: u });
+      } else {
+        await ctx.editMessageText('Готово.', { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
+      }
+      return;
+    }
+
+    if (p.a === 'a:bm_pick_brand') {
+      await ctx.answerCallbackQuery();
+
+      let brands = [];
+      try {
+        brands = await db.listBrandsForManager(u.id);
+      } catch {
+        brands = [];
+      }
+
+      if (!brands.length) {
+        await ctx.editMessageText('У тебя нет брендов в команде.', { parse_mode: 'HTML', reply_markup: navKb('a:menu') });
+        return;
+      }
+
+      const active = await getBmActiveBrand(ctx.from.id);
+
+      const kb = new InlineKeyboard();
+      for (const b of brands) {
+        const id = Number(b.user_id);
+        const label = b.brand_name ? String(b.brand_name) : (b.tg_username ? `@${b.tg_username}` : `Бренд #${id}`);
+        const prefix = (id === Number(active)) ? '✅ ' : '';
+        kb.text(prefix + label, `a:bm_set_brand|bu:${id}|ret:menu`).row();
+      }
+      kb.row().text('⬅️ Назад', 'a:menu');
+
+      await ctx.editMessageText('Выбери бренд:', { parse_mode: 'HTML', reply_markup: kb });
+      return;
+    }
+
+    if (p.a === 'a:bm_set_brand') {
+      await ctx.answerCallbackQuery();
+      const brandUserId = Number(p.bu || 0);
+      if (!brandUserId) return;
+
+      await setBrandManagerMode(ctx.from.id, true);
+      await setBmActiveBrand(ctx.from.id, brandUserId);
+
+      await renderMainMenu(ctx, flags, { edit: true, user: u });
+      return;
+    }
+
+if (p.a === 'a:menu') {
       await ctx.answerCallbackQuery();
       const flags = await getRoleFlags(u, ctx.from.id);
       const curMode = !!flags.isCurator && (await getCuratorMode(ctx.from.id));
@@ -8700,6 +8910,16 @@ if (p.a === 'a:ws_prof_mode') {
 
     if (p.a === 'a:brand_team') {
       await ctx.answerCallbackQuery();
+
+      const bm = await resolveBmBrandContext(ctx, u);
+      if (bm.enabled && bm.brandUserId !== u.id) {
+        await ctx.editMessageText(
+          '⛔️ Недостаточно прав. Раздел «Команда бренда» доступен только владельцу бренда.',
+          { parse_mode: 'HTML', reply_markup: navKb('a:menu') }
+        );
+        return;
+      }
+
       const managers = await db.listBrandManagers(u.id);
       const count = managers.length;
 
@@ -8816,6 +9036,16 @@ ${link}`;
       const ret = String(p.ret || 'brand'); // brand | offer | lead | verify
       const bo = p.bo ? Number(p.bo) : null;
       const bp = p.bp ? Number(p.bp) : 0;
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      if (wsId === 0 && bm.enabled && bm.brandUserId !== u.id) {
+        await ctx.editMessageText(
+          '⛔️ Недостаточно прав. Этот раздел доступен только владельцу бренда.',
+          { parse_mode: 'HTML', reply_markup: navKb('a:menu') }
+        );
+        return;
+      }
+
       await renderBrandProfileHome(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
       return;
     }
@@ -8928,13 +9158,39 @@ ${link}`;
 
     if (p.a === 'a:brand_pass') {
       await ctx.answerCallbackQuery();
-      await renderBrandPassTopup(ctx, u.id, Number(p.ws || 0));
+      const wsId = Number(p.ws || 0);
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      if (wsId === 0 && bm.enabled && bm.brandUserId !== u.id) {
+        await ctx.editMessageText(
+          '⛔️ Недостаточно прав. Этот раздел доступен только владельцу бренда.',
+          { parse_mode: 'HTML', reply_markup: navKb('a:menu') }
+        );
+        return;
+      }
+
+      await renderBrandPass(ctx, u.id, wsId);
+      return;
+    }
+
+      await renderBrandPass(ctx, u.id, wsId);
       return;
     }
 
     if (p.a === 'a:brand_plan') {
       await ctx.answerCallbackQuery();
-      await renderBrandPlan(ctx, u.id, Number(p.ws || 0));
+      const wsId = Number(p.ws || 0);
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      if (wsId === 0 && bm.enabled && bm.brandUserId !== u.id) {
+        await ctx.editMessageText(
+          '⛔️ Недостаточно прав. Этот раздел доступен только владельцу бренда.',
+          { parse_mode: 'HTML', reply_markup: navKb('a:menu') }
+        );
+        return;
+      }
+
+      await renderBrandPlan(ctx, u.id, wsId);
       return;
     }
 
@@ -8972,7 +9228,12 @@ ${link}`;
     // Profile Matching (pm_*)
     if (p.a === 'a:pm_home') {
       await ctx.answerCallbackQuery();
-      await renderProfileMatchingHome(ctx, u.id, Number(p.ws || 0));
+      const wsId = Number(p.ws || 0);
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+
+      await renderProfileMatchingHome(ctx, effectiveUserId, wsId);
       return;
     }
 
@@ -9368,7 +9629,13 @@ if (p.a === 'a:match_home') {
 
     if (p.a === 'a:bx_feed') {
       await ctx.answerCallbackQuery();
-      await renderBxFeed(ctx, u.id, Number(p.ws), Number(p.p || 0), p.c || null);
+      const wsId = Number(p.ws || 0);
+      const page = Number(p.p || 0);
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+
+      await renderBxFeed(ctx, effectiveUserId, wsId, page);
       return;
     }
 
@@ -9847,15 +10114,25 @@ if (p.a === 'a:match_home') {
 
     if (p.a === 'a:bx_inbox') {
       await ctx.answerCallbackQuery();
-      await renderBxInbox(ctx, u.id, Number(p.ws), Number(p.p || 0));
+      const wsId = Number(p.ws || 0);
+      const page = Number(p.p || 0);
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+
+      await renderBxInbox(ctx, effectiveUserId, wsId, page);
       return;
     }
 
     if (p.a === 'a:bx_thread') {
       await ctx.answerCallbackQuery();
-      const back = p.b ? String(p.b) : 'inbox';
-      const offerId = p.o ? Number(p.o) : null;
-      await renderBxThread(ctx, u.id, Number(p.ws), Number(p.t), { back, offerId, page: Number(p.p || 0) });
+      const wsId = Number(p.ws || 0);
+      const threadId = Number(p.t || 0);
+
+      const bm = wsId === 0 ? await resolveBmBrandContext(ctx, u) : { enabled: false };
+      const effectiveUserId = (wsId === 0 && bm.enabled) ? bm.brandUserId : u.id;
+
+      await renderBxThread(ctx, effectiveUserId, wsId, threadId);
       return;
     }
 
