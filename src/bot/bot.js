@@ -1892,7 +1892,8 @@ const link = wsBrandLink(wsId);
 
   // UI text shown inside bot (short/long preview).
   const v = String(variant || 'short');
-  const titleRaw = String(ws.profile_title || channel || 'Creator');
+  const fallbackTitle = ws.channel_username ? ('@' + String(ws.channel_username).replace(/^@/, '')) : (ws.title || 'Creator');
+  const titleRaw = String(ws.profile_title || fallbackTitle || 'Creator');
   const title = titleRaw.replace(/^@/, '').trim();
 
   const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
@@ -1923,7 +1924,8 @@ function buildWsSharePlain(ws, wsId, variant = 'short') {
 const link = wsBrandLink(wsId);
 
   const v = String(variant || 'short');
-  const titleRaw = String(ws.profile_title || channel || 'Creator');
+  const fallbackTitle = ws.channel_username ? ('@' + String(ws.channel_username).replace(/^@/, '')) : (ws.title || 'Creator');
+  const titleRaw = String(ws.profile_title || fallbackTitle || 'Creator');
   const title = titleRaw.replace(/^@/, '').trim();
 
   const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
@@ -2205,7 +2207,8 @@ async function sendWsShareTextMessage(ctx, ownerUserId, wsId, variant = 'short')
   const ig = wsIgHandleFromWs(ws);
   const igUrl = wsIgUrlFromWs(ws);
   const plain = (() => {
-    const titleRaw = String(ws.profile_title || channel || 'Creator');
+  const fallbackTitle = ws.channel_username ? ('@' + String(ws.channel_username).replace(/^@/, '')) : (ws.title || 'Creator');
+  const titleRaw = String(ws.profile_title || fallbackTitle || 'Creator');
     const title = titleRaw.replace(/^@/, '').trim();
     const verticals = fmtMatrix(ws.profile_verticals, PROFILE_VERTICALS, '—');
     const formats = fmtMatrix(ws.profile_formats, PROFILE_FORMATS, '—');
