@@ -2217,6 +2217,102 @@ export async function hasBrandTeamUnlockPurchase(userId) {
   return false;
 }
 
+// --------------------------------------------
+// Brand Directory (for Creators)
+// Show only brands with:
+//  - basic profile filled (brand_name, niche, contact, brand_link)
+//  - at least one purchase: brand_pass OR brand_plan
+// --------------------------------------------
+
+export async function listBrandsDirectory(limit = 10, offset = 0) {
+  const lim = Math.max(1, Math.min(100, Number(limit) || 10));
+  const off = Math.max(0, Number(offset) || 0);
+
+  const baseWhere = `
+    where coalesce(nullif(trim(bp.brand_name), ''), null) is not null
+      and coalesce(nullif(trim(bp.niche), ''), null) is not null
+      and coalesce(nullif(trim(bp.contact), ''), null) is not null
+      and coalesce(nullif(trim(bp.brand_link), ''), null) is not null
+  `;
+
+  // Prefer payments ledger. Some deployments may not have stars_payments (legacy), so we try both forms safely.
+  const qBoth = `
+    select bp.*, u.tg_username
+      from brand_profiles bp
+      join users u on u.id = bp.user_id
+      ${baseWhere}
+       and (
+         exists (
+           select 1 from payments p
+            where p.user_id = bp.user_id
+              and p.kind in ('brand_pass', 'brand_plan')
+              and coalesce(p.status, 'RECEIVED') <> 'ERROR'
+            limit 1
+         )
+         or exists (
+           select 1 from stars_payments sp
+            where sp.user_id = bp.user_id
+              and sp.kind in ('brand_pass', 'brand_plan')
+            limit 1
+         )
+       )
+     order by bp.updated_at desc nulls last, bp.created_at desc
+     limit $1 offset $2
+  `;
+
+  const qPaymentsOnly = `
+    select bp.*, u.tg_username
+      from brand_profiles bp
+      join users u on u.id = bp.user_id
+      ${baseWhere}
+       and exists (
+         select 1 from payments p
+          where p.user_id = bp.user_id
+            and p.kind in ('brand_pass', 'brand_plan')
+            and coalesce(p.status, 'RECEIVED') <> 'ERROR'
+          limit 1
+       )
+     order by bp.updated_at desc nulls last, bp.created_at desc
+     limit $1 offset $2
+  `;
+
+  const qStarsOnly = `
+    select bp.*, u.tg_username
+      from brand_profiles bp
+      join users u on u.id = bp.user_id
+      ${baseWhere}
+       and exists (
+         select 1 from stars_payments sp
+          where sp.user_id = bp.user_id
+            and sp.kind in ('brand_pass', 'brand_plan')
+          limit 1
+       )
+     order by bp.updated_at desc nulls last, bp.created_at desc
+     limit $1 offset $2
+  `;
+
+  try {
+    const r = await pool.query(qBoth, [lim, off]);
+    return r.rows || [];
+  } catch (e) {
+    // If one of relations doesn't exist, retry a safe variant.
+    const missPayments = isMissingRelationError(e, 'payments');
+    const missStars = isMissingRelationError(e, 'stars_payments');
+    if (!missPayments && !missStars) throw e;
+
+    if (missStars && !missPayments) {
+      const r = await pool.query(qPaymentsOnly, [lim, off]);
+      return r.rows || [];
+    }
+    if (missPayments && !missStars) {
+      const r = await pool.query(qStarsOnly, [lim, off]);
+      return r.rows || [];
+    }
+    // both missing -> return empty, directory disabled
+    return [];
+  }
+}
+
 // -----------------------------
 // Workspace channel folders + editors (v1.1.2)
 // -----------------------------
