@@ -3282,6 +3282,48 @@ export async function markBrandApplicationReplied(appId, replyText, repliedByUse
   return r.rows[0] || null;
 }
 
+// Set status=in_progress and record accept meta (micro-CRM)
+export async function markBrandApplicationAccepted(appId, acceptedByUserId) {
+  const r = await pool.query(
+    `update brand_applications
+       set status='in_progress',
+           meta = jsonb_set(
+             coalesce(meta,'{}'::jsonb),
+             '{deal}',
+             coalesce(coalesce(meta,'{}'::jsonb)->'deal','{}'::jsonb)
+               || jsonb_build_object(
+                    'accepted_by_user_id', $2,
+                    'accepted_at', now()
+                  ),
+             true
+           ),
+           updated_at=now()
+     where id=$1
+     returning *`,
+    [Number(appId), acceptedByUserId ? Number(acceptedByUserId) : null]
+  );
+  return r.rows[0] || null;
+}
+
+// Append a message to meta.thread[] (no migration; stored in JSON)
+export async function appendBrandApplicationThreadMessage(appId, messageObj) {
+  const r = await pool.query(
+    `update brand_applications
+       set meta = jsonb_set(
+         coalesce(meta,'{}'::jsonb),
+         '{thread}',
+         coalesce(coalesce(meta,'{}'::jsonb)->'thread','[]'::jsonb)
+           || jsonb_build_array($2::jsonb),
+         true
+       ),
+       updated_at=now()
+     where id=$1
+     returning *`,
+    [Number(appId), JSON.stringify(messageObj || {})]
+  );
+  return r.rows[0] || null;
+}
+
 
 
 // Profiles matching (matrix-based)
