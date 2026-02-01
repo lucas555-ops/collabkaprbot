@@ -3288,19 +3288,89 @@ export async function markBrandApplicationAccepted(appId, acceptedByUserId) {
     `update brand_applications
        set status='in_progress',
            meta = jsonb_set(
-             coalesce(meta,'{}'::jsonb),
-             '{deal}',
-             coalesce(coalesce(meta,'{}'::jsonb)->'deal','{}'::jsonb)
-               || jsonb_build_object(
-                    'accepted_by_user_id', $2,
-                    'accepted_at', now()
-                  ),
+             jsonb_set(
+               coalesce(meta,'{}'::jsonb),
+               '{deal}',
+               coalesce(coalesce(meta,'{}'::jsonb)->'deal','{}'::jsonb)
+                 || jsonb_build_object(
+                      'accepted_by_user_id', $2,
+                      'accepted_at', now()
+                    ),
+               true
+             ),
+             '{deal_stage}',
+             to_jsonb(coalesce(nullif(coalesce(meta->>'deal_stage',''),''), 'negotiation')),
              true
            ),
            updated_at=now()
      where id=$1
      returning *`,
     [Number(appId), acceptedByUserId ? Number(acceptedByUserId) : null]
+  );
+  return r.rows[0] || null;
+}
+
+// List brand deals (applications that have deal_stage set)
+export async function countBrandDealsByStage(brandUserId) {
+  const r = await pool.query(
+    `select coalesce(meta->>'deal_stage','') as stage, count(*)::int as cnt
+     from brand_applications
+     where brand_user_id=$1 and coalesce(meta->>'deal_stage','') <> ''
+     group by stage`,
+    [Number(brandUserId)]
+  );
+  const out = { negotiation: 0, deal: 0, paid: 0, done: 0, lost: 0, all: 0 };
+  for (const row of r.rows) {
+    const s = String(row.stage || '').toLowerCase();
+    const n = Number(row.cnt || 0);
+    out.all += n;
+    if (out[s] !== undefined) out[s] = n;
+  }
+  return out;
+}
+
+export async function listBrandDeals(brandUserId, stage = 'negotiation', limit = 10, offset = 0) {
+  const st = String(stage || 'negotiation').toLowerCase();
+  const whereStage = (st === 'all')
+    ? `coalesce(meta->>'deal_stage','') <> ''`
+    : `coalesce(meta->>'deal_stage','') = $2`;
+
+  const params = [Number(brandUserId)];
+  if (st !== 'all') params.push(st);
+  params.push(Number(limit));
+  params.push(Number(offset));
+
+  const r = await pool.query(
+    `select *
+     from brand_applications
+     where brand_user_id=$1 and ${whereStage}
+     order by updated_at desc, id desc
+     limit $${st === 'all' ? 2 : 3} offset $${st === 'all' ? 3 : 4}`,
+    params
+  );
+  return r.rows || [];
+}
+
+export async function setBrandApplicationDealStage(appId, stage, setByUserId) {
+  const st = String(stage || '').toLowerCase();
+  const r = await pool.query(
+    `update brand_applications
+       set meta = jsonb_set(
+         jsonb_set(
+           coalesce(meta,'{}'::jsonb),
+           '{deal_stage}',
+           to_jsonb($2::text),
+           true
+         ),
+         '{deal_stage_meta}',
+         coalesce(coalesce(meta,'{}'::jsonb)->'deal_stage_meta','{}'::jsonb)
+           || jsonb_build_object('set_by_user_id',$3,'set_at',now()),
+         true
+       ),
+       updated_at=now()
+     where id=$1
+     returning *`,
+    [Number(appId), st, setByUserId ? Number(setByUserId) : null]
   );
   return r.rows[0] || null;
 }
