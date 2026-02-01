@@ -1443,218 +1443,40 @@ async function renderBrandCollabTypesPicker(ctx, ownerUserId, params = {}) {
     ? `\n\nℹ️ У тебя был текстовый список. Выбери пункты ниже — я переведу в структурированный формат.`
     : '';
 
-  const text =
-    `🧩 <b>Форматы сотрудничества</b>\n\n` +
-    `Выбери, что вы обычно делаете с креаторами (можно несколько).\n\n` +
-    `Сейчас: <b>${escapeHtml(nowTxt)}</b>\n\n` +
-    `Рекомендация: 3–10 пунктов.` +
-    legacyHint;
+  const thread = Array.isArray(app?.meta?.thread) ? app.meta.thread : [];
 
-  const suf = brandCbSuffix({ wsId, ret, backOfferId: bo, backPage: bp });
-  const kb = new InlineKeyboard();
+let text =
+  `📌 <b>Сделка</b>
+` +
+  `Бренд: <b>${escapeHtml(brandName)}</b>
+` +
+  `Креатор: <b>${escapeHtml(who)}</b>
+` +
+  `Обновлено: <b>${escapeHtml(when)}</b>
 
-  BRAND_COLLAB_TYPES.forEach((it, i) => {
-    const on = selected.includes(it.key);
-    kb.text(`${on ? '✅' : '▫️'} ${it.title}`, `a:brand_ty_t${suf}|k:${it.key}`);
-    if (i % 2 === 1) kb.row();
-  });
-  kb.row()
-    .text('🧹 Сброс', `a:brand_ty_clear${suf}`)
-    .text('✅ Готово', `a:brand_ty_done${suf}`)
-    .row()
-    .text('⬅️ Назад', `a:brand_prof_more${suf}`);
+` +
+  `Стадия: <b>${escapeHtml(dealStageTitle(stage))}</b>
 
-  const opts = { parse_mode: 'HTML', reply_markup: kb };
-  if (params.edit && ctx.callbackQuery?.message) {
-    await ctx.editMessageText(text, opts);
-  } else {
-    await ctx.reply(text, opts);
-  }
+` +
+  `<b>Сообщение:</b>
+<code>${escapeHtml(msg || '—')}</code>`;
+
+if (app.reply_text) {
+  text += `
+
+<b>Последний ответ бренда:</b>
+<code>${escapeHtml(String(app.reply_text))}</code>`;
 }
 
-function brandCbSuffix(params = {}) {
-  const wsId = Number(params.wsId || 0);
-  const ret = String(params.ret || 'brand'); // brand | offer | lead | verify
-  const bo = params.backOfferId ? Number(params.backOfferId) : null;
-  const bp = params.backPage ? Number(params.backPage) : 0;
-  let s = `|ws:${wsId}|ret:${ret}`;
-  if (bo) s += `|bo:${bo}|bp:${bp}`;
-  return s;
+const threadBlock = formatBrandAppThread(thread, 8);
+if (threadBlock) {
+  text += `
+
+<b>Диалог:</b>
+${threadBlock}`;
 }
 
-function brandBackCb(params = {}) {
-  const wsId = Number(params.wsId || 0);
-  const ret = String(params.ret || 'brand');
-  const bo = params.backOfferId ? Number(params.backOfferId) : null;
-  const bp = params.backPage ? Number(params.backPage) : 0;
-  if (ret === 'offer' && bo) return `a:bx_pub|ws:${wsId}|o:${bo}|p:${bp}`;
-  if (ret === 'lead' && wsId) return `a:wsp_open|ws:${wsId}`;
-  if (ret === 'verify') return 'a:verify_home';
-  return `a:bx_open|ws:${wsId}`;
-}
-
-function brandFieldPrompt(field) {
-  const f = String(field || '');
-  if (f === 'brand_name') return `🏷 <b>Название бренда</b>
-
-Напиши название (как хочешь, чтобы видели креаторы).
-
-<i>Пример:</i> “Luna Beauty”`;
-  if (f === 'brand_link') return `🔗 <b>Ссылка на бренд</b>
-
-Пришли ссылку на сайт / IG / TG / X.
-Можно @username или t.me/...
-
-<i>Пример:</i> https://instagram.com/lunabeauty`;
-  if (f === 'contact') return `☎️ <b>Контакт для связи</b>
-
-Как креатору написать тебе быстро:
-@username / email / TG.
-
-<i>Пример:</i> @luna_manager`;
-  if (f === 'niche') return `🎯 <b>Ниша</b>
-
-Что продаёте / чем занимаетесь.
-
-<i>Пример:</i> косметика, уход за кожей, salon, fashion`;
-  if (f === 'geo') return `🌍 <b>Гео</b>
-
-Города/страны, где актуально сотрудничество.
-
-<i>Пример:</i> Алматы / Казахстан / СНГ`;
-  if (f === 'collab_types') return `🧩 <b>Форматы сотрудничества</b>
-
-Напиши через запятую.
-
-<i>Пример:</i> сторис, reels, обзор, бартер, UGC`;
-  if (f === 'budget') return `💰 <b>Бюджет</b>
-
-Диапазон или “по договорённости”.
-
-<i>Пример:</i> $100–300 / бартер + доплата`;
-  if (f === 'goals') return `🎬 <b>Цели</b>
-
-Что хотите получить от коллаборации.
-
-<i>Пример:</i> продажи, охваты, UGC-контент`;
-  if (f === 'requirements') return `📎 <b>Требования</b>
-
-Коротко: что важно (качество, сроки, тематика).
-
-<i>Пример:</i> 1 reels + 3 stories, дедлайн 7 дней`;
-  return `✏️ <b>Профиль бренда</b>
-
-Напиши значение:`;
-}
-
-function brandFieldPromptKb(params = {}) {
-  const suf = brandCbSuffix(params);
-  const kb = new InlineKeyboard()
-    .text('⬅️ Назад', `a:brand_profile${suf}`);
-  return kb;
-}
-
-async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
-  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
-
-  if (!prof && CFG.BRAND_PROFILE_REQUIRED) {
-    // If migration missing — show a gentle hint
-    // (prof may also be null on first use; we handle both)
-  }
-
-  const p = prof || {};
-
-  // Basic profile (anti-spam): required for messaging creators + unlocking Brand Team
-  const basic = [
-    { key: 'brand_name', label: 'Название' },
-    { key: 'niche', label: 'Ниша' },
-    { key: 'contact', label: 'Контакт' },
-    { key: 'brand_link', label: 'Ссылка' }
-  ];
-
-  // Extended profile (trust + verification)
-  const ext = [
-    { key: 'geo', label: 'Гео' },
-    { key: 'collab_types', label: 'Форматы' },
-    { key: 'budget', label: 'Бюджет' },
-    { key: 'goals', label: 'Цели' },
-    { key: 'requirements', label: 'Требования' }
-  ];
-
-  const basicDone = basic.filter(x => String(p[x.key] || '').trim()).length;
-  const extDone = ext.filter(x => String(p[x.key] || '').trim()).length;
-
-  const missingBasic = basic.filter(x => !String(p[x.key] || '').trim()).map(x => x.label);
-  const needBasic = missingBasic.length > 0;
-
-  // Brand Team unlock: require paid Brand Pass / Brand Plan
-  let teamPaid = false;
-  try {
-    teamPaid = await db.hasBrandTeamUnlockPurchase(ownerUserId);
-  } catch {
-    teamPaid = false;
-  }
-  if (!teamPaid) {
-    try {
-      teamPaid = await db.isBrandPlanActive(ownerUserId);
-    } catch {
-      teamPaid = false;
-    }
-  }
-
-  const gateLine = needBasic && (params.ret === 'offer' || params.ret === 'lead')
-    ? `
-
-⚠️ ${params.ret === 'lead' ? 'Чтобы оставить заявку, заполни 4 поля' : 'Чтобы писать креаторам, заполни 4 поля'}: <b>${escapeHtml(missingBasic.join(', '))}</b>.`
-    : (needBasic ? `
-
-⚠️ Заполни 4 базовых поля, чтобы писать креаторам.` : '');
-
-  const teamLine = teamPaid
-    ? ''
-    : `
-
-🔒 <b>Команда бренда (менеджеры)</b> откроется после покупки <b>Brand Pass</b> или <b>Brand Plan</b>.`;
-
-  const verifyLine = (CFG.VERIFICATION_ENABLED && CFG.BRAND_VERIFY_REQUIRES_EXTENDED)
-    ? `
-
-Для <b>Brand-верификации</b> рекомендовано заполнить: гео и форматы.`
-    : '';
-
-  const txt =
-    `🏷 <b>Профиль бренда</b>
-
-` +
-    `<b>База</b> (${basicDone}/4):
-` +
-    `• Название: <b>${escapeHtml(p.brand_name || '—')}</b>
-` +
-    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
-` +
-    `• Контакт: <b>${escapeHtml(p.contact || '—')}</b>
-` +
-    `• Ссылка: <b>${escapeHtml(p.brand_link || '—')}</b>
-
-` +
-    `<b>Расширенный</b> (${extDone}/5):
-` +
-    `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
-` +
-    `• Форматы: <b>${escapeHtml(brandCollabTypesDisplay(p.collab_types))}</b>
-` +
-    `• Бюджет: <b>${escapeHtml(p.budget || '—')}</b>
-` +
-    `• Цели: <b>${escapeHtml(p.goals || '—')}</b>
-` +
-    `• Требования: <b>${escapeHtml(p.requirements || '—')}</b>` +
-    gateLine +
-    teamLine +
-    verifyLine;
-
-  const suf = brandCbSuffix(params);
-
-  const kb = new InlineKeyboard()
+const kb = new InlineKeyboard()
     .text('✏️ Название', `a:brand_prof_set${suf}|f:bn`)
     .text('🎯 Ниша', `a:brand_prof_set${suf}|f:ni`)
     .row()
@@ -4134,6 +3956,26 @@ function getAppDealStage(app) {
   return k && DEAL_STAGES[k] ? k : '';
 }
 
+function formatBrandAppThread(threadArr, limit = 6) {
+  const rows = (Array.isArray(threadArr) ? threadArr : [])
+    .filter(x => x && typeof x === 'object' && String(x.text || '').trim());
+
+  if (!rows.length) return '';
+
+  const tail = rows.slice(-Math.max(1, Number(limit) || 6));
+  const lines = tail.map(m => {
+    const from = String(m.from || '').toLowerCase();
+    const icon = from === 'brand' ? '🏷️' : (from === 'creator' ? '🧑‍🎨' : (from === 'system' ? '⚙️' : '💬'));
+    const t = m.at ? fmtTs(String(m.at)) : '';
+    const body = String(m.text || '').trim().replace(/\s+/g, ' ');
+    const short = body.length > 110 ? body.slice(0, 110).trim() + '…' : body;
+    return `${icon} ${t ? `<code>${escapeHtml(t)}</code> ` : ''}${escapeHtml(short)}`;
+  });
+
+  return lines.join('\n');
+}
+
+
 function brandAppsTabsKb(counts = {}, active = 'new') {
   const a = normLeadStatus(active);
   const kb = new InlineKeyboard()
@@ -4178,6 +4020,30 @@ function brandDealsTabsKb(counts = {}, active = 'negotiation') {
     }
   }
   return kb;
+}
+
+async function getBrandDealsSearch(tgId, brandUserId) {
+  try {
+    const v = await redis.get(k(['brandDealsSearch', tgId, Number(brandUserId)]));
+    const s = String(v || '').trim();
+    return s || '';
+  } catch {
+    return '';
+  }
+}
+
+async function setBrandDealsSearch(tgId, brandUserId, query, ttlSec = 24 * 60 * 60) {
+  try {
+    const q = String(query || '').trim();
+    if (!q) return;
+    await redis.set(k(['brandDealsSearch', tgId, Number(brandUserId)]), q, { ex: ttlSec });
+  } catch {}
+}
+
+async function clearBrandDealsSearch(tgId, brandUserId) {
+  try {
+    await redis.del(k(['brandDealsSearch', tgId, Number(brandUserId)]));
+  } catch {}
 }
 
 async function assertBrandAppsAccess(ctx, actorUserId, brandUserId) {
@@ -4287,12 +4153,19 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
     negotiation: 0, deal: 0, paid: 0, done: 0, lost: 0, all: 0
   }));
 
-  const items = await safeBrandApplications(() => db.listBrandDeals(brandUserId, st, limit, offset), async () => []);
+  const search = await getBrandDealsSearch(ctx.from.id, brandUserId);
 
-  const header =
+  const items = await safeBrandApplications(
+    () => search ? db.listBrandDealsFiltered(brandUserId, st, search, limit, offset) : db.listBrandDeals(brandUserId, st, limit, offset),
+    async () => []
+  );
+
+  let header =
     `📌 <b>Сделки</b>\n` +
     `Бренд: <b>${escapeHtml(brandName)}</b>\n` +
     `Стадия: <b>${escapeHtml(dealStageTitle(st))}</b>\n`;
+
+  if (search) header += `Поиск: <code>${escapeHtml(String(search))}</code>\n`;
 
   let body = '';
   if (!items.length) {
@@ -4317,6 +4190,11 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
     kb.row().text('🔁 Сменить бренд', 'a:bm_pick_brand|ret:brand_deals|ws:0|p:0');
   }
 
+
+// Search/filter by creator (username or tg id)
+kb.row().text('🔎 Поиск', `a:brand_deals_search|ws:0|st:${st}|p:${p}`);
+if (search) kb.text('❌ Сброс', `a:brand_deals_search_clear|ws:0|st:${st}|p:${p}`);
+
   if (items.length) {
     kb.row();
     for (const a of items) {
@@ -4325,7 +4203,9 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
   }
 
   // Pagination
-  const total = (st === 'all' ? (counts.all ?? 0) : (counts[st] ?? 0)) || 0;
+  const total = search
+    ? await safeBrandApplications(() => db.countBrandDealsFiltered(brandUserId, st, search), async () => (offset + items.length))
+    : ((st === 'all' ? (counts.all ?? 0) : (counts[st] ?? 0)) || 0);
   const hasPrev = p > 0;
   const hasNext = (offset + items.length) < total;
   if (hasPrev || hasNext) kb.row();
@@ -4361,13 +4241,24 @@ async function renderBrandDealView(ctx, actorUserId, appId, back = { stage: 'neg
   const when = app.updated_at ? fmtTs(app.updated_at) : (app.created_at ? fmtTs(app.created_at) : '—');
   const msg = String(app.message || '').trim();
 
-  const text =
-    `📌 <b>Сделка</b>\n` +
-    `Бренд: <b>${escapeHtml(brandName)}</b>\n` +
-    `Креатор: <b>${escapeHtml(who)}</b>\n` +
-    `Обновлено: <b>${escapeHtml(when)}</b>\n\n` +
-    `Стадия: <b>${escapeHtml(dealStageTitle(stage))}</b>\n\n` +
-    `Сообщение:\n<code>${escapeHtml(msg || '—')}</code>`;
+const thread = Array.isArray(app?.meta?.thread) ? app.meta.thread : [];
+
+let text =
+  `📌 <b>Сделка</b>\n` +
+  `Бренд: <b>${escapeHtml(brandName)}</b>\n` +
+  `Креатор: <b>${escapeHtml(who)}</b>\n` +
+  `Обновлено: <b>${escapeHtml(when)}</b>\n\n` +
+  `Стадия: <b>${escapeHtml(dealStageTitle(stage))}</b>\n\n` +
+  `<b>Сообщение:</b>\n<code>${escapeHtml(msg || '—')}</code>`;
+
+if (app.reply_text) {
+  text += `\n\n<b>Последний ответ бренда:</b>\n<code>${escapeHtml(String(app.reply_text))}</code>`;
+}
+
+const threadBlock = formatBrandAppThread(thread, 8);
+if (threadBlock) {
+  text += `\n\n<b>Диалог:</b>\n${threadBlock}`;
+}
 
   const kb = new InlineKeyboard()
     .text(dealStageTitle('negotiation'), `a:brand_deal_set|id:${app.id}|st:negotiation|b:${back.stage}|p:${back.page}`)
@@ -4377,6 +4268,9 @@ async function renderBrandDealView(ctx, actorUserId, appId, back = { stage: 'neg
     .text(dealStageTitle('done'), `a:brand_deal_set|id:${app.id}|st:done|b:${back.stage}|p:${back.page}`)
     .row()
     .text(dealStageTitle('lost'), `a:brand_deal_set|id:${app.id}|st:lost|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text('✍️ Ответить', `a:brand_deal_reply|id:${app.id}|b:${back.stage}|p:${back.page}`)
+    .text('⚡ Шаблоны', `a:brand_deal_tpls|id:${app.id}|b:${back.stage}|p:${back.page}`)
     .row()
     .text('✉️ Открыть заявку', `a:brand_app_view|id:${app.id}|s:in_progress|p:0`)
     .row();
@@ -4413,20 +4307,6 @@ async function renderBrandAppView(ctx, actorUserId, appId, back = { status: 'new
 
   // Micro-CRM thread (stored in meta.thread[])
   const thread = Array.isArray(app?.meta?.thread) ? app.meta.thread : [];
-  const formatThread = (arr, limit = 6) => {
-    const rows = (Array.isArray(arr) ? arr : []).filter(x => x && typeof x === 'object' && String(x.text || '').trim());
-    if (!rows.length) return '';
-    const tail = rows.slice(-limit);
-    const lines = tail.map(m => {
-      const from = String(m.from || '').toLowerCase();
-      const icon = from === 'brand' ? '🏷️' : (from === 'creator' ? '🧑‍🎨' : '💬');
-      const t = m.at ? fmtTs(String(m.at)) : '';
-      const body = String(m.text || '').trim().replace(/\s+/g, ' ');
-      const short = body.length > 110 ? body.slice(0, 110).trim() + '…' : body;
-      return `${icon} ${t ? `<code>${escapeHtml(t)}</code> ` : ''}${escapeHtml(short)}`;
-    });
-    return lines.join('\n');
-  };
 
   let text =
     `✉️ <b>Заявка #${app.id}</b> ${leadStatusIcon(st)}
@@ -4456,7 +4336,7 @@ ${escapeHtml(String(app.message || '—'))}`;
 ${escapeHtml(String(app.reply_text))}`;
   }
 
-  const threadBlock = formatThread(thread);
+  const threadBlock = formatBrandAppThread(thread, 6);
   if (threadBlock) {
     text += `
 
@@ -4534,6 +4414,151 @@ async function startBrandAppReply(ctx, actorUserId, appId, back) {
   } catch {
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
   }
+}
+
+async function startBrandDealReply(ctx, actorUserId, appId, back = { stage: 'negotiation', page: 0 }) {
+  const app = await safeBrandApplications(() => db.getBrandApplicationById(appId), async () => null);
+  if (!app) return ctx.answerCallbackQuery({ text: 'Сделка не найдена.' });
+
+  const brandUserId = Number(app.brand_user_id);
+  const access = await assertBrandAppsAccess(ctx, actorUserId, brandUserId);
+  if (!access.ok) return;
+
+  const creatorTgId = Number(app.creator_tg_id || 0);
+  if (!creatorTgId) return ctx.reply('⚠️ У креатора нет TG id.');
+
+  const who = app.creator_username ? '@' + String(app.creator_username).replace(/^@/, '') : (app.creator_tg_id ? `id:${app.creator_tg_id}` : 'creator');
+
+  const backCb = `a:brand_deal_view|id:${app.id}|st:${normDealStage(back.stage)}|p:${Math.max(0, Number(back.page) || 0)}`;
+
+  await setExpectText(ctx.from.id, {
+    type: 'brand_app_reply',
+    appId: Number(app.id),
+    brandUserId: Number(brandUserId),
+    creatorTgId: Number(creatorTgId),
+    creatorUsername: app.creator_username || null,
+    backCb
+  });
+
+  const kb = new InlineKeyboard().text('⬅️ Назад', backCb);
+
+  const text =
+    `✍️ <b>Ответ креатору</b>
+
+` +
+    `Сделка #${app.id} · <b>${escapeHtml(String(who))}</b>
+
+` +
+    `Напиши ответ одним сообщением — я отправлю его креатору.`;
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+async function renderBrandDealTemplates(ctx, actorUserId, appId, back = { stage: 'negotiation', page: 0 }) {
+  const app = await safeBrandApplications(() => db.getBrandApplicationById(appId), async () => null);
+  if (!app) return ctx.answerCallbackQuery({ text: 'Сделка не найдена.' });
+
+  const brandUserId = Number(app.brand_user_id);
+  const access = await assertBrandAppsAccess(ctx, actorUserId, brandUserId);
+  if (!access.ok) return;
+
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(brandUserId), async () => null);
+  const brandName = String(prof?.brand_name || '').trim() || 'Бренд';
+  const who = app.creator_username ? '@' + String(app.creator_username).replace(/^@/, '') : (app.creator_tg_id ? `id:${app.creator_tg_id}` : 'creator');
+
+  const text =
+    `⚡ <b>Быстрые ответы</b>
+
+` +
+    `Сделка #${app.id} от <b>${escapeHtml(String(who))}</b>
+
+` +
+    `Нажми кнопку — я отправлю креатору готовый ответ. После отправки у креатора появится кнопка “💬 Написать бренду”.`;
+
+  const backCb = `a:brand_deal_view|id:${app.id}|st:${normDealStage(back.stage)}|p:${Math.max(0, Number(back.page) || 0)}`;
+
+  const kb = new InlineKeyboard()
+    .text('✅ Приняли — дальше', `a:brand_deal_tpl|id:${app.id}|k:next|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text('📎 Прайс / медиа‑кит', `a:brand_deal_tpl|id:${app.id}|k:price|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text('🧾 Уточнить детали', `a:brand_deal_tpl|id:${app.id}|k:brief|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text('🤝 Бартер', `a:brand_deal_tpl|id:${app.id}|k:barter|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text('⏱ Сроки', `a:brand_deal_tpl|id:${app.id}|k:timing|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text('⬅️ Назад', backCb);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+async function sendBrandDealTemplateReply(ctx, actorUserId, appId, key, back = { stage: 'negotiation', page: 0 }) {
+  const app = await safeBrandApplications(() => db.getBrandApplicationById(appId), async () => null);
+  if (!app) return ctx.answerCallbackQuery({ text: 'Сделка не найдена.' });
+
+  const brandUserId = Number(app.brand_user_id);
+  const access = await assertBrandAppsAccess(ctx, actorUserId, brandUserId);
+  if (!access.ok) return;
+
+  const creatorTgId = Number(app.creator_tg_id || 0);
+  if (!creatorTgId) return ctx.answerCallbackQuery({ text: 'У креатора нет TG id.' });
+
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(brandUserId), async () => null);
+  const brandName = String(prof?.brand_name || '').trim() || 'Бренд';
+
+  const replyText = buildBrandAppTemplateText(brandName, key);
+
+  const cUrl = prof?.contact ? brandContactUrl(prof.contact) : null;
+  const linkLine = prof?.link ? `\n🔗 Сайт/ссылка: ${escapeHtml(String(prof.link))}` : '';
+  const contactLine = cUrl ? `\n✍️ Контакт: ${escapeHtml(String(prof.contact))}` : '';
+
+  const outText =
+    `📩 <b>Ответ бренда</b>\n\n` +
+    `Бренд: <b>${escapeHtml(brandName)}</b>` +
+    linkLine +
+    contactLine +
+    `\n\n<b>Сообщение:</b>\n${escapeHtml(replyText)}`;
+
+  const outKb = new InlineKeyboard()
+    .text('💬 Написать бренду', `a:brand_app_chat|id:${app.id}`)
+    .row()
+    .text('🪟 Открыть бренд', `a:brand_dir_open|u:${brandUserId}|p:0`);
+
+  try {
+    await bot.api.sendMessage(creatorTgId, outText, { parse_mode: 'HTML', reply_markup: outKb, disable_web_page_preview: true });
+  } catch (e) {
+    const backCb = `a:brand_deal_view|id:${app.id}|st:${normDealStage(back.stage)}|p:${Math.max(0, Number(back.page) || 0)}`;
+    await ctx.reply('❌ Не удалось отправить сообщение креатору. Возможно, он ещё не нажимал /start.', {
+      reply_markup: new InlineKeyboard().text('⬅️ Назад', backCb)
+    });
+    return;
+  }
+
+  // Persist
+  await safeBrandApplications(() => db.markBrandApplicationReplied(appId, replyText, actorUserId), async () => null);
+  await safeBrandApplications(() => db.appendBrandApplicationThreadMessage(appId, {
+    from: 'brand',
+    text: replyText,
+    at: new Date().toISOString(),
+    by_user_id: Number(actorUserId),
+    by_tg_id: Number(ctx.from?.id || 0),
+    by_username: ctx.from?.username || null
+  }), async () => null);
+  if (normLeadStatus(app.status) === 'new') {
+    await safeBrandApplications(() => db.updateBrandApplicationStatus(appId, 'in_progress'), async () => null);
+  }
+
+  try { await ctx.answerCallbackQuery({ text: '✅ Отправлено' }); } catch {}
+  await renderBrandDealView(ctx, actorUserId, appId, back);
 }
 
 function buildBrandAppTemplateText(brandName, key) {
@@ -8378,6 +8403,37 @@ ${escapeHtml(reply)}`;
       return ctx.reply('✅ Ответ отправлен креатору.', { reply_markup: kb });
     }
 
+
+if (exp.type === 'brand_deals_search') {
+  const brandUserId = Number(exp.brandUserId || 0);
+  const stage = String(exp.stage || 'negotiation');
+  const page = Math.max(0, Number(exp.page || 0));
+  const qRaw = String(ctx.message.text || '').trim();
+
+  const backCb = String(exp.backCb || `a:brand_deals|ws:0|st:${stage}|p:${page}`);
+
+  if (!brandUserId) {
+    await clearExpectText(ctx.from.id);
+    return ctx.reply('⚠️ Не удалось применить поиск: нет brandUserId.');
+  }
+
+  if (!qRaw) return ctx.reply('⚠️ Введи @username или TG id (цифры).');
+
+  if (/^(сброс|clear|off|нет)$/i.test(qRaw)) {
+    await clearBrandDealsSearch(ctx.from.id, brandUserId);
+    await clearExpectText(ctx.from.id);
+    const kb = new InlineKeyboard().text('⬅️ Назад', backCb).text('🏠 Меню', 'a:menu');
+    return ctx.reply('✅ Поиск сброшен.', { reply_markup: kb });
+  }
+
+  const q = qRaw.replace(/^\s+|\s+$/g, '').slice(0, 80);
+  await setBrandDealsSearch(ctx.from.id, brandUserId, q);
+  await clearExpectText(ctx.from.id);
+
+  const kb = new InlineKeyboard().text('⬅️ Назад', backCb).text('🏠 Меню', 'a:menu');
+  return ctx.reply(`✅ Поиск установлен: <code>${escapeHtml(q)}</code>`, { parse_mode: 'HTML', reply_markup: kb });
+}
+
     if (exp.type === 'brand_app_chat_send') {
       const appId = Number(exp.appId || 0);
       const msg = String(ctx.message.text || '').trim();
@@ -10870,7 +10926,33 @@ if (p.a === 'a:wsp_preview') {
 	  return;
 	}
 
-	if (p.a === 'a:brand_deal_view') {
+	if (p.a === 'a:brand_deals_search') {
+  await ctx.answerCallbackQuery();
+  const stage = String(p.st || 'negotiation');
+  const page = Math.max(0, Number(p.p || 0));
+  const bmRes = await bmResolveAssert(ctx, u, 0, 'brand_deals', page);
+  if (!bmRes) return;
+  const backCb = `a:brand_deals|ws:0|st:${stage}|p:${page}`;
+  await setExpectText(ctx.from.id, { type: 'brand_deals_search', brandUserId: bmRes.userId, stage, page, backCb });
+  const kb = new InlineKeyboard().text('⬅️ Назад', backCb);
+  const t = '🔎 <b>Поиск по сделкам</b>\n\nВведи @username креатора или его TG id (цифры).\n\nПример: <code>@zarinka</code> или <code>123456789</code>';
+  try { await ctx.editMessageText(t, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true }); }
+  catch { await ctx.reply(t, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true }); }
+  return;
+}
+
+if (p.a === 'a:brand_deals_search_clear') {
+  await ctx.answerCallbackQuery();
+  const stage = String(p.st || 'negotiation');
+  const page = Math.max(0, Number(p.p || 0));
+  const bmRes = await bmResolveAssert(ctx, u, 0, 'brand_deals', page);
+  if (!bmRes) return;
+  await clearBrandDealsSearch(ctx.from.id, bmRes.userId);
+  await renderBrandDealsList(ctx, u.id, bmRes.userId, stage, page);
+  return;
+}
+
+if (p.a === 'a:brand_deal_view') {
 	  await ctx.answerCallbackQuery();
 	  const appId = Number(p.id || 0);
 	  const back = { stage: String(p.st || 'negotiation'), page: Math.max(0, Number(p.p || 0)) };
@@ -10889,6 +10971,34 @@ if (p.a === 'a:wsp_preview') {
 	  await renderBrandDealView(ctx, u.id, appId, back);
 	  return;
 	}
+if (p.a === 'a:brand_deal_reply') {
+  await ctx.answerCallbackQuery();
+  const appId = Number(p.id || 0);
+  const back = { stage: String(p.b || p.st || 'negotiation'), page: Math.max(0, Number(p.p || 0)) };
+  if (!appId) return;
+  await startBrandDealReply(ctx, u.id, appId, back);
+  return;
+}
+
+if (p.a === 'a:brand_deal_tpls') {
+  await ctx.answerCallbackQuery();
+  const appId = Number(p.id || 0);
+  const back = { stage: String(p.b || p.st || 'negotiation'), page: Math.max(0, Number(p.p || 0)) };
+  if (!appId) return;
+  await renderBrandDealTemplates(ctx, u.id, appId, back);
+  return;
+}
+
+if (p.a === 'a:brand_deal_tpl') {
+  await ctx.answerCallbackQuery();
+  const appId = Number(p.id || 0);
+  const key = String(p.k || 'discuss');
+  const back = { stage: String(p.b || 'negotiation'), page: Math.max(0, Number(p.p || 0)) };
+  if (!appId) return;
+  await sendBrandDealTemplateReply(ctx, u.id, appId, key, back);
+  return;
+}
+
 
 if (p.a === 'a:brand_app_view') {
   await ctx.answerCallbackQuery();
