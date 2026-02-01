@@ -3878,7 +3878,35 @@ function bxAnyLabel(v, kind) {
 async function getBxFilter(tgId, wsId) {
   const key = k(['bx_filter', tgId, wsId]);
   const v = await redis.get(key);
-  return v || { category: null, offerType: null, compensationType: null };
+  const base = v || {};
+
+  // Canonical shape
+  const f = {
+    category: base.category ?? null,
+    offerType: base.offerType ?? null,
+    compensationType: base.compensationType ?? null
+  };
+
+  // Back-compat: older UI stored short keys (cat/type/comp)
+  const norm = (x) => {
+    if (x == null) return null;
+    const s = String(x);
+    if (!s || s === 'all' || s === 'undefined' || s === 'null') return null;
+    return s;
+  };
+  if (f.category == null && base.cat != null) f.category = norm(base.cat);
+  if (f.offerType == null && base.type != null) f.offerType = norm(base.type);
+  if (f.compensationType == null && base.comp != null) f.compensationType = norm(base.comp);
+
+  // If we had to normalize anything, persist back in canonical shape
+  const needsPersist = !base.category && !base.offerType && !base.compensationType && (base.cat || base.type || base.comp);
+  if (needsPersist) {
+    try {
+      await redis.set(key, f, { ex: 30 * 24 * 3600 });
+    } catch {}
+  }
+
+  return f;
 }
 
 async function setBxFilter(tgId, wsId, patch) {
@@ -10466,14 +10494,13 @@ if (p.a === 'a:match_home') {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws);
       const page = Number(p.p || 0);
-      const key = String(p.k);
-      const v = String(p.v);
+      const key = String(p.k || '');
 
       const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_feed', page);
       if (!bmRes) return;
 
-      await setBxFilter(ctx.from.id, wsId, { [key]: v });
-      await renderBxFilters(ctx, bmRes.userId, wsId, page);
+      // Open picker (do NOT change the filter here)
+      await renderBxFilterPick(ctx, bmRes.userId, wsId, key, page);
       return;
     }
 
@@ -10481,8 +10508,14 @@ if (p.a === 'a:match_home') {
       await ctx.answerCallbackQuery();
       const wsId = Number(p.ws);
       const page = Number(p.p || 0);
-      const key = String(p.k);
-      const v = p.v ? String(p.v) : null;
+      const keyRaw = String(p.k || '');
+      const vRaw = p.v ? String(p.v) : null;
+
+      // UI uses short keys (cat/type/comp). Storage uses canonical keys.
+      const key = keyRaw === 'cat'
+        ? 'category'
+        : (keyRaw === 'type' ? 'offerType' : (keyRaw === 'comp' ? 'compensationType' : keyRaw));
+      const v = vRaw === 'all' ? null : vRaw;
 
       const bmRes = await bmResolveAssert(ctx, u, wsId, 'bx_feed', page);
       if (!bmRes) return;
