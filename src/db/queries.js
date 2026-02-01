@@ -3351,6 +3351,100 @@ export async function listBrandDeals(brandUserId, stage = 'negotiation', limit =
   return r.rows || [];
 }
 
+export async function countBrandDealsFiltered(brandUserId, stage = 'negotiation', search = '') {
+  const st = String(stage || 'negotiation').toLowerCase();
+  const termRaw = String(search || '').trim();
+  const term = termRaw.toLowerCase();
+
+  const params = [Number(brandUserId)];
+  let idx = 2;
+
+  let where = `brand_user_id=$1 and `;
+
+  if (st === 'all') {
+    where += `coalesce(meta->>'deal_stage','') <> ''`;
+  } else {
+    where += `coalesce(meta->>'deal_stage','') = $${idx}`;
+    params.push(st);
+    idx += 1;
+  }
+
+  if (term) {
+    if (/^\d+$/.test(term)) {
+      where += ` and creator_tg_id = $${idx}`;
+      params.push(Number(term));
+      idx += 1;
+    } else {
+      const like = `%${term.replace(/^@/, '')}%`;
+      where += ` and (
+        lower(coalesce(creator_username,'')) like $${idx}
+        or lower(coalesce(message,'')) like $${idx}
+      )`;
+      params.push(like);
+      idx += 1;
+    }
+  }
+
+  const r = await pool.query(
+    `select count(*)::int as cnt
+     from brand_applications
+     where ${where}`,
+    params
+  );
+
+  return Number(r.rows[0]?.cnt || 0);
+}
+
+export async function listBrandDealsFiltered(brandUserId, stage = 'negotiation', search = '', limit = 10, offset = 0) {
+  const st = String(stage || 'negotiation').toLowerCase();
+  const termRaw = String(search || '').trim();
+  const term = termRaw.toLowerCase();
+
+  const params = [Number(brandUserId)];
+  let idx = 2;
+
+  let where = `brand_user_id=$1 and `;
+
+  if (st === 'all') {
+    where += `coalesce(meta->>'deal_stage','') <> ''`;
+  } else {
+    where += `coalesce(meta->>'deal_stage','') = $${idx}`;
+    params.push(st);
+    idx += 1;
+  }
+
+  if (term) {
+    if (/^\d+$/.test(term)) {
+      where += ` and creator_tg_id = $${idx}`;
+      params.push(Number(term));
+      idx += 1;
+    } else {
+      const like = `%${term.replace(/^@/, '')}%`;
+      where += ` and (
+        lower(coalesce(creator_username,'')) like $${idx}
+        or lower(coalesce(message,'')) like $${idx}
+      )`;
+      params.push(like);
+      idx += 1;
+    }
+  }
+
+  const limitIdx = idx; idx += 1;
+  const offsetIdx = idx; idx += 1;
+  params.push(Number(limit));
+  params.push(Number(offset));
+
+  const r = await pool.query(
+    `select *
+     from brand_applications
+     where ${where}
+     order by updated_at desc, id desc
+     limit $${limitIdx} offset $${offsetIdx}`,
+    params
+  );
+  return r.rows || [];
+}
+
 export async function setBrandApplicationDealStage(appId, stage, setByUserId) {
   const st = String(stage || '').toLowerCase();
   const r = await pool.query(
