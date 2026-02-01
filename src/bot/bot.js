@@ -443,7 +443,9 @@ function mainMenuBrandKb(flags = {}, opts = {}) {
     .text('🔎 Поиск креаторов', 'a:pm_home|ws:0')
     .row()
     .text('📨 Inbox', 'a:bx_inbox|ws:0|p:0')
-    .text('📝 Заявки', 'a:brand_apps|ws:0|s:new|p:0');
+	    .text('📝 Заявки', 'a:brand_apps|ws:0|s:new|p:0')
+	    .row()
+	    .text('📌 Сделки', 'a:brand_deals|ws:0|st:negotiation|p:0');
 
   if (!isManager) {
     kb.text('🎫 Brand Pass', 'a:brand_pass|ws:0')
@@ -578,6 +580,7 @@ async function renderBmPickBrand(ctx, u, params = {}) {
     ret === 'bx_open' ? `a:bx_open|ws:${wsId}` :
     ret === 'pm_home' ? `a:pm_home|ws:${wsId}` :
     ret === 'brand_apps' ? `a:brand_apps|ws:0|s:new|p:${page}` :
+	    ret === 'brand_deals' ? `a:brand_deals|ws:0|st:negotiation|p:${page}` :
     'a:menu'
   );
 
@@ -4103,6 +4106,34 @@ async function renderLeadView(ctx, actorUserId, leadId, back = { wsId: null, sta
 
 // --- Brand Applications Inbox (Creator → Brand) ---
 
+// Deal stages (no migrations; stored in brand_applications.meta.deal_stage)
+const DEAL_STAGES = {
+  negotiation: { id: 'negotiation', icon: '💬', label: 'Переговоры' },
+  deal: { id: 'deal', icon: '🤝', label: 'Договорились' },
+  paid: { id: 'paid', icon: '💳', label: 'Оплата' },
+  done: { id: 'done', icon: '✅', label: 'Завершено' },
+  lost: { id: 'lost', icon: '🗑', label: 'Потеряно' },
+  all: { id: 'all', icon: '📌', label: 'Все' },
+};
+
+function normDealStage(s) {
+  const k = String(s || '').toLowerCase().trim();
+  return DEAL_STAGES[k] ? k : 'negotiation';
+}
+
+function dealStageTitle(s) {
+  const k = String(s || '').toLowerCase().trim();
+  const d = DEAL_STAGES[k];
+  if (!d) return '📌 Сделка';
+  return `${d.icon} ${d.label}`;
+}
+
+function getAppDealStage(app) {
+  const s = app?.meta?.deal_stage;
+  const k = String(s || '').toLowerCase().trim();
+  return k && DEAL_STAGES[k] ? k : '';
+}
+
 function brandAppsTabsKb(counts = {}, active = 'new') {
   const a = normLeadStatus(active);
   const kb = new InlineKeyboard()
@@ -4117,6 +4148,33 @@ function brandAppsTabsKb(counts = {}, active = 'new') {
     for (const btn of row) {
       const d = String(btn.callback_data || '');
       if (d.includes(`|s:${a}|`)) btn.text = '• ' + btn.text;
+    }
+  }
+  return kb;
+}
+
+function brandDealsTabsKb(counts = {}, active = 'negotiation') {
+  const a = normDealStage(active);
+  const kb = new InlineKeyboard()
+    .text(`${DEAL_STAGES.negotiation.icon} ${counts.negotiation ?? 0}`, `a:brand_deals|ws:0|st:negotiation|p:0`)
+    .text(`${DEAL_STAGES.deal.icon} ${counts.deal ?? 0}`, `a:brand_deals|ws:0|st:deal|p:0`)
+    .text(`${DEAL_STAGES.paid.icon} ${counts.paid ?? 0}`, `a:brand_deals|ws:0|st:paid|p:0`)
+    .row()
+    .text(`${DEAL_STAGES.done.icon} ${counts.done ?? 0}`, `a:brand_deals|ws:0|st:done|p:0`)
+    .text(`${DEAL_STAGES.lost.icon} ${counts.lost ?? 0}`, `a:brand_deals|ws:0|st:lost|p:0`)
+    .text(`${DEAL_STAGES.all.icon} ${counts.all ?? 0}`, `a:brand_deals|ws:0|st:all|p:0`);
+
+  // Mark active with a dot
+  const rows = kb.inline_keyboard;
+  for (const r of rows) {
+    for (const b of r) {
+      const cd = String(b.callback_data || '');
+      const m = cd.match(/\bst:([^|]+)/);
+      if (!m) continue;
+      const st = String(m[1] || '').toLowerCase();
+      if (st === a && !String(b.text).startsWith('• ')) {
+        b.text = `• ${b.text}`;
+      }
     }
   }
   return kb;
@@ -4213,6 +4271,131 @@ async function renderBrandAppsList(ctx, actorUserId, brandUserId, status = 'new'
   }
 }
 
+async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'negotiation', page = 0) {
+  const access = await assertBrandAppsAccess(ctx, actorUserId, brandUserId);
+  if (!access.ok) return;
+
+  const st = normDealStage(stage);
+  const p = Math.max(0, Number(page) || 0);
+  const limit = 8;
+  const offset = p * limit;
+
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(brandUserId), async () => null);
+  const brandName = String(prof?.brand_name || '').trim() || 'Бренд';
+
+  const counts = await safeBrandApplications(() => db.countBrandDealsByStage(brandUserId), async () => ({
+    negotiation: 0, deal: 0, paid: 0, done: 0, lost: 0, all: 0
+  }));
+
+  const items = await safeBrandApplications(() => db.listBrandDeals(brandUserId, st, limit, offset), async () => []);
+
+  const header =
+    `📌 <b>Сделки</b>\n` +
+    `Бренд: <b>${escapeHtml(brandName)}</b>\n` +
+    `Стадия: <b>${escapeHtml(dealStageTitle(st))}</b>\n`;
+
+  let body = '';
+  if (!items.length) {
+    body = '\nПока пусто. Сюда попадают заявки после “✅ Принять”.';
+  } else {
+    const lines = items.map((a, i) => {
+      const who = a.creator_username
+        ? '@' + String(a.creator_username).replace(/^@/, '')
+        : (a.creator_tg_id ? `id:${a.creator_tg_id}` : 'creator');
+      const when = a.updated_at ? fmtTs(a.updated_at) : (a.created_at ? fmtTs(a.created_at) : '—');
+      const dealStage = getAppDealStage(a) || 'negotiation';
+      const msg = String(a.message || '').replace(/\s+/g, ' ').trim();
+      const short = msg.length > 60 ? msg.slice(0, 60) + '…' : (msg || '—');
+      return `${offset + i + 1}. <b>${escapeHtml(who)}</b> · ${escapeHtml(when)}\n${escapeHtml(dealStageTitle(dealStage))}\n<code>${escapeHtml(short)}</code>`;
+    });
+    body = '\n\n' + lines.join('\n\n');
+  }
+
+  const kb = brandDealsTabsKb(counts, st);
+
+  if (access.isManager) {
+    kb.row().text('🔁 Сменить бренд', 'a:bm_pick_brand|ret:brand_deals|ws:0|p:0');
+  }
+
+  if (items.length) {
+    kb.row();
+    for (const a of items) {
+      kb.text(`#${a.id}`, `a:brand_deal_view|id:${a.id}|st:${st}|p:${p}`);
+    }
+  }
+
+  // Pagination
+  const total = (st === 'all' ? (counts.all ?? 0) : (counts[st] ?? 0)) || 0;
+  const hasPrev = p > 0;
+  const hasNext = (offset + items.length) < total;
+  if (hasPrev || hasNext) kb.row();
+  if (hasPrev) kb.text('⬅️', `a:brand_deals|ws:0|st:${st}|p:${p - 1}`);
+  if (hasNext) kb.text('➡️', `a:brand_deals|ws:0|st:${st}|p:${p + 1}`);
+
+  kb.row().text('⬅️ Назад', 'a:bx_open|ws:0');
+
+  const text = header + body;
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
+async function renderBrandDealView(ctx, actorUserId, appId, back = { stage: 'negotiation', page: 0 }) {
+  const app = await safeBrandApplications(() => db.getBrandApplicationById(appId), async () => null);
+  if (!app) return ctx.answerCallbackQuery({ text: 'Сделка не найдена.' });
+
+  const brandUserId = Number(app.brand_user_id);
+  const access = await assertBrandAppsAccess(ctx, actorUserId, brandUserId);
+  if (!access.ok) return;
+
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(brandUserId), async () => null);
+  const brandName = String(prof?.brand_name || '').trim() || 'Бренд';
+
+  const stage = getAppDealStage(app) || 'negotiation';
+
+  const who = app.creator_username
+    ? '@' + String(app.creator_username).replace(/^@/, '')
+    : (app.creator_tg_id ? `id:${app.creator_tg_id}` : 'creator');
+  const when = app.updated_at ? fmtTs(app.updated_at) : (app.created_at ? fmtTs(app.created_at) : '—');
+  const msg = String(app.message || '').trim();
+
+  const text =
+    `📌 <b>Сделка</b>\n` +
+    `Бренд: <b>${escapeHtml(brandName)}</b>\n` +
+    `Креатор: <b>${escapeHtml(who)}</b>\n` +
+    `Обновлено: <b>${escapeHtml(when)}</b>\n\n` +
+    `Стадия: <b>${escapeHtml(dealStageTitle(stage))}</b>\n\n` +
+    `Сообщение:\n<code>${escapeHtml(msg || '—')}</code>`;
+
+  const kb = new InlineKeyboard()
+    .text(dealStageTitle('negotiation'), `a:brand_deal_set|id:${app.id}|st:negotiation|b:${back.stage}|p:${back.page}`)
+    .text(dealStageTitle('deal'), `a:brand_deal_set|id:${app.id}|st:deal|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text(dealStageTitle('paid'), `a:brand_deal_set|id:${app.id}|st:paid|b:${back.stage}|p:${back.page}`)
+    .text(dealStageTitle('done'), `a:brand_deal_set|id:${app.id}|st:done|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text(dealStageTitle('lost'), `a:brand_deal_set|id:${app.id}|st:lost|b:${back.stage}|p:${back.page}`)
+    .row()
+    .text('✉️ Открыть заявку', `a:brand_app_view|id:${app.id}|s:in_progress|p:0`)
+    .row();
+
+  if (access.isManager) {
+    kb.text('🔁 Сменить бренд', 'a:bm_pick_brand|ret:brand_deals|ws:0|p:0').row();
+  }
+
+  const bStage = normDealStage(back.stage);
+  const bPage = Math.max(0, Number(back.page) || 0);
+  kb.text('⬅️ Назад', `a:brand_deals|ws:0|st:${bStage}|p:${bPage}`);
+
+  try {
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  } catch {
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true });
+  }
+}
+
 async function renderBrandAppView(ctx, actorUserId, appId, back = { status: 'new', page: 0 }) {
   const app = await safeBrandApplications(() => db.getBrandApplicationById(appId), async () => null);
   if (!app) return ctx.answerCallbackQuery({ text: 'Заявка не найдена.' });
@@ -4259,6 +4442,13 @@ async function renderBrandAppView(ctx, actorUserId, appId, back = { status: 'new
     `<b>Текст:</b>
 ${escapeHtml(String(app.message || '—'))}`;
 
+  const dealStage = getAppDealStage(app);
+  if (dealStage) {
+    text += `
+
+📌 <b>Сделка:</b> ${escapeHtml(dealStageTitle(dealStage))}`;
+  }
+
   if (app.reply_text) {
     text += `
 
@@ -4282,6 +4472,11 @@ ${threadBlock}`;
 
   const kb = new InlineKeyboard();
   if (st === 'new') kb.text('✅ Принять', `a:brand_app_accept|id:${app.id}|s:${back.status}|p:${back.page}`).row();
+
+  if (dealStage) {
+    kb.text('📌 В сделках', `a:brand_deal_view|id:${app.id}|st:${dealStage}|p:0`).row();
+  }
+
   kb
     .text('✍️ Ответить', `a:brand_app_reply|id:${app.id}|s:${back.status}|p:${back.page}`)
     .text('⚡ Шаблоны', `a:brand_app_tpls|id:${app.id}|s:${back.status}|p:${back.page}`)
@@ -10291,6 +10486,10 @@ if (p.a === 'a:brand_apply') {
         await renderBrandAppsList(ctx, u.id, brandUserId, 'new', 0);
         return;
       }
+	      if (ret === 'brand_deals') {
+	        await renderBrandDealsList(ctx, u.id, brandUserId, 'negotiation', 0);
+	        return;
+	      }
 
       const flags = await getRoleFlags(u, ctx.from.id);
       await renderMainMenu(ctx, flags, { edit: true, user: u });
@@ -10647,17 +10846,49 @@ if (p.a === 'a:wsp_preview') {
 
     // Leads inbox (owner + SUPER_ADMIN)
     
-if (p.a === 'a:brand_apps') {
-  await ctx.answerCallbackQuery();
-  const status = String(p.s || 'new');
-  const page = Math.max(0, Number(p.p || 0));
+	if (p.a === 'a:brand_apps') {
+	  await ctx.answerCallbackQuery();
+	  const status = String(p.s || 'new');
+	  const page = Math.max(0, Number(p.p || 0));
 
-  const bmCtx = await bmResolveAssert(ctx, u, 0, 'brand_apps');
-  if (!bmCtx.ok) return;
+	  const bmRes = await bmResolveAssert(ctx, u, 0, 'brand_apps', page);
+	  if (!bmRes) return;
 
-  await renderBrandAppsList(ctx, u.id, bmCtx.brandUserId, status, page);
-  return;
-}
+	  await renderBrandAppsList(ctx, u.id, bmRes.userId, status, page);
+	  return;
+	}
+
+	if (p.a === 'a:brand_deals') {
+	  await ctx.answerCallbackQuery();
+	  const stage = String(p.st || 'negotiation');
+	  const page = Math.max(0, Number(p.p || 0));
+
+	  const bmRes = await bmResolveAssert(ctx, u, 0, 'brand_deals', page);
+	  if (!bmRes) return;
+
+	  await renderBrandDealsList(ctx, u.id, bmRes.userId, stage, page);
+	  return;
+	}
+
+	if (p.a === 'a:brand_deal_view') {
+	  await ctx.answerCallbackQuery();
+	  const appId = Number(p.id || 0);
+	  const back = { stage: String(p.st || 'negotiation'), page: Math.max(0, Number(p.p || 0)) };
+	  await renderBrandDealView(ctx, u.id, appId, back);
+	  return;
+	}
+
+	if (p.a === 'a:brand_deal_set') {
+	  await ctx.answerCallbackQuery();
+	  const appId = Number(p.id || 0);
+	  const stage = normDealStage(String(p.st || 'negotiation'));
+	  const back = { stage: String(p.b || 'negotiation'), page: Math.max(0, Number(p.p || 0)) };
+	  if (!appId) return;
+
+	  await safeBrandApplications(() => db.setBrandApplicationDealStage(appId, stage, u.id), async () => null);
+	  await renderBrandDealView(ctx, u.id, appId, back);
+	  return;
+	}
 
 if (p.a === 'a:brand_app_view') {
   await ctx.answerCallbackQuery();
