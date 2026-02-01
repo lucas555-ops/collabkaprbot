@@ -1428,6 +1428,315 @@ function brandCollabTypesDisplay(raw) {
   return s;
 }
 
+
+// -----------------------------
+// Brand profile: advanced structured meta (no migrations)
+// Stored in brand_profiles.meta JSONB.
+// -----------------------------
+
+const BRAND_BUDGET_BUCKETS = [
+  { key: 'barter_only', title: '🤝 Только бартер' },
+  { key: 'up_to_10k', title: '💰 До 10k' },
+  { key: '10_30k', title: '💵 10–30k' },
+  { key: '30_100k', title: '💎 30–100k' },
+  { key: '100k_plus', title: '🏆 100k+' },
+  { key: 'custom', title: '✍️ Договоримся' }
+];
+const BRAND_BUDGET_KEYS = new Set(BRAND_BUDGET_BUCKETS.map(x => x.key));
+
+const BRAND_GOALS_TAGS = [
+  { key: 'awareness', title: '📣 Узнаваемость' },
+  { key: 'sales', title: '🛒 Продажи' },
+  { key: 'traffic', title: '🔗 Трафик' },
+  { key: 'ugc', title: '🧩 UGC/контент' },
+  { key: 'followers', title: '👥 Подписчики' },
+  { key: 'offline', title: '📍 Оффлайн-визиты' },
+  { key: 'loyalty', title: '❤️ Лояльность' }
+];
+const BRAND_GOALS_KEYS = new Set(BRAND_GOALS_TAGS.map(x => x.key));
+
+const BRAND_REQ_TAGS = [
+  { key: 'face', title: '🙂 Лицо в кадре' },
+  { key: 'no_face', title: '😶 Без лица' },
+  { key: 'script', title: '📝 По сценарию' },
+  { key: 'native', title: '🌿 Нативно' },
+  { key: 'before_after', title: '✨ До/после' },
+  { key: 'deadline', title: '⏱ Дедлайн' },
+  { key: 'report', title: '📊 Отчёт/статистика' }
+];
+const BRAND_REQ_KEYS = new Set(BRAND_REQ_TAGS.map(x => x.key));
+
+function parseBrandMeta(meta) {
+  if (!meta || typeof meta !== 'object') return {};
+  return meta;
+}
+
+function brandBudgetBucketTitle(key) {
+  if (!key) return '—';
+  return BRAND_BUDGET_BUCKETS.find(x => x.key === key)?.title || '—';
+}
+
+function brandTagsPreview(keys, defs, max = 6) {
+  const arr = Array.isArray(keys) ? keys.map(String) : [];
+  const allowed = new Set(defs.map((x) => x.key));
+  const clean = [];
+  const seen = new Set();
+  for (const k of arr) {
+    if (!allowed.has(k)) continue;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    clean.push(k);
+  }
+  if (!clean.length) return '—';
+  const nameOf = (k) => defs.find((x) => x.key === k)?.title || k;
+  const take = clean.slice(0, max).map((k) => nameOf(k));
+  const more = clean.length > max ? ` +${clean.length - max}` : '';
+  return take.join(' · ') + more;
+}
+
+async function updateBrandMeta(ownerUserId, patch = {}) {
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+  const cur = parseBrandMeta(prof?.meta);
+  const next = { ...cur, ...patch };
+  const saved = await safeBrandProfiles(() => db.upsertBrandProfile(ownerUserId, { meta: next }), async () => ({ __missing_relation: true }));
+  return saved;
+}
+
+function brandCbSuffix(params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand'); // brand | offer | lead | verify
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+  let suf = `|ws:${wsId}|ret:${ret}`;
+  if (bo) suf += `|bo:${bo}`;
+  if (bp) suf += `|bp:${bp}`;
+  return suf;
+}
+
+function brandBackCb(params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand');
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+  if (ret === 'offer' && bo) return `a:offer_open|ws:${wsId}|id:${bo}|p:${bp}`;
+  if (ret === 'lead') return `a:bx_inbox|ws:${wsId}|p:${bp}`;
+  if (ret === 'verify') return 'a:verify_home';
+  return wsId ? `a:bx_open|ws:${wsId}` : 'a:bx_open|ws:0';
+}
+
+function brandFieldPrompt(field) {
+  const map = {
+    brand_name: 'Название бренда',
+    niche: 'Ниша/категория',
+    contact: 'Контакт для связи (TG @username или ссылка)',
+    brand_link: 'Ссылка на бренд (сайт/Instagram/Telegram)',
+    geo: 'Гео (город/страна)',
+    budget: 'Бюджет (текст, если нужно)',
+    goals: 'Цели (текст)',
+    requirements: 'Требования (текст)'
+  };
+  const title = map[field] || 'Поле профиля';
+  return `✍️ <b>${escapeHtml(title)}</b>
+
+Отправь текст одним сообщением.`;
+}
+
+function brandFieldPromptKb(params = {}) {
+  const suf = brandCbSuffix(params);
+  const from = String(params.from || '');
+  if (from === 'more') return new InlineKeyboard().text('⬅️ Назад', `a:brand_profile_more${suf}`);
+  // default: back to edit view of base profile
+  return new InlineKeyboard().text('⬅️ Назад', `a:brand_profile_edit${suf}`);
+}
+
+async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand');
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+
+  const prof = await safeBrandProfiles(
+    () => db.getBrandProfile(ownerUserId),
+    async () => ({ __missing_relation: true })
+  );
+  if (prof && prof.__missing_relation) {
+    await ctx.editMessageText('⚠️ В базе нет таблицы brand_profiles. Применяй миграцию migrations/024_brand_profiles.sql в Neon и повтори.', {
+      reply_markup: navKb('a:menu')
+    });
+    return;
+  }
+
+  const p = prof || {};
+  const filled = [
+    !!String(p.brand_name || '').trim(),
+    !!String(p.niche || '').trim(),
+    !!String(p.contact || '').trim(),
+    !!String(p.brand_link || '').trim()
+  ].filter(Boolean).length;
+
+  const suf = brandCbSuffix({ wsId, ret, backOfferId: bo, backPage: bp });
+
+  const baseText = `🏷 <b>Профиль бренда</b> (${filled}/4)
+
+` +
+    `• Название: <b>${escapeHtml(p.brand_name || '—')}</b>
+` +
+    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
+` +
+    `• Контакт: <b>${escapeHtml(p.contact || '—')}</b>
+` +
+    `• Ссылка: <b>${escapeHtml(p.brand_link || '—')}</b>
+
+` +
+    `⚠️ Заполни 4 поля, чтобы писать креаторам и попадать в каталог брендов.
+` +
+    `ℹ️ Команда бренда (менеджеры) доступна после покупки <b>Brand Pass</b> или <b>Brand Plan</b>.`;
+
+  const kb = new InlineKeyboard();
+
+  if (params.edit) {
+    const text = baseText + `
+
+Выбери поле для редактирования:`;
+    kb
+      .text('✏️ Название', `a:brand_prof_set${suf}|f:bn|from:home`)
+      .row()
+      .text('🏷 Ниша', `a:brand_prof_set${suf}|f:ni|from:home`)
+      .row()
+      .text('📞 Контакт', `a:brand_prof_set${suf}|f:co|from:home`)
+      .row()
+      .text('🔗 Ссылка', `a:brand_prof_set${suf}|f:li|from:home`)
+      .row()
+      .text('✨ Расширенный профиль', `a:brand_profile_more${suf}`)
+      .row()
+      .text('🧹 Сбросить профиль', `a:brand_prof_reset${suf}`)
+      .row()
+      .text('✅ Готово', `a:brand_profile${suf}`)
+      .row()
+      .text('⬅️ Назад', brandBackCb({ wsId, ret, backOfferId: bo, backPage: bp }))
+      .text('🏠 Меню', 'a:menu');
+
+    const extra = { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true };
+    if (ctx.callbackQuery?.message) await ctx.editMessageText(text, extra);
+    else await ctx.reply(text, extra);
+    return;
+  }
+
+  kb.text('✏️ Редактировать', `a:brand_profile_edit${suf}`).row();
+  kb.text('✨ Расширенный профиль', `a:brand_profile_more${suf}`).row();
+  kb.text('🧹 Сбросить профиль', `a:brand_prof_reset${suf}`).row();
+  kb.text('⬅️ Назад', brandBackCb({ wsId, ret, backOfferId: bo, backPage: bp })).text('🏠 Меню', 'a:menu');
+
+  const extra = { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true };
+  if (params.edit && ctx.callbackQuery?.message) await ctx.editMessageText(baseText, extra);
+  else if (ctx.callbackQuery?.message) await ctx.editMessageText(baseText, extra);
+  else await ctx.reply(baseText, extra);
+}
+
+async function renderBrandBudgetBucketPicker(ctx, ownerUserId, params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand');
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+  const meta = parseBrandMeta(prof?.meta);
+  const cur = String(meta.budget_bucket || '');
+
+  const text = `💰 <b>Бюджет (категория)</b>
+
+` +
+    `Сейчас: <b>${escapeHtml(brandBudgetBucketTitle(cur))}</b>
+
+` +
+    `<i>Эта категория используется креаторами в каталоге и фильтрах.</i>`;
+
+  const suf = brandCbSuffix({ wsId, ret, backOfferId: bo, backPage: bp });
+  const kb = new InlineKeyboard();
+  BRAND_BUDGET_BUCKETS.forEach((it) => {
+    const on = it.key === cur;
+    kb.text(`${on ? '✅' : '▫️'} ${it.title}`, `a:brand_bb_set${suf}|k:${it.key}`).row();
+  });
+  kb.text('🧹 Очистить', `a:brand_bb_clear${suf}`)
+    .text('✅ Готово', `a:brand_bb_done${suf}`)
+    .row()
+    .text('⬅️ Назад', `a:brand_profile_more${suf}`);
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (params.edit && ctx.callbackQuery?.message) await ctx.editMessageText(text, opts);
+  else await ctx.reply(text, opts);
+}
+
+async function renderBrandGoalsTagsPicker(ctx, ownerUserId, params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand');
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+  const meta = parseBrandMeta(prof?.meta);
+  const cur = Array.isArray(meta.goals_tags) ? meta.goals_tags.map(String) : [];
+  const selected = cur.filter((k) => BRAND_GOALS_KEYS.has(k));
+
+  const text = `🎯 <b>Цели (теги)</b>
+
+` +
+    `Сейчас: <b>${escapeHtml(brandTagsPreview(selected, BRAND_GOALS_TAGS, 6))}</b>
+
+` +
+    `<i>Эти теги используются креаторами в каталоге и фильтрах.</i>`;
+
+  const suf = brandCbSuffix({ wsId, ret, backOfferId: bo, backPage: bp });
+  const kb = new InlineKeyboard();
+  BRAND_GOALS_TAGS.forEach((it, i) => {
+    const on = selected.includes(it.key);
+    kb.text(`${on ? '✅' : '▫️'} ${it.title}`, `a:brand_gt_t${suf}|k:${it.key}`);
+    if (i % 2 === 1) kb.row();
+  });
+  kb.row().text('🧹 Сброс', `a:brand_gt_clear${suf}`).text('✅ Готово', `a:brand_gt_done${suf}`)
+    .row().text('⬅️ Назад', `a:brand_profile_more${suf}`);
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (params.edit && ctx.callbackQuery?.message) await ctx.editMessageText(text, opts);
+  else await ctx.reply(text, opts);
+}
+
+async function renderBrandReqTagsPicker(ctx, ownerUserId, params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand');
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+  const meta = parseBrandMeta(prof?.meta);
+  const cur = Array.isArray(meta.req_tags) ? meta.req_tags.map(String) : [];
+  const selected = cur.filter((k) => BRAND_REQ_KEYS.has(k));
+
+  const text = `📎 <b>Требования (теги)</b>
+
+` +
+    `Сейчас: <b>${escapeHtml(brandTagsPreview(selected, BRAND_REQ_TAGS, 6))}</b>
+
+` +
+    `<i>Эти теги используются креаторами в каталоге и фильтрах.</i>`;
+
+  const suf = brandCbSuffix({ wsId, ret, backOfferId: bo, backPage: bp });
+  const kb = new InlineKeyboard();
+  BRAND_REQ_TAGS.forEach((it, i) => {
+    const on = selected.includes(it.key);
+    kb.text(`${on ? '✅' : '▫️'} ${it.title}`, `a:brand_rt_t${suf}|k:${it.key}`);
+    if (i % 2 === 1) kb.row();
+  });
+  kb.row().text('🧹 Сброс', `a:brand_rt_clear${suf}`).text('✅ Готово', `a:brand_rt_done${suf}`)
+    .row().text('⬅️ Назад', `a:brand_profile_more${suf}`);
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (params.edit && ctx.callbackQuery?.message) await ctx.editMessageText(text, opts);
+  else await ctx.reply(text, opts);
+}
+
+
+
 async function renderBrandCollabTypesPicker(ctx, ownerUserId, params = {}) {
   const wsId = Number(params.wsId || 0);
   const ret = String(params.ret || 'brand');
@@ -1440,73 +1749,55 @@ async function renderBrandCollabTypesPicker(ctx, ownerUserId, params = {}) {
 
   const nowTxt = selected.length ? fmtMatrix(selected, BRAND_COLLAB_TYPES) : (raw ? raw : '—');
   const legacyHint = (!selected.length && raw)
-    ? `\n\nℹ️ У тебя был текстовый список. Выбери пункты ниже — я переведу в структурированный формат.`
+    ? `
+
+ℹ️ У тебя был текстовый список. Выбери пункты ниже — я переведу в структурированный формат.`
     : '';
 
-  const thread = Array.isArray(app?.meta?.thread) ? app.meta.thread : [];
-
-let text =
-  `📌 <b>Сделка</b>
-` +
-  `Бренд: <b>${escapeHtml(brandName)}</b>
-` +
-  `Креатор: <b>${escapeHtml(who)}</b>
-` +
-  `Обновлено: <b>${escapeHtml(when)}</b>
+  const text =
+    `🧩 <b>Форматы сотрудничества</b>
 
 ` +
-  `Стадия: <b>${escapeHtml(dealStageTitle(stage))}</b>
+    `Выбери, что вы обычно делаете с креаторами (можно несколько).
 
 ` +
-  `<b>Сообщение:</b>
-<code>${escapeHtml(msg || '—')}</code>`;
+    `Сейчас: <b>${escapeHtml(nowTxt)}</b>
 
-if (app.reply_text) {
-  text += `
+` +
+    `Рекомендация: 3–10 пунктов.` +
+    legacyHint;
 
-<b>Последний ответ бренда:</b>
-<code>${escapeHtml(String(app.reply_text))}</code>`;
-}
+  const suf = brandCbSuffix({ wsId, ret, backOfferId: bo, backPage: bp });
+  const kb = new InlineKeyboard();
 
-const threadBlock = formatBrandAppThread(thread, 8);
-if (threadBlock) {
-  text += `
-
-<b>Диалог:</b>
-${threadBlock}`;
-}
-
-const kb = new InlineKeyboard()
-    .text('✏️ Название', `a:brand_prof_set${suf}|f:bn`)
-    .text('🎯 Ниша', `a:brand_prof_set${suf}|f:ni`)
+  BRAND_COLLAB_TYPES.forEach((it, i) => {
+    const on = selected.includes(it.key);
+    kb.text(`${on ? '✅' : '▫️'} ${it.title}`, `a:brand_ty_t${suf}|k:${it.key}`);
+    if (i % 2 === 1) kb.row();
+  });
+  kb.row()
+    .text('🧹 Сброс', `a:brand_ty_clear${suf}`)
+    .text('✅ Готово', `a:brand_ty_done${suf}`)
     .row()
-    .text('☎️ Контакт', `a:brand_prof_set${suf}|f:ct`)
-    .text('🔗 Ссылка', `a:brand_prof_set${suf}|f:bl`)
-    .row()
-    .text('➕ Расширить', `a:brand_prof_more${suf}`)
-    .row();
-
-  if (CFG.VERIFICATION_ENABLED) kb.text('✅ Верификация', 'a:verify_home').row();
-
-  if (params.ret === 'lead' && isBrandBasicComplete(p)) {
-    kb.text('✅ Продолжить → Заявка', `a:brand_continue${suf}`).row();
-  }
-
-  kb.text('🧹 Сбросить', `a:brand_prof_reset${suf}`).row();
-
-  kb.text('⬅️ Назад', brandBackCb(params));
+    .text('⬅️ Назад', `a:brand_prof_more${suf}`);
 
   const opts = { parse_mode: 'HTML', reply_markup: kb };
   if (params.edit && ctx.callbackQuery?.message) {
-    await ctx.editMessageText(txt, opts);
+    await ctx.editMessageText(text, opts);
   } else {
-    await ctx.reply(txt, opts);
+    await ctx.reply(text, opts);
   }
 }
+
 
 async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
   const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
   const p = prof || {};
+
+  const meta = parseBrandMeta(p.meta);
+  const budgetKey = BRAND_BUDGET_KEYS.has(String(meta.budget_bucket || '')) ? String(meta.budget_bucket) : '';
+  const goalsTags = Array.isArray(meta.goals_tags) ? meta.goals_tags.map(String).filter((k) => BRAND_GOALS_KEYS.has(k)) : [];
+  const reqTags = Array.isArray(meta.req_tags) ? meta.req_tags.map(String).filter((k) => BRAND_REQ_KEYS.has(k)) : [];
 
   const txt =
     `➕ <b>Расширенный профиль бренда</b>
@@ -1515,30 +1806,41 @@ async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
     `Заполни детали — это повышает доверие (и помогает в Brand-верификации).
 
 ` +
+    `<i>Эти параметры используются креаторами в каталоге брендов и фильтрах.</i>
+` +
+    `<i>Чтобы попадать в выдачу по формату/оплате — заполни «🧩 Форматы».</i>
+
+` +
     `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
 ` +
     `• Форматы: <b>${escapeHtml(brandCollabTypesDisplay(p.collab_types))}</b>
 ` +
-    `• Бюджет: <b>${escapeHtml(p.budget || '—')}</b>
+    `• 💰 Бюджет: <b>${escapeHtml(brandBudgetBucketTitle(budgetKey))}</b> · <b>${escapeHtml(p.budget || '—')}</b>
 ` +
-    `• Цели: <b>${escapeHtml(p.goals || '—')}</b>
+    `• 🎯 Цели: <b>${escapeHtml(brandTagsPreview(goalsTags, BRAND_GOALS_TAGS, 6))}</b> · <b>${escapeHtml(p.goals || '—')}</b>
 ` +
-    `• Требования: <b>${escapeHtml(p.requirements || '—')}</b>`;
+    `• 📎 Требования: <b>${escapeHtml(brandTagsPreview(reqTags, BRAND_REQ_TAGS, 6))}</b> · <b>${escapeHtml(p.requirements || '—')}</b>`;
 
   const suf = brandCbSuffix(params);
   const kb = new InlineKeyboard()
-    .text('🌍 Гео', `a:brand_prof_set${suf}|f:ge`)
-    .text('🧩 Форматы', `a:brand_prof_set${suf}|f:ty`)
+    .text('🌍 Гео', `a:brand_prof_set${suf}|f:ge|from:more`)
+    .text('🧩 Форматы', `a:brand_prof_set${suf}|f:ty|from:more`)
     .row()
-    .text('💰 Бюджет', `a:brand_prof_set${suf}|f:bu`)
-    .text('🎬 Цели', `a:brand_prof_set${suf}|f:go`)
+    .text('💰 Бюджет (текст)', `a:brand_prof_set${suf}|f:bu|from:more`)
+    .text('💠 Категория', `a:brand_bb_pick${suf}`)
     .row()
-    .text('📎 Требования', `a:brand_prof_set${suf}|f:rq`)
+    .text('🎬 Цели (текст)', `a:brand_prof_set${suf}|f:go|from:more`)
+    .text('🎯 Теги', `a:brand_gt_pick${suf}`)
+    .row()
+    .text('📎 Требования (текст)', `a:brand_prof_set${suf}|f:rq|from:more`)
+    .text('🏷 Теги', `a:brand_rt_pick${suf}`)
     .row()
     .text('⬅️ Назад', `a:brand_profile${suf}`);
 
   const opts = { parse_mode: 'HTML', reply_markup: kb };
   if (params.edit && ctx.callbackQuery?.message) {
+    await ctx.editMessageText(txt, opts);
+  } else if (ctx.callbackQuery?.message) {
     await ctx.editMessageText(txt, opts);
   } else {
     await ctx.reply(txt, opts);
@@ -1688,65 +1990,77 @@ function brandDirectoryButtonLabel(bp, filter = null) {
 
 // Brand Directory filters (Creator): stored in Redis per viewer (tgId)
 // Shape: { category, offerType, compensationType }
-async function getBrandDirFilter(tgId) {
-  const key = k(['brand_dir_filter', tgId]);
-  const v = await redis.get(key);
-  const base = v || {};
+async function getBrandDirFilter(viewerUserId) {
+  const key = `bd_filter:${viewerUserId}`;
+  const raw = await redis.get(key);
+  let base = {};
+  if (raw) {
+    try { base = JSON.parse(raw); } catch { base = {}; }
+  }
 
   const f = {
-    category: base.category ?? null,
-    offerType: base.offerType ?? null,
-    compensationType: base.compensationType ?? null
+    category: typeof base.category === 'string' ? base.category : null,
+    offerType: typeof base.offerType === 'string' ? base.offerType : null,
+    compensationType: typeof base.compensationType === 'string' ? base.compensationType : null,
+    budgetBucket: typeof base.budgetBucket === 'string' ? base.budgetBucket : null,
+    goalsTags: Array.isArray(base.goalsTags) ? base.goalsTags : (typeof base.goalsTags === 'string' ? base.goalsTags.split(',') : []),
+    reqTags: Array.isArray(base.reqTags) ? base.reqTags : (typeof base.reqTags === 'string' ? base.reqTags.split(',') : []),
   };
 
-  const norm = (x) => {
-    if (x == null) return null;
-    const s = String(x);
-    if (!s || s === 'all' || s === 'undefined' || s === 'null') return null;
-    return s;
-  };
+  if (!f.category || f.category === 'all') f.category = null;
+  if (!f.offerType || f.offerType === 'all') f.offerType = null;
+  if (!f.compensationType || f.compensationType === 'all') f.compensationType = null;
+  if (!f.budgetBucket || f.budgetBucket === 'all') f.budgetBucket = null;
 
-  // Back-compat (if any)
-  if (f.category == null && base.cat != null) f.category = norm(base.cat);
-  if (f.offerType == null && base.type != null) f.offerType = norm(base.type);
-  if (f.compensationType == null && base.comp != null) f.compensationType = norm(base.comp);
-
-  const needsPersist = (!base.category && !base.offerType && !base.compensationType) && (base.cat || base.type || base.comp);
-  if (needsPersist) {
-    try {
-      await redis.set(key, f, { ex: 30 * 24 * 3600 });
-    } catch {}
-  }
+  if (f.budgetBucket && !BRAND_BUDGET_KEYS.has(f.budgetBucket)) f.budgetBucket = null;
+  f.goalsTags = uniqStrArr(f.goalsTags).filter((k) => BRAND_GOALS_KEYS.has(k));
+  f.reqTags = uniqStrArr(f.reqTags).filter((k) => BRAND_REQ_KEYS.has(k));
 
   return f;
 }
 
-async function setBrandDirFilter(tgId, patch) {
-  const key = k(['brand_dir_filter', tgId]);
-  const cur = await getBrandDirFilter(tgId);
-  const next = { ...cur, ...patch };
-  await redis.set(key, next, { ex: 30 * 24 * 3600 });
-  return next;
+async function setBrandDirFilter(viewerUserId, filter) {
+  const key = `bd_filter:${viewerUserId}`;
+  await redis.set(key, JSON.stringify(filter || {}), { ex: 60 * 60 * 24 * 14 });
 }
 
 function brandDirFilterSummary(f) {
-  return [
-    `Категория: ${bxAnyLabel(f.category, 'cat')}`,
-    `Формат: ${bxAnyLabel(f.offerType, 'type')}`,
-    `Оплата: ${bxAnyLabel(f.compensationType, 'comp')}`
-  ].join(' · ');
+  const catLabel = f.category ? (BX_CATEGORIES.find((x) => x.key === f.category)?.label || f.category) : 'Все';
+  const typeLabel = f.offerType ? OFFER_TYPE_LABELS[f.offerType] || f.offerType : 'Все';
+  const compLabel = f.compensationType ? COMP_TYPE_LABELS[f.compensationType] || f.compensationType : 'Все';
+  const budLabel = f.budgetBucket ? brandBudgetBucketTitle(f.budgetBucket) : 'Все';
+  const goalsLabel = f.goalsTags?.length ? `${f.goalsTags.length} тег(а)` : 'Все';
+  const reqLabel = f.reqTags?.length ? `${f.reqTags.length} тег(а)` : 'Все';
+
+  return `Категория: ${catLabel} · Формат: ${typeLabel} · Оплата: ${compLabel}` +
+    ` · Бюджет: ${budLabel} · Цели: ${goalsLabel} · Требования: ${reqLabel}`;
 }
 
 function brandDirFiltersKb(f, page = 0) {
-  const kb = new InlineKeyboard()
-    .text(`Категория: ${bxAnyLabel(f.category, 'cat')}`, `a:bd_fpick|k:cat|p:${page}`)
+  const kb = new InlineKeyboard();
+
+  const catLabel = f.category ? (BX_CATEGORIES.find((x) => x.key === f.category)?.label || f.category) : 'Все';
+  const typeLabel = f.offerType ? OFFER_TYPE_LABELS[f.offerType] || f.offerType : 'Все';
+  const compLabel = f.compensationType ? COMP_TYPE_LABELS[f.compensationType] || f.compensationType : 'Все';
+  const budLabel = f.budgetBucket ? brandBudgetBucketTitle(f.budgetBucket) : 'Все';
+  const goalsLabel = f.goalsTags?.length ? `${f.goalsTags.length}` : 'Все';
+  const reqLabel = f.reqTags?.length ? `${f.reqTags.length}` : 'Все';
+
+  kb
+    .text(`Категория: ${catLabel}`, `a:bd_fpick|k:cat|p:${page}`)
+    .text(`Формат: ${typeLabel}`, `a:bd_fpick|k:type|p:${page}`)
     .row()
-    .text(`Формат: ${bxAnyLabel(f.offerType, 'type')}`, `a:bd_fpick|k:type|p:${page}`)
+    .text(`Оплата: ${compLabel}`, `a:bd_fpick|k:comp|p:${page}`)
+    .text(`Бюджет: ${budLabel}`, `a:bd_fpick|k:bud|p:${page}`)
     .row()
-    .text(`Оплата: ${bxAnyLabel(f.compensationType, 'comp')}`, `a:bd_fpick|k:comp|p:${page}`)
-    .row()
+    .text(`Цели: ${goalsLabel}`, `a:bd_mpick|k:goals|p:${page}`)
+    .text(`Треб.: ${reqLabel}`, `a:bd_mpick|k:req|p:${page}`)
+    .row();
+
+  kb
     .text('♻️ Сбросить', `a:bd_freset|p:${page}`)
     .text('⬅️ Назад', `a:brands_home|p:${page}`);
+
   return kb;
 }
 
@@ -1772,30 +2086,57 @@ function brandDirPickKb(key, page = 0) {
     kb.text('💸 ₽', `a:bd_fset|k:comp|v:rub|p:${page}`).row();
     kb.text('🔁 Смешано', `a:bd_fset|k:comp|v:mixed|p:${page}`).row();
   }
+  if (key === 'bud') {
+    kb.text('Все', `a:bd_fset|k:bud|v:all|p:${page}`).row();
+    for (const b of BRAND_BUDGET_BUCKETS) {
+      kb.text(b.title, `a:bd_fset|k:bud|v:${b.key}|p:${page}`).row();
+    }
+  }
   kb.text('⬅️ Назад', `a:brands_filters|p:${page}`);
+  return kb;
+}
+
+function brandDirMultiPickKb(key, page, selected) {
+  const kb = new InlineKeyboard();
+  const set = new Set(selected || []);
+  const list = key === 'goals' ? BRAND_GOALS_TAGS : BRAND_REQ_TAGS;
+
+  for (const t of list) {
+    const on = set.has(t.key);
+    kb.text(`${on ? '✅ ' : ''}${t.title}`, `a:bd_mt|k:${key}|v:${t.key}|p:${page}`).row();
+  }
+
+  kb.row();
+  if (set.size) kb.text('🧹 Очистить', `a:bd_mclear|k:${key}|p:${page}`);
+  kb.text('✅ Готово', `a:bd_mdone|p:${page}`);
+  kb.row();
+  kb.text('⬅️ Назад', `a:brands_filters|p:${page}`);
+
   return kb;
 }
 
 async function renderBrandDirFilters(ctx, viewerUserId, params = {}) {
   const page = Math.max(0, Number(params.page || 0));
   const f = await getBrandDirFilter(ctx.from.id);
-  const text = `🎛 <b>Фильтры каталога</b>
-
-${escapeHtml(brandDirFilterSummary(f))}
-
-Выбери, какие бренды показывать.`;
+  const text = `🎛 <b>Фильтры каталога</b>\n\n${escapeHtml(brandDirFilterSummary(f))}\n\n<i>Фильтры берутся из настроек брендов (профиль бренда → 🧩 Форматы + расширенный профиль).</i>\n\nВыбери, какие бренды показывать.`;
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: brandDirFiltersKb(f, page) });
 }
 
 async function renderBrandDirFilterPick(ctx, viewerUserId, params = {}) {
   const page = Math.max(0, Number(params.page || 0));
   const key = String(params.key || 'cat');
-  const title = key === 'cat' ? 'Категория' : (key === 'type' ? 'Формат' : 'Оплата');
-  await ctx.editMessageText(`🎛 <b>${title}</b>
-
-Выбери значение:`, { parse_mode: 'HTML', reply_markup: brandDirPickKb(key, page) });
+  const title = key === 'cat' ? 'Категория' : (key === 'type' ? 'Формат' : (key === 'comp' ? 'Оплата' : 'Бюджет'));
+  await ctx.editMessageText(`🎛 <b>${title}</b>\n\nВыбери значение:`, { parse_mode: 'HTML', reply_markup: brandDirPickKb(key, page) });
 }
 
+async function renderBrandDirMultiPick(ctx, viewerUserId, params = {}) {
+  const page = Math.max(0, Number(params.page || 0));
+  const key = String(params.key || 'goals');
+  const f = await getBrandDirFilter(ctx.from.id);
+  const selected = key === 'goals' ? f.goalsTags : f.reqTags;
+  const title = key === 'goals' ? 'Цели (теги)' : 'Требования (теги)';
+  await ctx.editMessageText(`🎛 <b>${title}</b>\n\nВыбери теги:`, { parse_mode: 'HTML', reply_markup: brandDirMultiPickKb(key, page, selected) });
+}
 async function renderBrandsDirectory(ctx, viewerUserId, params = {}) {
   const page = Math.max(0, Number(params.page || 0));
   const edit = !!params.edit;
@@ -1819,14 +2160,21 @@ async function renderBrandsDirectory(ctx, viewerUserId, params = {}) {
   const hasMore = list.length > PAGE_SIZE;
   const items = list.slice(0, PAGE_SIZE);
 
-  const hasActiveFilters = !!(f.category || f.offerType || f.compensationType);
+  const hasActiveFilters = !!(f.category || f.offerType || f.compensationType || f.budgetBucket || (f.goalsTags && f.goalsTags.length) || (f.reqTags && f.reqTags.length));
   let text = `🏷 <b>Каталог брендов</b>\n\n` +
     `Фильтры: <b>${escapeHtml(brandDirFilterSummary(f))}</b>\n\n` +
-    `Показываю бренды с заполненным профилем (4/4) и активной покупкой <b>Brand Pass</b> или <b>Brand Plan</b>.\n\n`;
+    `<i>Фильтры берутся из настроек брендов (профиль → 🧩 Форматы + расширенный профиль: 💠 Бюджет/🎯 Цели/📎 Требования).</i>\n\n` +
+    `Показываю бренды с заполненным профилем (4/4).\n\n`;
 
   if (!items.length) {
-    text += `Пока брендов нет.\n\n` +
-      `Если ты бренд — заполни профиль и купи Brand Pass/Plan, тогда ты появишься в каталоге.`;
+    if (hasActiveFilters) {
+      text += `Ничего не найдено под выбранные фильтры.\n\n` +
+        `💡 Фильтры строятся по настройкам брендов. Если бренд не выбрал «🧩 Форматы» (и при необходимости не заполнил 💠 Бюджет/🎯 Цели/📎 Требования), он может не попасть в выдачу.\n\n` +
+        `Попробуй ослабить фильтры или нажми «♻️ Сброс».`;
+    } else {
+      text += `Пока брендов нет.\n\n` +
+        `Если ты бренд — заполни профиль (4/4), тогда ты появишься в каталоге.`;
+    }
   } else {
     text += `Выбери бренд:`;
   }
@@ -1887,25 +2235,51 @@ async function renderBrandDirectoryCard(ctx, viewerUserId, params = {}) {
     viewerFilter = null;
   }
   const splitTags = brandCollabTagBadgesSplit(String(prof.collab_types || '').trim(), { maxFormats: 8, maxPay: 6, filter: viewerFilter });
+
+  const meta = parseBrandMeta(prof.meta);
+  const budgetBucketKey = BRAND_BUDGET_KEYS.has(String(meta.budget_bucket || '')) ? String(meta.budget_bucket) : '';
+  const goalsTags = Array.isArray(meta.goals_tags) ? meta.goals_tags.map(String).filter((k) => BRAND_GOALS_KEYS.has(k)) : [];
+  const reqTags = Array.isArray(meta.req_tags) ? meta.req_tags.map(String).filter((k) => BRAND_REQ_KEYS.has(k)) : [];
+  const budgetBucketTitle = budgetBucketKey ? brandBudgetBucketTitle(budgetBucketKey) : '';
+  const goalsTagsTitle = goalsTags.length ? brandTagsPreview(goalsTags, BRAND_GOALS_TAGS, 7) : '';
+  const reqTagsTitle = reqTags.length ? brandTagsPreview(reqTags, BRAND_REQ_TAGS, 7) : '';
+
   const budget = String(prof.budget || '').trim();
   const goals = String(prof.goals || '').trim();
   const req = String(prof.requirements || '').trim();
   const link = String(prof.brand_link || '').trim();
   const contact = String(prof.contact || '').trim();
 
-  let text = `🏷 <b>${escapeHtml(name)}</b>\n\n`;
-  if (niche) text += `🎯 Ниша: <b>${escapeHtml(niche)}</b>\n`;
-  if (geo) text += `🌍 Гео: <b>${escapeHtml(geo)}</b>\n`;
-  if (formats && formats !== '—') text += `🧩 Форматы/условия: <b>${escapeHtml(formats)}</b>\n`;
+  let text = `🏷 <b>${escapeHtml(name)}</b>
+
+`;
+  if (niche) text += `🎯 Ниша: <b>${escapeHtml(niche)}</b>
+`;
+  if (geo) text += `🌍 Гео: <b>${escapeHtml(geo)}</b>
+`;
+  if (formats && formats !== '—') text += `🧩 Форматы/условия: <b>${escapeHtml(formats)}</b>
+`;
   if (splitTags.formats) text += `🎬 Форматы: <code>${escapeHtml(splitTags.formats)}</code>
 `;
   if (splitTags.pay) text += `💳 Оплата: <code>${escapeHtml(splitTags.pay)}</code>
 `;
-  if (budget) text += `💰 Бюджет: ${escapeHtml(clipText(budget, 240))}\n`;
-  if (goals) text += `🎬 Цели: ${escapeHtml(clipText(goals, 240))}\n`;
-  if (req) text += `📎 Требования: ${escapeHtml(clipText(req, 240))}\n`;
 
-  text += `\n`;
+  if (budgetBucketTitle) text += `💠 Бюджет (кат.): <b>${escapeHtml(budgetBucketTitle)}</b>
+`;
+  if (goalsTagsTitle) text += `🎯 Цели (теги): <code>${escapeHtml(goalsTagsTitle)}</code>
+`;
+  if (reqTagsTitle) text += `📌 Требования (теги): <code>${escapeHtml(reqTagsTitle)}</code>
+`;
+
+  if (budget) text += `💰 Бюджет: ${escapeHtml(clipText(budget, 240))}
+`;
+  if (goals) text += `🎬 Цели: ${escapeHtml(clipText(goals, 240))}
+`;
+  if (req) text += `📎 Требования: ${escapeHtml(clipText(req, 240))}
+`;
+
+  text += `
+`;
 
   const kb = new InlineKeyboard();
   const brandUrl = link && (/^https?:\/\//i.test(link) ? link : null);
@@ -10372,49 +10746,102 @@ if (p.a === 'a:brands_home') {
   return;
 }
 
-if (p.a === 'a:brands_filters') {
-  await ctx.answerCallbackQuery();
-  const page = Math.max(0, Number(p.p || 0));
-  await renderBrandDirFilters(ctx, u.id, { page });
-  return;
-}
+    if (p.a === 'a:brands_filters') {
+      await ctx.answerCallbackQuery();
+      await renderBrandDirFilters(ctx, u.id, { page: num(p.p || 0, 0) });
+      return;
+    }
 
-if (p.a === 'a:bd_fpick') {
-  await ctx.answerCallbackQuery();
-  const page = Math.max(0, Number(p.p || 0));
-  const key = String(p.k || 'cat');
-  await renderBrandDirFilterPick(ctx, u.id, { page, key });
-  return;
-}
+    if (p.a === 'a:bd_fpick') {
+      await ctx.answerCallbackQuery();
+      await renderBrandDirFilterPick(ctx, u.id, {
+        key: String(p.k || ''),
+        page: num(p.p || 0, 0),
+      });
+      return;
+    }
 
-if (p.a === 'a:bd_fset') {
-  await ctx.answerCallbackQuery();
-  const page = Math.max(0, Number(p.p || 0));
-  const key = String(p.k || 'cat');
-  const v = String(p.v || 'all');
+    if (p.a === 'a:bd_fset') {
+      await ctx.answerCallbackQuery();
+      const base = await getBrandDirFilter(u.id);
+      const key = String(p.k || '');
+      const val = String(p.v || 'all');
+      const page = num(p.p || 0, 0);
 
-  const norm = (x) => {
-    if (!x || x === 'all' || x === 'undefined' || x === 'null') return null;
-    return String(x);
-  };
+      const next = { ...base };
+      if (key === 'cat') next.category = val === 'all' ? null : val;
+      if (key === 'type') next.offerType = val === 'all' ? null : val;
+      if (key === 'comp') next.compensationType = val === 'all' ? null : val;
+      if (key === 'bud') next.budgetBucket = val === 'all' ? null : val;
 
-  const patch = {};
-  if (key === 'cat') patch.category = norm(v);
-  if (key === 'type') patch.offerType = norm(v);
-  if (key === 'comp') patch.compensationType = norm(v);
+      await setBrandDirFilter(u.id, next);
+      await renderBrandDirFilters(ctx, u.id, { page });
+      return;
+    }
 
-  await setBrandDirFilter(ctx.from.id, patch);
-  await renderBrandDirFilters(ctx, u.id, { page });
-  return;
-}
+    if (p.a === 'a:bd_mpick') {
+      await ctx.answerCallbackQuery();
+      await renderBrandDirMultiPick(ctx, u.id, {
+        key: String(p.k || ''),
+        page: num(p.p || 0, 0),
+      });
+      return;
+    }
 
-if (p.a === 'a:bd_freset') {
-  await ctx.answerCallbackQuery();
-  const page = Math.max(0, Number(p.p || 0));
-  await setBrandDirFilter(ctx.from.id, { category: null, offerType: null, compensationType: null });
-  await renderBrandsDirectory(ctx, u.id, { page, edit: true });
-  return;
-}
+    if (p.a === 'a:bd_mt') {
+      await ctx.answerCallbackQuery();
+      const base = await getBrandDirFilter(u.id);
+      const key = String(p.k || '');
+      const tag = String(p.v || '');
+      const page = num(p.p || 0, 0);
+
+      if (key === 'goals' && BRAND_GOALS_KEYS.has(tag)) {
+        const cur = Array.isArray(base.goalsTags) ? base.goalsTags : [];
+        base.goalsTags = cur.includes(tag) ? cur.filter((x) => x !== tag) : [...cur, tag];
+      }
+      if (key === 'req' && BRAND_REQ_KEYS.has(tag)) {
+        const cur = Array.isArray(base.reqTags) ? base.reqTags : [];
+        base.reqTags = cur.includes(tag) ? cur.filter((x) => x !== tag) : [...cur, tag];
+      }
+
+      await setBrandDirFilter(u.id, base);
+      await renderBrandDirMultiPick(ctx, u.id, { key, page });
+      return;
+    }
+
+    if (p.a === 'a:bd_mclear') {
+      await ctx.answerCallbackQuery();
+      const base = await getBrandDirFilter(u.id);
+      const key = String(p.k || '');
+      const page = num(p.p || 0, 0);
+
+      if (key === 'goals') base.goalsTags = [];
+      if (key === 'req') base.reqTags = [];
+
+      await setBrandDirFilter(u.id, base);
+      await renderBrandDirMultiPick(ctx, u.id, { key, page });
+      return;
+    }
+
+    if (p.a === 'a:bd_mdone') {
+      await ctx.answerCallbackQuery();
+      await renderBrandDirFilters(ctx, u.id, { page: num(p.p || 0, 0) });
+      return;
+    }
+
+    if (p.a === 'a:bd_freset') {
+      await ctx.answerCallbackQuery();
+      await setBrandDirFilter(u.id, {
+        category: null,
+        offerType: null,
+        compensationType: null,
+        budgetBucket: null,
+        goalsTags: [],
+        reqTags: [],
+      });
+      await renderBrandDirFilters(ctx, u.id, { page: num(p.p || 0, 0) });
+      return;
+    }
 
 if (p.a === 'a:brand_dir_open') {
   await ctx.answerCallbackQuery();
@@ -10956,7 +11383,7 @@ if (p.a === 'a:wsp_preview') {
       if (CFG.BRAND_PROFILE_REQUIRED) {
         const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
         if (!isBrandBasicComplete(prof)) {
-          await ctx.answerCallbackQuery({ text: 'Заполни профиль бренда (3 поля), чтобы оставить заявку.', show_alert: true });
+          await ctx.answerCallbackQuery({ text: 'Заполни профиль бренда (4 поля: Название, Ниша, Контакт, Ссылка), чтобы оставить заявку.', show_alert: true });
           await renderBrandProfileHome(ctx, u.id, { wsId, ret: 'lead', edit: true });
           return;
         }
@@ -11869,7 +12296,7 @@ ${link}`;
       await setExpectText(ctx.from.id, { type: 'brand_prof_field', field: realField, wsId, ret, backOfferId: bo, backPage: bp });
       await ctx.editMessageText(brandFieldPrompt(realField), {
         parse_mode: 'HTML',
-        reply_markup: brandFieldPromptKb({ wsId, ret, backOfferId: bo, backPage: bp })
+        reply_markup: brandFieldPromptKb({ wsId, ret, backOfferId: bo, backPage: bp, from: String(p.from || "") })
       });
       return;
     }
@@ -11943,6 +12370,157 @@ ${link}`;
     }
 
     if (p.a === 'a:brand_ty_done') {
+      await ctx.answerCallbackQuery({ text: '✅ Сохранено' });
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandProfileMore(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+
+    // Brand profile: advanced structured meta (budget bucket / goals tags / requirements tags)
+    if (p.a === 'a:brand_bb_pick') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandBudgetBucketPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_bb_set') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      const key = String(p.k || '');
+      if (!BRAND_BUDGET_KEYS.has(key)) {
+        await renderBrandBudgetBucketPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+        return;
+      }
+      await updateBrandMeta(u.id, { budget_bucket: key });
+      await renderBrandBudgetBucketPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_bb_clear') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await updateBrandMeta(u.id, { budget_bucket: null });
+      await renderBrandBudgetBucketPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_bb_done') {
+      await ctx.answerCallbackQuery({ text: '✅ Сохранено' });
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandProfileMore(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_gt_pick') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandGoalsTagsPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_gt_t') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      const key = String(p.k || '');
+      if (!BRAND_GOALS_KEYS.has(key)) {
+        await renderBrandGoalsTagsPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+        return;
+      }
+      const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+      const meta = parseBrandMeta(prof?.meta);
+      const cur = Array.isArray(meta.goals_tags) ? meta.goals_tags.map(String).filter((k) => BRAND_GOALS_KEYS.has(k)) : [];
+      const set = cur.includes(key) ? cur.filter((x) => x !== key) : [...cur, key];
+      await updateBrandMeta(u.id, { goals_tags: set });
+      await renderBrandGoalsTagsPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_gt_clear') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await updateBrandMeta(u.id, { goals_tags: [] });
+      await renderBrandGoalsTagsPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_gt_done') {
+      await ctx.answerCallbackQuery({ text: '✅ Сохранено' });
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandProfileMore(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_rt_pick') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandReqTagsPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_rt_t') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      const key = String(p.k || '');
+      if (!BRAND_REQ_KEYS.has(key)) {
+        await renderBrandReqTagsPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+        return;
+      }
+      const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+      const meta = parseBrandMeta(prof?.meta);
+      const cur = Array.isArray(meta.req_tags) ? meta.req_tags.map(String).filter((k) => BRAND_REQ_KEYS.has(k)) : [];
+      const set = cur.includes(key) ? cur.filter((x) => x !== key) : [...cur, key];
+      await updateBrandMeta(u.id, { req_tags: set });
+      await renderBrandReqTagsPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_rt_clear') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await updateBrandMeta(u.id, { req_tags: [] });
+      await renderBrandReqTagsPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_rt_done') {
       await ctx.answerCallbackQuery({ text: '✅ Сохранено' });
       const wsId = Number(p.ws || 0);
       const ret = String(p.ret || 'brand');
