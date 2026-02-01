@@ -6205,6 +6205,83 @@ ctx.reply = (text, extra) => {
   return _reply(text, opts);
 };
 
+
+
+// Support message (send to SUPER_ADMIN_TG_IDS)
+    if (exp.type === 'support_msg') {
+      const txt = String(ctx.message?.text || '').trim();
+      if (!txt) {
+        await ctx.reply('Напиши текст одним сообщением.');
+        try { await setExpectText(ctx.from.id, exp); } catch {}
+        return;
+      }
+
+      // Rate-limit: 1 support message per 5 minutes per user
+      const rlKey = k(['rl', 'support_msg', String(u.id)]);
+      const rl = await rateLimit(rlKey, { limit: 1, windowSec: 5 * 60 });
+      if (!rl.allowed) {
+        await ctx.reply(`⏳ Слишком часто. Подожди ${fmtWait(rl.resetSec || 60)}.`);
+        return;
+      }
+
+      const admins = Array.isArray(CFG.SUPER_ADMIN_TG_IDS) ? CFG.SUPER_ADMIN_TG_IDS : [];
+      if (!admins.length) {
+        await ctx.reply('⚠️ Поддержка не настроена. Напиши владельцу бота.');
+        return;
+      }
+
+      const mode = await resolveUiMode(ctx.from.id);
+      const modeHuman = uiModeHuman(mode);
+      const uname = ctx.from?.username ? `@${ctx.from.username}` : '—';
+      const fullName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ').trim() || '—';
+
+      // best-effort detect manager state
+      let bmEnabled = false;
+      let bmBrand = '';
+      try {
+        const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: false });
+        bmEnabled = !!bm.enabled;
+        bmBrand = bm.brandLabel ? String(bm.brandLabel) : '';
+      } catch {}
+
+      const safe = txt.length > 3500 ? (txt.slice(0, 3500) + '…') : txt;
+
+      const header = `💬 <b>Support</b>
+
+` +
+        `От: <b>${escapeHtml(fullName)}</b> (${escapeHtml(uname)})
+` +
+        `TG ID: <code>${ctx.from.id}</code>
+` +
+        `User ID: <code>${u.id}</code>
+` +
+        `Mode: <b>${escapeHtml(modeHuman)}</b>${bmEnabled ? ' · <b>Brand Manager</b>' : ''}${bmBrand ? `
+Brand: <b>${escapeHtml(bmBrand)}</b>` : ''}
+` +
+        `Time: <code>${new Date().toISOString()}</code>
+
+` +
+        `<b>Сообщение:</b>
+${escapeHtml(safe)}`;
+
+      let sent = 0;
+      for (const a of admins) {
+        const adminId = Number(a || 0);
+        if (!adminId || adminId == ctx.from.id) continue;
+        try {
+          await ctx.api.sendMessage(adminId, header, { parse_mode: 'HTML', disable_web_page_preview: true });
+          sent += 1;
+        } catch {}
+      }
+
+      if (sent > 0) {
+        await ctx.reply('✅ Отправлено в поддержку. Если нужно — нажми «💬 Поддержка» → «✍️ Написать в поддержку» и отправь уточнение.');
+      } else {
+        await ctx.reply('⚠️ Не удалось отправить в поддержку. Попробуй позже или напиши владельцу.');
+      }
+      return;
+    }
+
 // Add curator by username
     if (exp.type === 'curator_username') {
       const txt = String(ctx.message.text || '').trim();
@@ -8404,6 +8481,132 @@ if (p.a === 'a:ui_mode_set') {
   await renderMainMenu(ctx, flags, { edit: true });
   return;
 }
+
+if (p.a === 'a:guide') {
+  const flags = await getRoleFlags(u, ctx.from.id);
+  const mode = await resolveUiMode(ctx.from.id);
+
+  let text = `🧭 <b>Быстрый старт</b>
+
+`;
+  const kb = new InlineKeyboard();
+
+  if (mode === UI_MODES.BRAND) {
+    const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: false });
+
+    text += `🏷 <b>Для бренда</b>
+` +
+      `1) Заполни <b>Профиль бренда</b> (Название, Ниша, Контакт, Ссылка).
+` +
+      `2) Ищи креаторов в <b>Ленте</b> или <b>Поиске</b>.
+` +
+      `3) Все заявки и ответы — в <b>Inbox</b>.
+` +
+      `4) <b>Команда бренда</b> открывается после покупки <b>Brand Pass</b> или <b>Brand Plan</b>.
+
+`;
+
+    if (bm.enabled) {
+      text += `🧑‍💼 <b>Если ты менеджер бренда</b>
+` +
+        `• Открой кабинет менеджера и работай в Inbox
+` +
+        `• Для оплат/профиля — попроси владельца бренда
+
+`;
+    }
+
+    kb.text('🛍 Лента', 'a:bx_feed|ws:0|p:0')
+      .text('🔎 Поиск', 'a:pm_home|ws:0')
+      .row()
+      .text('📨 Inbox', 'a:bx_inbox|ws:0|p:0');
+
+    if (!bm.enabled) {
+      kb.text('🏷 Профиль', 'a:brand_profile|ws:0|ret:brand')
+        .row()
+        .text('🎫 Brand Pass', 'a:brand_pass|ws:0')
+        .text('⭐️ Подписка', 'a:brand_plan|ws:0');
+    } else {
+      // Manager shortcuts
+      if ((bm.brands || []).length > 1) kb.row().text('🔁 Сменить бренд', 'a:bm_pick_brand|ret:menu');
+      kb.row().text('🧑‍💼 Кабинет менеджера', 'a:bm_home');
+    }
+  } else {
+    text += `✨ <b>Для Creator / канала</b>
+` +
+      `1) Нажми <b>«🚀 Подключить канал»</b> — добавь бота админом и перешли любой пост.
+` +
+      `2) Открой <b>«📣 Мои каналы»</b> → заполни витрину (контакты/ниши/форматы).
+` +
+      `3) Делись витриной — бренды будут писать тебе в <b>Inbox</b>.
+
+` +
+      `Если ты бренд — переключись в режим <b>«🏷 Я бренд»</b>.
+
+`;
+
+    kb.text('🚀 Подключить канал', 'a:setup')
+      .text('📣 Мои каналы', 'a:ws_list')
+      .row()
+      .text('🎬 UGC / Офферы', 'a:bx_home')
+      .text('🎁 Розыгрыши', 'a:gw_list')
+      .row()
+      .text('🏷 Я бренд', 'a:ui_mode_set|m:brand|ret:menu');
+  }
+
+  kb.row().text('💬 Поддержка', 'a:support').text('🏠 Меню', 'a:menu');
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb });
+  await maybeSendBanner(ctx, 'guide', CFG.GUIDE_BANNER_FILE_ID);
+  return;
+}
+
+if (p.a === 'a:support') {
+  const text = `💬 <b>Поддержка</b>
+
+` +
+    `Если что-то не работает или есть вопрос — напиши одним сообщением.
+` +
+    `Я отправлю это в поддержку и вернусь с ответом здесь.
+
+` +
+    `Что помогает быстрее решить:
+` +
+    `• в каком режиме ты был (Creator / Brand / Manager)
+` +
+    `• что нажимал (кнопки)
+` +
+    `• текст ошибки из логов/скрин (опиши)
+
+` +
+    `⚠️ Спам/реклама — бан.`;
+
+  const kb = new InlineKeyboard()
+    .text('✍️ Написать в поддержку', 'a:support_write')
+    .row()
+    .text('🧭 Быстрый старт', 'a:guide')
+    .text('🏠 Меню', 'a:menu');
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+  return;
+}
+
+if (p.a === 'a:support_write') {
+  await ctx.answerCallbackQuery();
+  await setExpectText(ctx.from.id, { type: 'support_msg', backCb: 'a:support' });
+
+  const text = `✍️ <b>Напиши одним сообщением</b>, что не работает или что нужно.
+
+` +
+    `Пример: «В режиме Brand нажимаю X → ошибка Y».
+
+` +
+    `Я отправлю это в поддержку.`;
+
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: navKb('a:support') });
+  return;
+}
+
 
 
 
