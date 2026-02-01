@@ -3196,6 +3196,94 @@ export async function markBrandLeadReplied(leadId, replyText, repliedByUserId) {
 }
 
 
+
+// --- Brand Applications (requests from creators on brand directory) ---
+
+export async function createBrandApplication({
+  brandUserId,
+  creatorUserId,
+  creatorTgId,
+  creatorUsername = null,
+  message,
+  meta = null
+}) {
+  const r = await pool.query(
+    `insert into brand_applications
+      (brand_user_id, creator_user_id, creator_tg_id, creator_username, message, meta)
+     values ($1,$2,$3,$4,$5,$6::jsonb)
+     returning *`,
+    [
+      Number(brandUserId),
+      Number(creatorUserId),
+      Number(creatorTgId),
+      creatorUsername ? String(creatorUsername) : null,
+      String(message || ''),
+      meta ? JSON.stringify(meta) : null
+    ]
+  );
+  return r.rows[0] || null;
+}
+
+export async function getBrandApplicationById(appId) {
+  const r = await pool.query(`select * from brand_applications where id=$1`, [Number(appId)]);
+  return r.rows[0] || null;
+}
+
+export async function countBrandApplicationsByStatus(brandUserId) {
+  const r = await pool.query(
+    `select status, count(*)::int as cnt
+     from brand_applications
+     where brand_user_id=$1
+     group by status`,
+    [Number(brandUserId)]
+  );
+  const out = { new: 0, in_progress: 0, closed: 0, spam: 0 };
+  for (const row of r.rows) {
+    const k = String(row.status || '').toLowerCase();
+    if (out[k] !== undefined) out[k] = Number(row.cnt || 0);
+  }
+  return out;
+}
+
+export async function listBrandApplications(brandUserId, status, limit = 10, offset = 0) {
+  const r = await pool.query(
+    `select *
+     from brand_applications
+     where brand_user_id=$1 and status=$2
+     order by created_at desc, id desc
+     limit $3 offset $4`,
+    [Number(brandUserId), String(status), Number(limit), Number(offset)]
+  );
+  return r.rows || [];
+}
+
+export async function updateBrandApplicationStatus(appId, status) {
+  const r = await pool.query(
+    `update brand_applications
+       set status=$2, updated_at=now()
+     where id=$1
+     returning *`,
+    [Number(appId), String(status)]
+  );
+  return r.rows[0] || null;
+}
+
+export async function markBrandApplicationReplied(appId, replyText, repliedByUserId) {
+  const r = await pool.query(
+    `update brand_applications
+       set reply_text=$2,
+           replied_by_user_id=$3,
+           replied_at=now(),
+           updated_at=now()
+     where id=$1
+     returning *`,
+    [Number(appId), String(replyText || ''), repliedByUserId ? Number(repliedByUserId) : null]
+  );
+  return r.rows[0] || null;
+}
+
+
+
 // Profiles matching (matrix-based)
 export async function searchWorkspaceProfilesByMatrix(verticals = [], formats = [], offset = 0, limit = 6) {
   const v = Array.isArray(verticals) ? verticals : [];
