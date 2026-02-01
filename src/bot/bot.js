@@ -4175,16 +4175,18 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
   const prof = await safeBrandProfiles(() => db.getBrandProfile(brandUserId), async () => null);
   const brandName = String(prof?.brand_name || '').trim() || 'Бренд';
 
-  const counts = await safeBrandApplications(() => db.countBrandDealsByStage(brandUserId, mineOnly ? actorUserId : null), async () => ({
-    negotiation: 0, deal: 0, paid: 0, done: 0, lost: 0, all: 0
-  }));
-
+  const mineOnly = access.isManager ? await getBrandDealsMineOnly(ctx.from.id, brandUserId) : false;
   const search = await getBrandDealsSearch(ctx.from.id, brandUserId);
 
-  const mineOnly = access.isManager ? await getBrandDealsMineOnly(ctx.from.id, brandUserId) : false;
+  const counts = await safeBrandApplications(
+    () => db.countBrandDealsByStage(brandUserId, mineOnly ? actorUserId : null),
+    async () => ({ negotiation: 0, deal: 0, paid: 0, done: 0, lost: 0, all: 0 })
+  );
 
   const items = await safeBrandApplications(
-    () => search ? db.listBrandDealsFiltered(brandUserId, st, search, limit, offset, mineOnly ? actorUserId : null) : db.listBrandDeals(brandUserId, st, limit, offset, mineOnly ? actorUserId : null),
+    () => search
+      ? db.listBrandDealsFiltered(brandUserId, st, search, limit, offset, mineOnly ? actorUserId : null)
+      : db.listBrandDeals(brandUserId, st, limit, offset, mineOnly ? actorUserId : null),
     async () => []
   );
 
@@ -4193,10 +4195,15 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
     `Бренд: <b>${escapeHtml(brandName)}</b>\n` +
     `Стадия: <b>${escapeHtml(dealStageTitle(st))}</b>\n`;
 
-  if (mineOnly) header += `Фильтр: <b>только мои</b>\n`;
-
-
-  if (search) header += `Поиск: <code>${escapeHtml(String(search))}</code>\n`;
+  // Filter indicator (ultra-clear)
+  if (!mineOnly && !search) {
+    header += `Фильтры: <b>нет</b>\n`;
+  } else {
+    const parts = [];
+    if (mineOnly) parts.push('👤 <b>только мои</b>');
+    if (search) parts.push(`🔎 <code>${escapeHtml(String(search))}</code>`);
+    header += `Фильтры: ${parts.join(' · ')}\n`;
+  }
 
   let body = '';
   if (!items.length) {
@@ -4221,14 +4228,20 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
     kb.row().text('🔁 Сменить бренд', 'a:bm_pick_brand|ret:brand_deals|ws:0|p:0');
   }
 
-
+  // Filters controls (separate reset buttons + full reset)
   if (access.isManager) {
-    kb.row().text(mineOnly ? '👥 Показать все' : '👤 Только мои', `a:brand_deals_mine_toggle|ws:0|st:${st}|p:${p}`);
+    kb.row().text(
+      mineOnly ? '❌ Сброс “только мои”' : '👤 Только мои',
+      `a:brand_deals_mine_toggle|ws:0|st:${st}|p:${p}`
+    );
   }
 
-// Search/filter by creator (username or tg id)
-kb.row().text('🔎 Поиск', `a:brand_deals_search|ws:0|st:${st}|p:${p}`);
-if (search) kb.text('❌ Сброс', `a:brand_deals_search_clear|ws:0|st:${st}|p:${p}`);
+  kb.row().text('🔎 Поиск', `a:brand_deals_search|ws:0|st:${st}|p:${p}`);
+  if (search) kb.text('❌ Сброс поиска', `a:brand_deals_search_clear|ws:0|st:${st}|p:${p}`);
+
+  if (search || mineOnly) {
+    kb.row().text('♻️ Сброс фильтров', `a:brand_deals_filters_clear|ws:0|st:${st}|p:${p}`);
+  }
 
   if (items.length) {
     kb.row();
@@ -4239,8 +4252,12 @@ if (search) kb.text('❌ Сброс', `a:brand_deals_search_clear|ws:0|st:${st}|
 
   // Pagination
   const total = search
-    ? await safeBrandApplications(() => db.countBrandDealsFiltered(brandUserId, st, search, mineOnly ? actorUserId : null), async () => (offset + items.length))
+    ? await safeBrandApplications(
+        () => db.countBrandDealsFiltered(brandUserId, st, search, mineOnly ? actorUserId : null),
+        async () => (offset + items.length)
+      )
     : ((st === 'all' ? (counts.all ?? 0) : (counts[st] ?? 0)) || 0);
+
   const hasPrev = p > 0;
   const hasNext = (offset + items.length) < total;
   if (hasPrev || hasNext) kb.row();
@@ -11012,6 +11029,20 @@ if (p.a === 'a:brand_deals_search_clear') {
   if (!bmRes) return;
   await clearBrandDealsSearch(ctx.from.id, bmRes.userId);
   await renderBrandDealsList(ctx, u.id, bmRes.userId, stage, page);
+  return;
+}
+
+if (p.a === 'a:brand_deals_filters_clear') {
+  await ctx.answerCallbackQuery();
+  const stage = String(p.st || 'negotiation');
+  const bmRes = await bmResolveAssert(ctx, u, 0, 'brand_deals', 0);
+  if (!bmRes) return;
+
+  // Clear both filters (search + mineOnly)
+  await clearBrandDealsSearch(ctx.from.id, bmRes.userId);
+  await clearBrandDealsMineOnly(ctx.from.id, bmRes.userId);
+
+  await renderBrandDealsList(ctx, u.id, bmRes.userId, stage, 0);
   return;
 }
 
