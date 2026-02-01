@@ -6148,7 +6148,136 @@ export function getBot() {
 
 
 
-  // Generic non-text guard for expectText steps
+  
+  // Support: accept text OR media (photo/screenshot) as one message.
+  // Text is handled in message:text router; media is handled here.
+  bot.on('message', async (ctx, next) => {
+    if (!ctx.from) return next();
+
+    const exp = await getExpectText(ctx.from.id);
+    if (!exp || String(exp.type) !== 'support_any') return next();
+
+    // Let text messages be handled by message:text router below
+    if (ctx.message?.text) return next();
+
+    // If user sends a command-like caption while we ожидали support — don't block commands
+    const cap = String(ctx.message?.caption || '');
+    const capIsCommand = cap.startsWith('/') &&
+      Array.isArray(ctx.message?.caption_entities) &&
+      ctx.message.caption_entities.some((e) => e.type === 'bot_command' && e.offset === 0);
+    if (capIsCommand) {
+      await clearExpectText(ctx.from.id);
+      return next();
+    }
+
+    const hasPhoto = Array.isArray(ctx.message?.photo) && ctx.message.photo.length > 0;
+    const hasDoc = !!ctx.message?.document;
+    const hasVideo = !!ctx.message?.video;
+
+    // We accept photo/document/video as "support media"
+    if (!hasPhoto && !hasDoc && !hasVideo) {
+      const backCb = expectBackCb(exp);
+      await ctx.reply('Можно отправить текст или фото/скрин (лучше с подписью). Стикеры/голос не подойдут 🙏', {
+        reply_markup: navKb(backCb),
+      });
+      // Keep ожидание ввода активным
+      try { await setExpectText(ctx.from.id, exp); } catch {}
+      return;
+    }
+
+    await clearExpectText(ctx.from.id);
+
+    const u = await db.upsertUser(ctx.from.id, ctx.from.username ?? null);
+
+    // Rate-limit: allow up to 2 support messages per 5 minutes per user (text+media)
+    const rlKey = k(['rl', 'support_any', String(u.id)]);
+    const rl = await rateLimit(rlKey, { limit: 2, windowSec: 5 * 60 });
+    if (!rl.allowed) {
+      const backCb = expectBackCb(exp);
+      await ctx.reply(`⏳ Слишком часто. Подожди ${fmtWait(rl.resetSec || 60)}.`, { reply_markup: navKb(backCb) });
+      return;
+    }
+
+    const admins = Array.isArray(CFG.SUPER_ADMIN_TG_IDS) ? CFG.SUPER_ADMIN_TG_IDS : [];
+    if (!admins.length) {
+      const backCb = expectBackCb(exp);
+      await ctx.reply('⚠️ Поддержка не настроена. Напиши владельцу бота.', { reply_markup: navKb(backCb) });
+      return;
+    }
+
+    const mode = await resolveUiMode(ctx.from.id);
+    const modeHuman = uiModeHuman(mode);
+    const uname = ctx.from?.username ? `@${ctx.from.username}` : '—';
+    const fullName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ').trim() || '—';
+
+    // best-effort detect manager state
+    let bmEnabled = false;
+    let bmBrand = '';
+    try {
+      const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: false });
+      bmEnabled = !!bm.enabled;
+      bmBrand = bm.brandLabel ? String(bm.brandLabel) : '';
+    } catch {}
+
+    const kind = hasPhoto ? 'photo' : (hasDoc ? 'document' : 'video');
+    const caption = String(ctx.message?.caption || '').trim();
+    const safeCap = caption.length > 800 ? (caption.slice(0, 800) + '…') : caption;
+
+    const header = `💬 <b>Support</b> (media)
+
+` +
+      `От: <b>${escapeHtml(fullName)}</b> (${escapeHtml(uname)})
+` +
+      `TG ID: <code>${ctx.from.id}</code>
+` +
+      `User ID: <code>${u.id}</code>
+` +
+      `Mode: <b>${escapeHtml(modeHuman)}</b>${bmEnabled ? ' · <b>Brand Manager</b>' : ''}${bmBrand ? `
+Brand: <b>${escapeHtml(bmBrand)}</b>` : ''}
+` +
+      `Type: <code>${escapeHtml(kind)}</code>
+` +
+      `Time: <code>${new Date().toISOString()}</code>
+` +
+      (safeCap ? `
+<b>Caption:</b>
+${escapeHtml(safeCap)}
+` : '');
+
+    let sent = 0;
+    for (const a of admins) {
+      const adminId = Number(a || 0);
+      if (!adminId || adminId == ctx.from.id) continue;
+      try {
+        // Send header first
+        await ctx.api.sendMessage(adminId, header, { parse_mode: 'HTML', disable_web_page_preview: true });
+
+        // Copy original media message (preserves attachment)
+        try {
+          await ctx.api.copyMessage(adminId, ctx.chat.id, ctx.message.message_id);
+        } catch {
+          // Fallback: forwardMessage if copyMessage fails
+          try { await ctx.api.forwardMessage(adminId, ctx.chat.id, ctx.message.message_id); } catch {}
+        }
+
+        sent += 1;
+      } catch {}
+    }
+
+    const backCb = expectBackCb(exp);
+    if (sent > 0) {
+      await ctx.reply('✅ Отправлено в поддержку. Если нужно — нажми «💬 Поддержка» и отправь уточнение (текстом).', {
+        reply_markup: navKb(backCb),
+      });
+    } else {
+      await ctx.reply('⚠️ Не удалось отправить в поддержку. Попробуй позже или напиши владельцу.', {
+        reply_markup: navKb(backCb),
+      });
+    }
+    return;
+  });
+
+// Generic non-text guard for expectText steps
   // If we are waiting for a text input and user sends sticker/photo/voice/etc,
   // respond with a helpful hint + navigation buttons (Back/Menu), instead of a dead-end text.
   bot.on('message', async (ctx, next) => {
@@ -6208,7 +6337,7 @@ ctx.reply = (text, extra) => {
 
 
 // Support message (send to SUPER_ADMIN_TG_IDS)
-    if (exp.type === 'support_msg') {
+    if (exp.type === 'support_any') {
       const txt = String(ctx.message?.text || '').trim();
       if (!txt) {
         await ctx.reply('Напиши текст одним сообщением.');
@@ -6217,7 +6346,7 @@ ctx.reply = (text, extra) => {
       }
 
       // Rate-limit: 1 support message per 5 minutes per user
-      const rlKey = k(['rl', 'support_msg', String(u.id)]);
+      const rlKey = k(['rl', 'support_any', String(u.id)]);
       const rl = await rateLimit(rlKey, { limit: 1, windowSec: 5 * 60 });
       if (!rl.allowed) {
         await ctx.reply(`⏳ Слишком часто. Подожди ${fmtWait(rl.resetSec || 60)}.`);
@@ -8593,15 +8722,13 @@ if (p.a === 'a:support') {
 
 if (p.a === 'a:support_write') {
   await ctx.answerCallbackQuery();
-  await setExpectText(ctx.from.id, { type: 'support_msg', backCb: 'a:support' });
+  await setExpectText(ctx.from.id, { type: 'support_any', backCb: 'a:support' });
 
-  const text = `✍️ <b>Напиши одним сообщением</b>, что не работает или что нужно.
+  const text = `✍️ <b>Пришли одним сообщением</b> текст или фото/скрин (можно с подписью).
 
-` +
-    `Пример: «В режиме Brand нажимаю X → ошибка Y».
+Пример: «В режиме Brand нажимаю X → ошибка Y».
 
-` +
-    `Я отправлю это в поддержку.`;
+Я отправлю это в поддержку.`;
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: navKb('a:support') });
   return;
