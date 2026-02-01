@@ -2313,6 +2313,159 @@ export async function listBrandsDirectory(limit = 10, offset = 0) {
   }
 }
 
+// Brand Directory (for Creators) with filters:
+//  - category: matches brand_profiles.niche (best-effort via substrings)
+//  - offerType / compensationType: matches brand_profiles.collab_types (CSV tags, normalized)
+export async function listBrandsDirectoryFiltered(limit = 10, offset = 0, filter = {}) {
+  const lim = Math.max(1, Math.min(100, Number(limit) || 10));
+  const off = Math.max(0, Number(offset) || 0);
+
+  const f = filter || {};
+  const cat = f.category ? String(f.category) : null;
+  const offerType = f.offerType ? String(f.offerType) : null;
+  const compType = f.compensationType ? String(f.compensationType) : null;
+
+  const baseWhere = `
+    where coalesce(nullif(trim(bp.brand_name), ''), null) is not null
+      and coalesce(nullif(trim(bp.niche), ''), null) is not null
+      and coalesce(nullif(trim(bp.contact), ''), null) is not null
+      and coalesce(nullif(trim(bp.brand_link), ''), null) is not null
+  `;
+
+  const params = [lim, off];
+  let idx = 3;
+  let extraWhere = '';
+
+  const nichePatterns = (c) => {
+    const v = String(c || '').toLowerCase();
+    if (!v) return null;
+    if (v === 'cosmetics') return ['%косм%', '%cosm%', '%beauty%', '%makeup%', '%skin%'];
+    if (v === 'fashion') return ['%одеж%', '%fashion%', '%cloth%', '%apparel%', '%style%'];
+    if (v === 'unboxing') return ['%распак%', '%unbox%'];
+    if (v === 'other') return ['%друг%', '%other%'];
+    return null;
+  };
+
+  const ctPatternsByOffer = (t) => {
+    const v = String(t || '').toLowerCase();
+    if (!v) return null;
+    if (v === 'ad') return ['%,integration,%'];
+    if (v === 'review') return ['%,review,%', '%,unboxing,%'];
+    if (v === 'giveaway') return ['%,giveaway,%'];
+    if (v === 'other') return ['%,other,%'];
+    return null;
+  };
+
+  const ctPatternsByComp = (t) => {
+    const v = String(t || '').toLowerCase();
+    if (!v) return null;
+    if (v === 'barter') return ['%,barter,%'];
+    if (v === 'cert') return ['%,cert,%'];
+    if (v === 'rub') return ['%,paid,%'];
+    if (v === 'mixed') return ['%,mixed,%'];
+    return null;
+  };
+
+  const catP = nichePatterns(cat);
+  if (catP && catP.length) {
+    extraWhere += ` and (lower(bp.niche) like any($${idx}))`;
+    params.push(catP);
+    idx++;
+  }
+
+  const ctOfferP = ctPatternsByOffer(offerType);
+  if (ctOfferP && ctOfferP.length) {
+    // normalize CSV: remove whitespace
+    extraWhere += ` and ((',' || regexp_replace(lower(coalesce(bp.collab_types,'')), '\\s+', '', 'g') || ',') like any($${idx}))`;
+    params.push(ctOfferP);
+    idx++;
+  }
+
+  const ctCompP = ctPatternsByComp(compType);
+  if (ctCompP && ctCompP.length) {
+    extraWhere += ` and ((',' || regexp_replace(lower(coalesce(bp.collab_types,'')), '\\s+', '', 'g') || ',') like any($${idx}))`;
+    params.push(ctCompP);
+    idx++;
+  }
+
+  const qBoth = `
+    select bp.*, u.tg_username
+      from brand_profiles bp
+      join users u on u.id = bp.user_id
+      ${baseWhere}
+      ${extraWhere}
+       and (
+         exists (
+           select 1 from payments p
+            where p.user_id = bp.user_id
+              and p.kind in ('brand_pass', 'brand_plan')
+              and coalesce(p.status, 'RECEIVED') <> 'ERROR'
+            limit 1
+         )
+         or exists (
+           select 1 from stars_payments sp
+            where sp.user_id = bp.user_id
+              and sp.kind in ('brand_pass', 'brand_plan')
+            limit 1
+         )
+       )
+     order by bp.updated_at desc nulls last, bp.created_at desc
+     limit $1 offset $2
+  `;
+
+  const qPaymentsOnly = `
+    select bp.*, u.tg_username
+      from brand_profiles bp
+      join users u on u.id = bp.user_id
+      ${baseWhere}
+      ${extraWhere}
+       and exists (
+         select 1 from payments p
+          where p.user_id = bp.user_id
+            and p.kind in ('brand_pass', 'brand_plan')
+            and coalesce(p.status, 'RECEIVED') <> 'ERROR'
+          limit 1
+       )
+     order by bp.updated_at desc nulls last, bp.created_at desc
+     limit $1 offset $2
+  `;
+
+  const qStarsOnly = `
+    select bp.*, u.tg_username
+      from brand_profiles bp
+      join users u on u.id = bp.user_id
+      ${baseWhere}
+      ${extraWhere}
+       and exists (
+         select 1 from stars_payments sp
+          where sp.user_id = bp.user_id
+            and sp.kind in ('brand_pass', 'brand_plan')
+          limit 1
+       )
+     order by bp.updated_at desc nulls last, bp.created_at desc
+     limit $1 offset $2
+  `;
+
+  try {
+    const r = await pool.query(qBoth, params);
+    return r.rows || [];
+  } catch (e) {
+    const missPayments = isMissingRelationError(e, 'payments');
+    const missStars = isMissingRelationError(e, 'stars_payments');
+    if (!missPayments && !missStars) throw e;
+
+    if (missStars && !missPayments) {
+      const r = await pool.query(qPaymentsOnly, params);
+      return r.rows || [];
+    }
+    if (missPayments && !missStars) {
+      const r = await pool.query(qStarsOnly, params);
+      return r.rows || [];
+    }
+    return [];
+  }
+}
+
 // -----------------------------
 // Workspace channel folders + editors (v1.1.2)
 // -----------------------------
