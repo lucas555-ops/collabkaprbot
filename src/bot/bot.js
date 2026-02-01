@@ -394,9 +394,11 @@ function mainMenuCreatorKb(flags = {}, opts = {}) {
     .text('📣 Мои каналы', 'a:ws_list')
     .row()
     .text('🎬 UGC / Офферы', 'a:bx_home')
-    .text('🎁 Розыгрыши', 'a:gw_list')
+    .text('🏷 Бренды', 'a:brands_home|p:0')
     .row()
+    .text('🎁 Розыгрыши', 'a:gw_list')
     .text('🧭 Быстрый старт', 'a:guide')
+    .row()
     .text('💬 Поддержка', 'a:support')
     .row();
 
@@ -1701,6 +1703,136 @@ async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
   } else {
     await ctx.reply(txt, opts);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Brand Directory (Creator): list brands with basic profile + paid (pass/plan)
+// Commit 16
+// ─────────────────────────────────────────────────────────────────────────────
+
+function brandContactUrl(contactRaw) {
+  const c = String(contactRaw || '').trim();
+  if (!c) return null;
+  if (/^https?:\/\//i.test(c)) return c;
+  if (c.startsWith('@') && c.length > 1) return `https://t.me/${c.slice(1)}`;
+  // common inputs: t.me/xxx or telegram.me/xxx
+  if (/^(t\.me|telegram\.me)\//i.test(c)) return `https://${c}`;
+  if (/^https?:\/\/(t\.me|telegram\.me)\//i.test(c)) return c;
+  return null;
+}
+
+function brandDirectoryButtonLabel(bp) {
+  const name = String(bp?.brand_name || 'Бренд').trim() || 'Бренд';
+  const niche = String(bp?.niche || '').trim();
+  const base = niche ? `${name} · ${niche}` : name;
+  return clipText(base, 48);
+}
+
+async function renderBrandsDirectory(ctx, viewerUserId, params = {}) {
+  const page = Math.max(0, Number(params.page || 0));
+  const edit = !!params.edit;
+  const PAGE_SIZE = 8;
+  const offset = page * PAGE_SIZE;
+
+  const rows = await safeBrandProfiles(
+    () => db.listBrandsDirectory(PAGE_SIZE + 1, offset),
+    async () => ({ __missing_relation: true })
+  );
+  if (rows && rows.__missing_relation) {
+    const msg = '⚠️ В базе нет таблицы brand_profiles. Применяй миграцию migrations/024_brand_profiles.sql в Neon и повтори.';
+    if (edit && ctx.callbackQuery?.message) await ctx.editMessageText(msg, { reply_markup: navKb('a:menu') });
+    else await ctx.reply(msg, { reply_markup: navKb('a:menu') });
+    return;
+  }
+
+  const list = Array.isArray(rows) ? rows : [];
+  const hasMore = list.length > PAGE_SIZE;
+  const items = list.slice(0, PAGE_SIZE);
+
+  let text = `🏷 <b>Каталог брендов</b>\n\n` +
+    `Показываю бренды с заполненным профилем (4/4) и активной покупкой <b>Brand Pass</b> или <b>Brand Plan</b>.\n\n`;
+
+  if (!items.length) {
+    text += `Пока брендов нет.\n\n` +
+      `Если ты бренд — заполни профиль и купи Brand Pass/Plan, тогда ты появишься в каталоге.`;
+  } else {
+    text += `Выбери бренд:`;
+  }
+
+  const kb = new InlineKeyboard();
+  for (const bp of items) {
+    kb.text(brandDirectoryButtonLabel(bp), `a:brand_dir_open|u:${Number(bp.user_id)}|p:${page}`).row();
+  }
+
+  if (page > 0 || hasMore) {
+    if (page > 0) kb.text('⬅️ Назад', `a:brands_home|p:${page - 1}`);
+    if (hasMore) kb.text('➡️ Далее', `a:brands_home|p:${page + 1}`);
+    kb.row();
+  }
+
+  kb.text('⬅️ Меню', 'a:menu');
+
+  const extra = { parse_mode: 'HTML', reply_markup: kb };
+  if (edit && ctx.callbackQuery?.message) await ctx.editMessageText(text, extra);
+  else await ctx.reply(text, extra);
+}
+
+async function renderBrandDirectoryCard(ctx, viewerUserId, params = {}) {
+  const brandUserId = Number(params.brandUserId || 0);
+  const backPage = Math.max(0, Number(params.backPage || 0));
+  const edit = !!params.edit;
+  if (!brandUserId) return;
+
+  const prof = await safeBrandProfiles(
+    () => db.getBrandProfile(brandUserId),
+    async () => ({ __missing_relation: true })
+  );
+  if (prof && prof.__missing_relation) {
+    const msg = '⚠️ В базе нет таблицы brand_profiles. Применяй миграцию migrations/024_brand_profiles.sql в Neon и повтори.';
+    if (edit && ctx.callbackQuery?.message) await ctx.editMessageText(msg, { reply_markup: navKb('a:menu') });
+    else await ctx.reply(msg, { reply_markup: navKb('a:menu') });
+    return;
+  }
+  if (!prof) {
+    const kb = new InlineKeyboard().text('⬅️ Назад', `a:brands_home|p:${backPage}`).row().text('⬅️ Меню', 'a:menu');
+    if (edit && ctx.callbackQuery?.message) await ctx.editMessageText('⚠️ Бренд не найден.', { reply_markup: kb });
+    else await ctx.reply('⚠️ Бренд не найден.', { reply_markup: kb });
+    return;
+  }
+
+  const name = String(prof.brand_name || 'Бренд').trim() || 'Бренд';
+  const niche = String(prof.niche || '').trim();
+  const geo = String(prof.geo || '').trim();
+  const formats = brandCollabTypesDisplay(String(prof.collab_types || '').trim());
+  const budget = String(prof.budget || '').trim();
+  const goals = String(prof.goals || '').trim();
+  const req = String(prof.requirements || '').trim();
+  const link = String(prof.brand_link || '').trim();
+  const contact = String(prof.contact || '').trim();
+
+  let text = `🏷 <b>${escapeHtml(name)}</b>\n\n`;
+  if (niche) text += `🎯 Ниша: <b>${escapeHtml(niche)}</b>\n`;
+  if (geo) text += `🌍 Гео: <b>${escapeHtml(geo)}</b>\n`;
+  if (formats && formats !== '—') text += `🧩 Форматы/условия: <b>${escapeHtml(formats)}</b>\n`;
+  if (budget) text += `💰 Бюджет: ${escapeHtml(clipText(budget, 240))}\n`;
+  if (goals) text += `🎬 Цели: ${escapeHtml(clipText(goals, 240))}\n`;
+  if (req) text += `📎 Требования: ${escapeHtml(clipText(req, 240))}\n`;
+
+  text += `\n`;
+
+  const kb = new InlineKeyboard();
+  const brandUrl = link && (/^https?:\/\//i.test(link) ? link : null);
+  if (brandUrl) kb.url('🔗 Ссылка бренда', brandUrl).row();
+
+  const cUrl = brandContactUrl(contact);
+  if (cUrl) kb.url('✍️ Контакт', cUrl).row();
+
+  kb.text('⬅️ Назад к списку', `a:brands_home|p:${backPage}`).row();
+  kb.text('⬅️ Меню', 'a:menu');
+
+  const extra = { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true };
+  if (edit && ctx.callbackQuery?.message) await ctx.editMessageText(text, extra);
+  else await ctx.reply(text, extra);
 }
 
 
@@ -8853,6 +8985,9 @@ if (p.a === 'a:guide') {
       `3) Делись витриной — бренды будут писать тебе в <b>Inbox</b>.
 
 ` +
+      `4) Хочешь найти активные бренды — открой <b>«🏷 Бренды»</b>.
+
+` +
       `Если ты бренд — переключись в режим <b>«🏷 Я бренд»</b>.
 
 `;
@@ -8861,6 +8996,8 @@ if (p.a === 'a:guide') {
       .text('📣 Мои каналы', 'a:ws_list')
       .row()
       .text('🎬 UGC / Офферы', 'a:bx_home')
+      .text('🏷 Бренды', 'a:brands_home|p:0')
+      .row()
       .text('🎁 Розыгрыши', 'a:gw_list')
       .row()
       .text('🏷 Я бренд', 'a:ui_mode_set|m:brand|ret:menu');
@@ -8914,6 +9051,23 @@ if (p.a === 'a:support_write') {
 Я отправлю это в поддержку.`;
 
   await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: navKb('a:support') });
+  return;
+}
+
+
+// Brand Directory (Creator)
+if (p.a === 'a:brands_home') {
+  await ctx.answerCallbackQuery();
+  const page = Math.max(0, Number(p.p || 0));
+  await renderBrandsDirectory(ctx, u.id, { page, edit: true });
+  return;
+}
+
+if (p.a === 'a:brand_dir_open') {
+  await ctx.answerCallbackQuery();
+  const brandUserId = Number(p.u || 0);
+  const backPage = Math.max(0, Number(p.p || 0));
+  await renderBrandDirectoryCard(ctx, u.id, { brandUserId, backPage, edit: true });
   return;
 }
 
