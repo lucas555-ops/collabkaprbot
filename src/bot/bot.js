@@ -1297,6 +1297,161 @@ function isBrandExtendedComplete(p) {
   );
 }
 
+// Brand profile: structured collaboration types (stored as CSV in brand_profiles.collab_types).
+// No migrations: we reuse the existing text field and keep backward-compat with old free-form values.
+const BRAND_COLLAB_TYPES = [
+  { key: 'stories', title: '📲 Сторис' },
+  { key: 'reels', title: '🎞 Reels' },
+  { key: 'post', title: '🧾 Пост' },
+  { key: 'review', title: '🎥 Обзор' },
+  { key: 'unboxing', title: '📦 Распаковка' },
+  { key: 'ugc', title: '🧩 UGC (контент)' },
+  { key: 'integration', title: '📣 Реклама/упоминание' },
+  { key: 'giveaway', title: '🎁 Розыгрыш' },
+  { key: 'ambassador', title: '🧿 Амбассадорство' },
+  { key: 'barter', title: '🤝 Бартер' },
+  { key: 'cert', title: '🎟 Сертификат' },
+  { key: 'paid', title: '💸 ₽ (оплата)' },
+  { key: 'mixed', title: '🔁 Смешано' },
+  { key: 'other', title: '✨ Другое' }
+];
+
+const BRAND_COLLAB_KEYS = new Set(BRAND_COLLAB_TYPES.map(x => x.key));
+const BRAND_COLLAB_ALIASES = {
+  // ru
+  'сторис': 'stories',
+  'story': 'stories',
+  'stories': 'stories',
+  'рилс': 'reels',
+  'reels': 'reels',
+  'reel': 'reels',
+  'пост': 'post',
+  'post': 'post',
+  'обзор': 'review',
+  'review': 'review',
+  'распаковка': 'unboxing',
+  'unboxing': 'unboxing',
+  'ugc': 'ugc',
+  'югс': 'ugc',
+  'интеграция': 'integration',
+  'реклама': 'integration',
+  'упоминание': 'integration',
+  'integration': 'integration',
+  'розыгрыш': 'giveaway',
+  'giveaway': 'giveaway',
+  'give away': 'giveaway',
+  'амбассадор': 'ambassador',
+  'амбассадорство': 'ambassador',
+  'ambassador': 'ambassador',
+  'бартер': 'barter',
+  'barter': 'barter',
+  'сертификат': 'cert',
+  'cert': 'cert',
+  'руб': 'paid',
+  '₽': 'paid',
+  'деньги': 'paid',
+  'оплата': 'paid',
+  'paid': 'paid',
+  'смешано': 'mixed',
+  'mixed': 'mixed',
+  'другое': 'other',
+  'other': 'other'
+};
+
+function parseBrandCollabTypes(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return [];
+
+  const parts = s
+    .split(/[,;\n]+/g)
+    .map((x) => String(x || '').trim())
+    .filter(Boolean);
+
+  const out = [];
+  const seen = new Set();
+
+  for (let p of parts) {
+    // strip leading emojis / bullets
+    p = p.replace(/^[^0-9a-zA-Zа-яА-Я]+/g, '').trim();
+    if (!p) continue;
+    const low = p.toLowerCase();
+    const key = BRAND_COLLAB_ALIASES[low] || (BRAND_COLLAB_KEYS.has(low) ? low : null);
+    if (!key) continue;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  }
+
+  return out;
+}
+
+function brandCollabTypesToCsv(keys) {
+  const arr = Array.isArray(keys) ? keys.map(String).filter((k) => BRAND_COLLAB_KEYS.has(k)) : [];
+  const seen = new Set();
+  const out = [];
+  for (const k of arr) {
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(k);
+    }
+  }
+  return out.length ? out.join(',') : null;
+}
+
+function brandCollabTypesDisplay(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '—';
+  const keys = parseBrandCollabTypes(s);
+  if (keys.length) return fmtMatrix(keys, BRAND_COLLAB_TYPES);
+  // legacy free-form value (keep as-is)
+  return s;
+}
+
+async function renderBrandCollabTypesPicker(ctx, ownerUserId, params = {}) {
+  const wsId = Number(params.wsId || 0);
+  const ret = String(params.ret || 'brand');
+  const bo = params.backOfferId ? Number(params.backOfferId) : null;
+  const bp = params.backPage ? Number(params.backPage) : 0;
+
+  const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
+  const raw = String(prof?.collab_types || '').trim();
+  const selected = parseBrandCollabTypes(raw);
+
+  const nowTxt = selected.length ? fmtMatrix(selected, BRAND_COLLAB_TYPES) : (raw ? raw : '—');
+  const legacyHint = (!selected.length && raw)
+    ? `\n\nℹ️ У тебя был текстовый список. Выбери пункты ниже — я переведу в структурированный формат.`
+    : '';
+
+  const text =
+    `🧩 <b>Форматы сотрудничества</b>\n\n` +
+    `Выбери, что вы обычно делаете с креаторами (можно несколько).\n\n` +
+    `Сейчас: <b>${escapeHtml(nowTxt)}</b>\n\n` +
+    `Рекомендация: 3–10 пунктов.` +
+    legacyHint;
+
+  const suf = brandCbSuffix({ wsId, ret, backOfferId: bo, backPage: bp });
+  const kb = new InlineKeyboard();
+
+  BRAND_COLLAB_TYPES.forEach((it, i) => {
+    const on = selected.includes(it.key);
+    kb.text(`${on ? '✅' : '▫️'} ${it.title}`, `a:brand_ty_t${suf}|k:${it.key}`);
+    if (i % 2 === 1) kb.row();
+  });
+  kb.row()
+    .text('🧹 Сброс', `a:brand_ty_clear${suf}`)
+    .text('✅ Готово', `a:brand_ty_done${suf}`)
+    .row()
+    .text('⬅️ Назад', `a:brand_prof_more${suf}`);
+
+  const opts = { parse_mode: 'HTML', reply_markup: kb };
+  if (params.edit && ctx.callbackQuery?.message) {
+    await ctx.editMessageText(text, opts);
+  } else {
+    await ctx.reply(text, opts);
+  }
+}
+
 function brandCbSuffix(params = {}) {
   const wsId = Number(params.wsId || 0);
   const ret = String(params.ret || 'brand'); // brand | offer | lead | verify
@@ -1466,7 +1621,7 @@ async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
 ` +
     `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
 ` +
-    `• Форматы: <b>${escapeHtml(p.collab_types || '—')}</b>
+    `• Форматы: <b>${escapeHtml(brandCollabTypesDisplay(p.collab_types))}</b>
 ` +
     `• Бюджет: <b>${escapeHtml(p.budget || '—')}</b>
 ` +
@@ -1520,7 +1675,7 @@ async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
 ` +
     `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
 ` +
-    `• Форматы: <b>${escapeHtml(p.collab_types || '—')}</b>
+    `• Форматы: <b>${escapeHtml(brandCollabTypesDisplay(p.collab_types))}</b>
 ` +
     `• Бюджет: <b>${escapeHtml(p.budget || '—')}</b>
 ` +
@@ -9943,11 +10098,95 @@ ${link}`;
       const realField = map[field] || null;
       if (!realField) return;
 
+      // Structured multi-select for collaboration types (no free-text input)
+      if (realField === 'collab_types') {
+        await renderBrandCollabTypesPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+        return;
+      }
+
       await setExpectText(ctx.from.id, { type: 'brand_prof_field', field: realField, wsId, ret, backOfferId: bo, backPage: bp });
       await ctx.editMessageText(brandFieldPrompt(realField), {
         parse_mode: 'HTML',
         reply_markup: brandFieldPromptKb({ wsId, ret, backOfferId: bo, backPage: bp })
       });
+      return;
+    }
+
+    // Brand profile: structured collab types multi-select
+    if (p.a === 'a:brand_ty_t') {
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      const key = String(p.k || '');
+      if (!BRAND_COLLAB_KEYS.has(key)) {
+        await ctx.answerCallbackQuery();
+        return;
+      }
+
+      await ctx.answerCallbackQuery();
+
+      const prof = await safeBrandProfiles(
+        () => db.getBrandProfile(u.id),
+        async () => ({ __missing_relation: true })
+      );
+      if (prof && prof.__missing_relation) {
+        await ctx.editMessageText('⚠️ В базе нет таблицы brand_profiles. Применяй миграцию migrations/024_brand_profiles.sql в Neon и повтори.', {
+          reply_markup: navKb('a:menu')
+        });
+        return;
+      }
+
+      const current = parseBrandCollabTypes(String(prof?.collab_types || '').trim());
+      const set = new Set(current);
+      if (set.has(key)) set.delete(key); else set.add(key);
+      const next = Array.from(set);
+      const csv = brandCollabTypesToCsv(next);
+
+      const saved = await safeBrandProfiles(
+        () => db.upsertBrandProfile(u.id, { collab_types: csv }),
+        async () => ({ __missing_relation: true })
+      );
+      if (saved && saved.__missing_relation) {
+        await ctx.editMessageText('⚠️ В базе нет таблицы brand_profiles. Применяй миграцию migrations/024_brand_profiles.sql в Neon и повтори.', {
+          reply_markup: navKb('a:menu')
+        });
+        return;
+      }
+
+      await renderBrandCollabTypesPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_ty_clear') {
+      await ctx.answerCallbackQuery();
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+
+      const saved = await safeBrandProfiles(
+        () => db.upsertBrandProfile(u.id, { collab_types: null }),
+        async () => ({ __missing_relation: true })
+      );
+      if (saved && saved.__missing_relation) {
+        await ctx.editMessageText('⚠️ В базе нет таблицы brand_profiles. Применяй миграцию migrations/024_brand_profiles.sql в Neon и повтори.', {
+          reply_markup: navKb('a:menu')
+        });
+        return;
+      }
+
+      await renderBrandCollabTypesPicker(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
+      return;
+    }
+
+    if (p.a === 'a:brand_ty_done') {
+      await ctx.answerCallbackQuery({ text: '✅ Сохранено' });
+      const wsId = Number(p.ws || 0);
+      const ret = String(p.ret || 'brand');
+      const bo = p.bo ? Number(p.bo) : null;
+      const bp = p.bp ? Number(p.bp) : 0;
+      await renderBrandProfileMore(ctx, u.id, { wsId, ret, backOfferId: bo, backPage: bp, edit: true });
       return;
     }
 
