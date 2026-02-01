@@ -5106,6 +5106,11 @@ Retry начисляется, если блогер не отвечает за 2
   );
 }
 
+// Back-compat alias (some UI buttons still call renderBrandPass)
+async function renderBrandPass(ctx, userId, wsId) {
+  return renderBrandPassTopup(ctx, userId, wsId);
+}
+
 async function renderBrandPlan(ctx, userId, wsId) {
   const planRow = await db.getBrandPlan(userId);
   const active = await db.isBrandPlanActive(userId);
