@@ -1721,11 +1721,239 @@ function brandContactUrl(contactRaw) {
   return null;
 }
 
-function brandDirectoryButtonLabel(bp) {
+// Split badges by semantics: formats vs payment
+// Examples:
+//  - Formats: integration · review
+//  - Pay: barter · cert
+
+// Human labels for brand collab tags (stored as keys, shown as emoji+labels)
+// short: compact (used in list buttons), long: readable (used in brand card)
+const BRAND_COLLAB_TAG_LABELS = {
+  // formats
+  integration: { short: '📣Реклама', long: '📣 Реклама' },
+  review: { short: '🔎Обзор', long: '🔎 Обзор' },
+  unboxing: { short: '📦Распак', long: '📦 Распаковка' },
+  giveaway: { short: '🎁Розыг', long: '🎁 Розыгрыш' },
+  ugc: { short: '🎬UGC', long: '🎬 UGC' },
+  other: { short: '✨Другое', long: '✨ Другое' },
+  // payments
+  barter: { short: '🤝Бартер', long: '🤝 Бартер' },
+  cert: { short: '🎟Серт', long: '🎟 Сертификат' },
+  paid: { short: '💰Оплата', long: '💰 Оплата' },
+  mixed: { short: '🔀Микс', long: '🔀 Микс' }
+};
+
+function brandCollabTagLabel(key, mode = 'long') {
+  const k = String(key || '').trim();
+  if (!k) return '';
+  const m = BRAND_COLLAB_TAG_LABELS[k];
+  if (!m) return k;
+  return mode === 'short' ? m.short : m.long;
+}
+
+function brandCollabTagBadgesSplit(raw, opts = {}) {
+  const maxFormats = Math.max(0, Math.min(12, Number(opts.maxFormats ?? 4)));
+  const maxPay = Math.max(0, Math.min(12, Number(opts.maxPay ?? 3)));
+  const filter = opts.filter || null;
+
+  const keys = parseBrandCollabTypes(String(raw || '').trim());
+  if (!keys.length) return { formatsArr: [], payArr: [], formats: '', pay: '' };
+
+  const payKeys = new Set(['barter', 'cert', 'paid', 'mixed']);
+  const offerPref = {
+    ad: ['integration'],
+    review: ['review', 'unboxing'],
+    giveaway: ['giveaway'],
+    other: ['other']
+  };
+  const compPref = {
+    barter: ['barter'],
+    cert: ['cert'],
+    rub: ['paid'],
+    mixed: ['mixed']
+  };
+
+  const pushUnique = (arr, seen, k) => {
+    if (!k || seen.has(k)) return;
+    seen.add(k);
+    arr.push(k);
+  };
+
+  const formatsArr = [];
+  const payArr = [];
+  const seenF = new Set();
+  const seenP = new Set();
+
+  // Prefer tags that match active filters (so it's obvious why brand is shown)
+  if (filter && filter.offerType && offerPref[filter.offerType]) {
+    for (const k of offerPref[filter.offerType]) {
+      if (keys.includes(k) && !payKeys.has(k)) pushUnique(formatsArr, seenF, k);
+    }
+  }
+  if (filter && filter.compensationType && compPref[filter.compensationType]) {
+    for (const k of compPref[filter.compensationType]) {
+      if (keys.includes(k) && payKeys.has(k)) pushUnique(payArr, seenP, k);
+    }
+  }
+
+  // Then fill the rest (formats first, then payments)
+  for (const k of keys) {
+    if (!payKeys.has(k)) pushUnique(formatsArr, seenF, k);
+    if (maxFormats && formatsArr.length >= maxFormats) break;
+  }
+  for (const k of keys) {
+    if (payKeys.has(k)) pushUnique(payArr, seenP, k);
+    if (maxPay && payArr.length >= maxPay) break;
+  }
+
+  const formats = maxFormats ? formatsArr.slice(0, maxFormats).map(k => brandCollabTagLabel(k, 'long')).join(' · ') : '';
+  const pay = maxPay ? payArr.slice(0, maxPay).map(k => brandCollabTagLabel(k, 'long')).join(' · ') : '';
+
+  return { formatsArr, payArr, formats, pay };
+}
+
+// Back-compat single-line badges (older screens)
+function brandCollabTagBadges(raw, opts = {}) {
+  const max = Math.max(1, Math.min(12, Number(opts.max || 6)));
+  const filter = opts.filter || null;
+
+  // roughly split max across two groups
+  const maxFormats = Math.max(1, Math.ceil(max * 0.6));
+  const maxPay = Math.max(1, max - maxFormats);
+
+  const split = brandCollabTagBadgesSplit(raw, { maxFormats, maxPay, filter });
+  const parts = [];
+  if (split.formats) parts.push(split.formats);
+  if (split.pay) parts.push(split.pay);
+  return parts.join(' · ');
+}
+
+function brandDirectoryButtonLabel(bp, filter = null) {
   const name = String(bp?.brand_name || 'Бренд').trim() || 'Бренд';
   const niche = String(bp?.niche || '').trim();
-  const base = niche ? `${name} · ${niche}` : name;
-  return clipText(base, 48);
+
+  const split = brandCollabTagBadgesSplit(bp?.collab_types, { maxFormats: 2, maxPay: 2, filter });
+  const fmtMini = split.formatsArr.slice(0, 2).map(k => brandCollabTagLabel(k, 'short')).join('·');
+  const payMini = split.payArr.slice(0, 2).map(k => brandCollabTagLabel(k, 'short')).join('·');
+
+  const parts = [name];
+  if (niche) parts.push(niche);
+  if (fmtMini) parts.push(`Форматы:${fmtMini}`);
+  if (payMini) parts.push(`Оплата:${payMini}`);
+
+  // Telegram inline button text limit is 64 chars; keep some margin.
+  return clipText(parts.join(' · '), 56);
+}
+
+
+// Brand Directory filters (Creator): stored in Redis per viewer (tgId)
+// Shape: { category, offerType, compensationType }
+async function getBrandDirFilter(tgId) {
+  const key = k(['brand_dir_filter', tgId]);
+  const v = await redis.get(key);
+  const base = v || {};
+
+  const f = {
+    category: base.category ?? null,
+    offerType: base.offerType ?? null,
+    compensationType: base.compensationType ?? null
+  };
+
+  const norm = (x) => {
+    if (x == null) return null;
+    const s = String(x);
+    if (!s || s === 'all' || s === 'undefined' || s === 'null') return null;
+    return s;
+  };
+
+  // Back-compat (if any)
+  if (f.category == null && base.cat != null) f.category = norm(base.cat);
+  if (f.offerType == null && base.type != null) f.offerType = norm(base.type);
+  if (f.compensationType == null && base.comp != null) f.compensationType = norm(base.comp);
+
+  const needsPersist = (!base.category && !base.offerType && !base.compensationType) && (base.cat || base.type || base.comp);
+  if (needsPersist) {
+    try {
+      await redis.set(key, f, { ex: 30 * 24 * 3600 });
+    } catch {}
+  }
+
+  return f;
+}
+
+async function setBrandDirFilter(tgId, patch) {
+  const key = k(['brand_dir_filter', tgId]);
+  const cur = await getBrandDirFilter(tgId);
+  const next = { ...cur, ...patch };
+  await redis.set(key, next, { ex: 30 * 24 * 3600 });
+  return next;
+}
+
+function brandDirFilterSummary(f) {
+  return [
+    `Категория: ${bxAnyLabel(f.category, 'cat')}`,
+    `Формат: ${bxAnyLabel(f.offerType, 'type')}`,
+    `Оплата: ${bxAnyLabel(f.compensationType, 'comp')}`
+  ].join(' · ');
+}
+
+function brandDirFiltersKb(f, page = 0) {
+  const kb = new InlineKeyboard()
+    .text(`Категория: ${bxAnyLabel(f.category, 'cat')}`, `a:bd_fpick|k:cat|p:${page}`)
+    .row()
+    .text(`Формат: ${bxAnyLabel(f.offerType, 'type')}`, `a:bd_fpick|k:type|p:${page}`)
+    .row()
+    .text(`Оплата: ${bxAnyLabel(f.compensationType, 'comp')}`, `a:bd_fpick|k:comp|p:${page}`)
+    .row()
+    .text('♻️ Сбросить', `a:bd_freset|p:${page}`)
+    .text('⬅️ Назад', `a:brands_home|p:${page}`);
+  return kb;
+}
+
+function brandDirPickKb(key, page = 0) {
+  const kb = new InlineKeyboard();
+  if (key === 'cat') {
+    kb.text('Все', `a:bd_fset|k:cat|v:all|p:${page}`).row();
+    for (const c of BX_CATEGORIES) {
+      kb.text(c.label, `a:bd_fset|k:cat|v:${c.key}|p:${page}`).row();
+    }
+  }
+  if (key === 'type') {
+    kb.text('Все', `a:bd_fset|k:type|v:all|p:${page}`).row();
+    kb.text('📣 Реклама', `a:bd_fset|k:type|v:ad|p:${page}`).row();
+    kb.text('🎥 Обзор', `a:bd_fset|k:type|v:review|p:${page}`).row();
+    kb.text('🎁 Розыгрыш', `a:bd_fset|k:type|v:giveaway|p:${page}`).row();
+    kb.text('✍️ Другое', `a:bd_fset|k:type|v:other|p:${page}`).row();
+  }
+  if (key === 'comp') {
+    kb.text('Все', `a:bd_fset|k:comp|v:all|p:${page}`).row();
+    kb.text('🤝 Бартер', `a:bd_fset|k:comp|v:barter|p:${page}`).row();
+    kb.text('🎟 Сертификат', `a:bd_fset|k:comp|v:cert|p:${page}`).row();
+    kb.text('💸 ₽', `a:bd_fset|k:comp|v:rub|p:${page}`).row();
+    kb.text('🔁 Смешано', `a:bd_fset|k:comp|v:mixed|p:${page}`).row();
+  }
+  kb.text('⬅️ Назад', `a:brands_filters|p:${page}`);
+  return kb;
+}
+
+async function renderBrandDirFilters(ctx, viewerUserId, params = {}) {
+  const page = Math.max(0, Number(params.page || 0));
+  const f = await getBrandDirFilter(ctx.from.id);
+  const text = `🎛 <b>Фильтры каталога</b>
+
+${escapeHtml(brandDirFilterSummary(f))}
+
+Выбери, какие бренды показывать.`;
+  await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: brandDirFiltersKb(f, page) });
+}
+
+async function renderBrandDirFilterPick(ctx, viewerUserId, params = {}) {
+  const page = Math.max(0, Number(params.page || 0));
+  const key = String(params.key || 'cat');
+  const title = key === 'cat' ? 'Категория' : (key === 'type' ? 'Формат' : 'Оплата');
+  await ctx.editMessageText(`🎛 <b>${title}</b>
+
+Выбери значение:`, { parse_mode: 'HTML', reply_markup: brandDirPickKb(key, page) });
 }
 
 async function renderBrandsDirectory(ctx, viewerUserId, params = {}) {
@@ -1734,8 +1962,10 @@ async function renderBrandsDirectory(ctx, viewerUserId, params = {}) {
   const PAGE_SIZE = 8;
   const offset = page * PAGE_SIZE;
 
+  const f = await getBrandDirFilter(ctx.from.id);
+
   const rows = await safeBrandProfiles(
-    () => db.listBrandsDirectory(PAGE_SIZE + 1, offset),
+    () => db.listBrandsDirectoryFiltered(PAGE_SIZE + 1, offset, f),
     async () => ({ __missing_relation: true })
   );
   if (rows && rows.__missing_relation) {
@@ -1749,7 +1979,9 @@ async function renderBrandsDirectory(ctx, viewerUserId, params = {}) {
   const hasMore = list.length > PAGE_SIZE;
   const items = list.slice(0, PAGE_SIZE);
 
+  const hasActiveFilters = !!(f.category || f.offerType || f.compensationType);
   let text = `🏷 <b>Каталог брендов</b>\n\n` +
+    `Фильтры: <b>${escapeHtml(brandDirFilterSummary(f))}</b>\n\n` +
     `Показываю бренды с заполненным профилем (4/4) и активной покупкой <b>Brand Pass</b> или <b>Brand Plan</b>.\n\n`;
 
   if (!items.length) {
@@ -1760,8 +1992,11 @@ async function renderBrandsDirectory(ctx, viewerUserId, params = {}) {
   }
 
   const kb = new InlineKeyboard();
+  kb.text('🎛 Фильтры', `a:brands_filters|p:${page}`);
+  if (hasActiveFilters) kb.text('♻️ Сброс', `a:bd_freset|p:${page}`);
+  kb.row();
   for (const bp of items) {
-    kb.text(brandDirectoryButtonLabel(bp), `a:brand_dir_open|u:${Number(bp.user_id)}|p:${page}`).row();
+    kb.text(brandDirectoryButtonLabel(bp, f), `a:brand_dir_open|u:${Number(bp.user_id)}|p:${page}`).row();
   }
 
   if (page > 0 || hasMore) {
@@ -1804,6 +2039,14 @@ async function renderBrandDirectoryCard(ctx, viewerUserId, params = {}) {
   const niche = String(prof.niche || '').trim();
   const geo = String(prof.geo || '').trim();
   const formats = brandCollabTypesDisplay(String(prof.collab_types || '').trim());
+
+  let viewerFilter = null;
+  try {
+    viewerFilter = await getBrandDirFilter(ctx.from.id);
+  } catch (_) {
+    viewerFilter = null;
+  }
+  const splitTags = brandCollabTagBadgesSplit(String(prof.collab_types || '').trim(), { maxFormats: 8, maxPay: 6, filter: viewerFilter });
   const budget = String(prof.budget || '').trim();
   const goals = String(prof.goals || '').trim();
   const req = String(prof.requirements || '').trim();
@@ -1814,6 +2057,10 @@ async function renderBrandDirectoryCard(ctx, viewerUserId, params = {}) {
   if (niche) text += `🎯 Ниша: <b>${escapeHtml(niche)}</b>\n`;
   if (geo) text += `🌍 Гео: <b>${escapeHtml(geo)}</b>\n`;
   if (formats && formats !== '—') text += `🧩 Форматы/условия: <b>${escapeHtml(formats)}</b>\n`;
+  if (splitTags.formats) text += `🎬 Форматы: <code>${escapeHtml(splitTags.formats)}</code>
+`;
+  if (splitTags.pay) text += `💳 Оплата: <code>${escapeHtml(splitTags.pay)}</code>
+`;
   if (budget) text += `💰 Бюджет: ${escapeHtml(clipText(budget, 240))}\n`;
   if (goals) text += `🎬 Цели: ${escapeHtml(clipText(goals, 240))}\n`;
   if (req) text += `📎 Требования: ${escapeHtml(clipText(req, 240))}\n`;
@@ -9059,6 +9306,50 @@ if (p.a === 'a:support_write') {
 if (p.a === 'a:brands_home') {
   await ctx.answerCallbackQuery();
   const page = Math.max(0, Number(p.p || 0));
+  await renderBrandsDirectory(ctx, u.id, { page, edit: true });
+  return;
+}
+
+if (p.a === 'a:brands_filters') {
+  await ctx.answerCallbackQuery();
+  const page = Math.max(0, Number(p.p || 0));
+  await renderBrandDirFilters(ctx, u.id, { page });
+  return;
+}
+
+if (p.a === 'a:bd_fpick') {
+  await ctx.answerCallbackQuery();
+  const page = Math.max(0, Number(p.p || 0));
+  const key = String(p.k || 'cat');
+  await renderBrandDirFilterPick(ctx, u.id, { page, key });
+  return;
+}
+
+if (p.a === 'a:bd_fset') {
+  await ctx.answerCallbackQuery();
+  const page = Math.max(0, Number(p.p || 0));
+  const key = String(p.k || 'cat');
+  const v = String(p.v || 'all');
+
+  const norm = (x) => {
+    if (!x || x === 'all' || x === 'undefined' || x === 'null') return null;
+    return String(x);
+  };
+
+  const patch = {};
+  if (key === 'cat') patch.category = norm(v);
+  if (key === 'type') patch.offerType = norm(v);
+  if (key === 'comp') patch.compensationType = norm(v);
+
+  await setBrandDirFilter(ctx.from.id, patch);
+  await renderBrandDirFilters(ctx, u.id, { page });
+  return;
+}
+
+if (p.a === 'a:bd_freset') {
+  await ctx.answerCallbackQuery();
+  const page = Math.max(0, Number(p.p || 0));
+  await setBrandDirFilter(ctx.from.id, { category: null, offerType: null, compensationType: null });
   await renderBrandsDirectory(ctx, u.id, { page, edit: true });
   return;
 }
