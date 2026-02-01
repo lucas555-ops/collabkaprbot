@@ -4046,6 +4046,32 @@ async function clearBrandDealsSearch(tgId, brandUserId) {
   } catch {}
 }
 
+
+async function getBrandDealsMineOnly(tgId, brandUserId) {
+  try {
+    const v = await redis.get(k(['brandDealsMineOnly', tgId, Number(brandUserId)]));
+    return String(v || '') === '1';
+  } catch {
+    return false;
+  }
+}
+
+async function setBrandDealsMineOnly(tgId, brandUserId, on = true, ttlSec = 24 * 60 * 60) {
+  try {
+    if (!on) {
+      await redis.del(k(['brandDealsMineOnly', tgId, Number(brandUserId)]));
+      return;
+    }
+    await redis.set(k(['brandDealsMineOnly', tgId, Number(brandUserId)]), '1', { ex: ttlSec });
+  } catch {}
+}
+
+async function clearBrandDealsMineOnly(tgId, brandUserId) {
+  try {
+    await redis.del(k(['brandDealsMineOnly', tgId, Number(brandUserId)]));
+  } catch {}
+}
+
 async function assertBrandAppsAccess(ctx, actorUserId, brandUserId) {
   const isOwner = Number(actorUserId) === Number(brandUserId);
   const isAdmin = isSuperAdminTg(ctx.from?.id);
@@ -4149,14 +4175,16 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
   const prof = await safeBrandProfiles(() => db.getBrandProfile(brandUserId), async () => null);
   const brandName = String(prof?.brand_name || '').trim() || 'Бренд';
 
-  const counts = await safeBrandApplications(() => db.countBrandDealsByStage(brandUserId), async () => ({
+  const counts = await safeBrandApplications(() => db.countBrandDealsByStage(brandUserId, mineOnly ? actorUserId : null), async () => ({
     negotiation: 0, deal: 0, paid: 0, done: 0, lost: 0, all: 0
   }));
 
   const search = await getBrandDealsSearch(ctx.from.id, brandUserId);
 
+  const mineOnly = access.isManager ? await getBrandDealsMineOnly(ctx.from.id, brandUserId) : false;
+
   const items = await safeBrandApplications(
-    () => search ? db.listBrandDealsFiltered(brandUserId, st, search, limit, offset) : db.listBrandDeals(brandUserId, st, limit, offset),
+    () => search ? db.listBrandDealsFiltered(brandUserId, st, search, limit, offset, mineOnly ? actorUserId : null) : db.listBrandDeals(brandUserId, st, limit, offset, mineOnly ? actorUserId : null),
     async () => []
   );
 
@@ -4164,6 +4192,9 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
     `📌 <b>Сделки</b>\n` +
     `Бренд: <b>${escapeHtml(brandName)}</b>\n` +
     `Стадия: <b>${escapeHtml(dealStageTitle(st))}</b>\n`;
+
+  if (mineOnly) header += `Фильтр: <b>только мои</b>\n`;
+
 
   if (search) header += `Поиск: <code>${escapeHtml(String(search))}</code>\n`;
 
@@ -4191,6 +4222,10 @@ async function renderBrandDealsList(ctx, actorUserId, brandUserId, stage = 'nego
   }
 
 
+  if (access.isManager) {
+    kb.row().text(mineOnly ? '👥 Показать все' : '👤 Только мои', `a:brand_deals_mine_toggle|ws:0|st:${st}|p:${p}`);
+  }
+
 // Search/filter by creator (username or tg id)
 kb.row().text('🔎 Поиск', `a:brand_deals_search|ws:0|st:${st}|p:${p}`);
 if (search) kb.text('❌ Сброс', `a:brand_deals_search_clear|ws:0|st:${st}|p:${p}`);
@@ -4204,7 +4239,7 @@ if (search) kb.text('❌ Сброс', `a:brand_deals_search_clear|ws:0|st:${st}|
 
   // Pagination
   const total = search
-    ? await safeBrandApplications(() => db.countBrandDealsFiltered(brandUserId, st, search), async () => (offset + items.length))
+    ? await safeBrandApplications(() => db.countBrandDealsFiltered(brandUserId, st, search, mineOnly ? actorUserId : null), async () => (offset + items.length))
     : ((st === 'all' ? (counts.all ?? 0) : (counts[st] ?? 0)) || 0);
   const hasPrev = p > 0;
   const hasNext = (offset + items.length) < total;
@@ -8412,26 +8447,54 @@ if (exp.type === 'brand_deals_search') {
 
   const backCb = String(exp.backCb || `a:brand_deals|ws:0|st:${stage}|p:${page}`);
 
+  const kb = new InlineKeyboard().text('⬅️ Назад', backCb).text('🏠 Меню', 'a:menu');
+
   if (!brandUserId) {
     await clearExpectText(ctx.from.id);
-    return ctx.reply('⚠️ Не удалось применить поиск: нет brandUserId.');
+    return ctx.reply('⚠️ Не удалось применить поиск: нет brandUserId.', { reply_markup: kb });
   }
 
-  if (!qRaw) return ctx.reply('⚠️ Введи @username или TG id (цифры).');
+  if (!qRaw) {
+    return ctx.reply(
+      '⚠️ Введи <code>@username</code> или <code>TG id</code> (цифры).\nПример: <code>@zarinka</code> или <code>123456789</code>\n\nЧтобы сбросить: <code>сброс</code>',
+      { parse_mode: 'HTML', reply_markup: kb }
+    );
+  }
 
   if (/^(сброс|clear|off|нет)$/i.test(qRaw)) {
     await clearBrandDealsSearch(ctx.from.id, brandUserId);
     await clearExpectText(ctx.from.id);
-    const kb = new InlineKeyboard().text('⬅️ Назад', backCb).text('🏠 Меню', 'a:menu');
     return ctx.reply('✅ Поиск сброшен.', { reply_markup: kb });
   }
 
-  const q = qRaw.replace(/^\s+|\s+$/g, '').slice(0, 80);
+  let q = qRaw.replace(/\s+/g, ' ').trim().slice(0, 80);
+
+  // Smart hints/validation
+  if (q.startsWith('@')) {
+    const uname = q.replace(/^@+/, '').trim();
+    if (uname.length < 2) {
+      return ctx.reply(
+        '⚠️ После <code>@</code> нужно минимум 2 символа.\nПример: <code>@zarinka</code>',
+        { parse_mode: 'HTML', reply_markup: kb }
+      );
+    }
+    q = '@' + uname;
+  } else if (/^\d+$/.test(q)) {
+    if (q.length < 6) {
+      return ctx.reply(
+        '⚠️ Похоже на <code>TG id</code>, но слишком коротко.\nПример: <code>123456789</code>\n\nИли введи <code>@username</code>.',
+        { parse_mode: 'HTML', reply_markup: kb }
+      );
+    }
+  }
+
   await setBrandDealsSearch(ctx.from.id, brandUserId, q);
   await clearExpectText(ctx.from.id);
 
-  const kb = new InlineKeyboard().text('⬅️ Назад', backCb).text('🏠 Меню', 'a:menu');
-  return ctx.reply(`✅ Поиск установлен: <code>${escapeHtml(q)}</code>`, { parse_mode: 'HTML', reply_markup: kb });
+  return ctx.reply(
+    `✅ Поиск установлен: <code>${escapeHtml(q)}</code>\n\n💡 Сброс: <code>сброс</code>`,
+    { parse_mode: 'HTML', reply_markup: kb }
+  );
 }
 
     if (exp.type === 'brand_app_chat_send') {
@@ -10935,7 +10998,7 @@ if (p.a === 'a:wsp_preview') {
   const backCb = `a:brand_deals|ws:0|st:${stage}|p:${page}`;
   await setExpectText(ctx.from.id, { type: 'brand_deals_search', brandUserId: bmRes.userId, stage, page, backCb });
   const kb = new InlineKeyboard().text('⬅️ Назад', backCb);
-  const t = '🔎 <b>Поиск по сделкам</b>\n\nВведи @username креатора или его TG id (цифры).\n\nПример: <code>@zarinka</code> или <code>123456789</code>';
+  const t = '🔎 <b>Поиск по сделкам</b>\n\nВарианты:\n• <code>@username</code> — пример: <code>@zarinka</code>\n• <code>TG id</code> (цифры) — пример: <code>123456789</code>\n\nПодсказки:\n• если начинаешь с <code>@</code>, добавь минимум 2 символа после @\n• если вводишь цифры — обычно 6–12 цифр\n\nЧтобы сбросить: <code>сброс</code>';
   try { await ctx.editMessageText(t, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true }); }
   catch { await ctx.reply(t, { parse_mode: 'HTML', reply_markup: kb, disable_web_page_preview: true }); }
   return;
@@ -10948,6 +11011,32 @@ if (p.a === 'a:brand_deals_search_clear') {
   const bmRes = await bmResolveAssert(ctx, u, 0, 'brand_deals', page);
   if (!bmRes) return;
   await clearBrandDealsSearch(ctx.from.id, bmRes.userId);
+  await renderBrandDealsList(ctx, u.id, bmRes.userId, stage, page);
+  return;
+}
+
+
+
+if (p.a === 'a:brand_deals_mine_toggle') {
+  await ctx.answerCallbackQuery();
+  const stage = String(p.st || 'negotiation');
+  const page = Math.max(0, Number(p.p || 0));
+
+  const bmRes = await bmResolveAssert(ctx, u, 0, 'brand_deals', page);
+  if (!bmRes) return;
+
+  const access = await assertBrandAppsAccess(ctx, u.id, bmRes.userId);
+  if (!access.ok) return;
+
+  if (!access.isManager) {
+    try { await ctx.answerCallbackQuery({ text: 'Доступно только менеджеру.' }); } catch {}
+    return;
+  }
+
+  const cur = await getBrandDealsMineOnly(ctx.from.id, bmRes.userId);
+  if (cur) await clearBrandDealsMineOnly(ctx.from.id, bmRes.userId);
+  else await setBrandDealsMineOnly(ctx.from.id, bmRes.userId, true);
+
   await renderBrandDealsList(ctx, u.id, bmRes.userId, stage, page);
   return;
 }
