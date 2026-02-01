@@ -423,7 +423,7 @@ function mainMenuCreatorKb(flags = {}, opts = {}) {
 
 function mainMenuBrandKb(flags = {}, opts = {}) {
   const { isModerator = false, isAdmin = false } = flags;
-  const { isManager = false, hasMultipleBrands = false, canManager = false } = opts;
+  const { isManager = false, hasMultipleBrands = false, canManager = false, teamLocked = false } = opts;
 
   const kb = new InlineKeyboard()
     .text('🛍 Лента', 'a:bx_feed|ws:0|p:0')
@@ -437,7 +437,7 @@ function mainMenuBrandKb(flags = {}, opts = {}) {
       .text('🏷 Профиль бренда', 'a:brand_profile|ws:0|ret:brand')
       .text('⭐️ Подписка', 'a:brand_plan|ws:0')
       .row()
-      .text('👥 Команда бренда', 'a:brand_team|ws:0');
+      .text(teamLocked ? '👥 Команда бренда 🔒' : '👥 Команда бренда', 'a:brand_team|ws:0');
   } else {
     kb.text('ℹ️ Права менеджера', 'a:bm_help')
       .row();
@@ -698,7 +698,22 @@ async function renderMainMenu(ctx, flags, params = {}) {
 Выбери действие:`;
       let canManager = false;
       try { canManager = (await db.listBrandsForManager(u.id)).length > 0; } catch { canManager = false; }
-      kb = mainMenuBrandKb(flags, { isManager: false, canManager });
+
+      // UX: show lock icon on Brand Team button until profile+purchase requirements met
+      let teamLocked = false;
+      try {
+        const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
+        const basicOk = isBrandBasicComplete(prof);
+        let teamPaid = false;
+        if (basicOk) {
+          try { teamPaid = await db.hasBrandTeamUnlockPurchase(u.id); } catch { teamPaid = false; }
+        }
+        teamLocked = !(basicOk && teamPaid);
+      } catch {
+        teamLocked = false;
+      }
+
+      kb = mainMenuBrandKb(flags, { isManager: false, canManager, teamLocked });
     }
   } else if (mode === UI_MODES.BRAND) {
     const base = `🏠 <b>Главное меню</b>
