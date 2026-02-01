@@ -3311,14 +3311,23 @@ export async function markBrandApplicationAccepted(appId, acceptedByUserId) {
 }
 
 // List brand deals (applications that have deal_stage set)
-export async function countBrandDealsByStage(brandUserId) {
+export async function countBrandDealsByStage(brandUserId, acceptedByUserId = null) {
+  const params = [Number(brandUserId)];
+  let where = `brand_user_id=$1 and coalesce(meta->>'deal_stage','') <> ''`;
+
+  if (acceptedByUserId) {
+    params.push(Number(acceptedByUserId));
+    where += ` and nullif(meta->'deal'->>'accepted_by_user_id','')::int = $2`;
+  }
+
   const r = await pool.query(
     `select coalesce(meta->>'deal_stage','') as stage, count(*)::int as cnt
      from brand_applications
-     where brand_user_id=$1 and coalesce(meta->>'deal_stage','') <> ''
+     where ${where}
      group by stage`,
-    [Number(brandUserId)]
+    params
   );
+
   const out = { negotiation: 0, deal: 0, paid: 0, done: 0, lost: 0, all: 0 };
   for (const row of r.rows) {
     const s = String(row.stage || '').toLowerCase();
@@ -3329,29 +3338,47 @@ export async function countBrandDealsByStage(brandUserId) {
   return out;
 }
 
-export async function listBrandDeals(brandUserId, stage = 'negotiation', limit = 10, offset = 0) {
+
+export async function listBrandDeals(brandUserId, stage = 'negotiation', limit = 10, offset = 0, acceptedByUserId = null) {
   const st = String(stage || 'negotiation').toLowerCase();
-  const whereStage = (st === 'all')
-    ? `coalesce(meta->>'deal_stage','') <> ''`
-    : `coalesce(meta->>'deal_stage','') = $2`;
 
   const params = [Number(brandUserId)];
-  if (st !== 'all') params.push(st);
+  let idx = 2;
+
+  let where = `brand_user_id=$1`;
+
+  if (acceptedByUserId) {
+    where += ` and nullif(meta->'deal'->>'accepted_by_user_id','')::int = $${idx}`;
+    params.push(Number(acceptedByUserId));
+    idx += 1;
+  }
+
+  if (st === 'all') {
+    where += ` and coalesce(meta->>'deal_stage','') <> ''`;
+  } else {
+    where += ` and coalesce(meta->>'deal_stage','') = $${idx}`;
+    params.push(st);
+    idx += 1;
+  }
+
+  const limitIdx = idx; idx += 1;
+  const offsetIdx = idx; idx += 1;
   params.push(Number(limit));
   params.push(Number(offset));
 
   const r = await pool.query(
     `select *
      from brand_applications
-     where brand_user_id=$1 and ${whereStage}
+     where ${where}
      order by updated_at desc, id desc
-     limit $${st === 'all' ? 2 : 3} offset $${st === 'all' ? 3 : 4}`,
+     limit $${limitIdx} offset $${offsetIdx}`,
     params
   );
   return r.rows || [];
 }
 
-export async function countBrandDealsFiltered(brandUserId, stage = 'negotiation', search = '') {
+
+export async function countBrandDealsFiltered(brandUserId, stage = 'negotiation', search = '', acceptedByUserId = null) {
   const st = String(stage || 'negotiation').toLowerCase();
   const termRaw = String(search || '').trim();
   const term = termRaw.toLowerCase();
@@ -3359,12 +3386,18 @@ export async function countBrandDealsFiltered(brandUserId, stage = 'negotiation'
   const params = [Number(brandUserId)];
   let idx = 2;
 
-  let where = `brand_user_id=$1 and `;
+  let where = `brand_user_id=$1`;
+
+  if (acceptedByUserId) {
+    where += ` and nullif(meta->'deal'->>'accepted_by_user_id','')::int = $${idx}`;
+    params.push(Number(acceptedByUserId));
+    idx += 1;
+  }
 
   if (st === 'all') {
-    where += `coalesce(meta->>'deal_stage','') <> ''`;
+    where += ` and coalesce(meta->>'deal_stage','') <> ''`;
   } else {
-    where += `coalesce(meta->>'deal_stage','') = $${idx}`;
+    where += ` and coalesce(meta->>'deal_stage','') = $${idx}`;
     params.push(st);
     idx += 1;
   }
@@ -3395,7 +3428,8 @@ export async function countBrandDealsFiltered(brandUserId, stage = 'negotiation'
   return Number(r.rows[0]?.cnt || 0);
 }
 
-export async function listBrandDealsFiltered(brandUserId, stage = 'negotiation', search = '', limit = 10, offset = 0) {
+
+export async function listBrandDealsFiltered(brandUserId, stage = 'negotiation', search = '', limit = 10, offset = 0, acceptedByUserId = null) {
   const st = String(stage || 'negotiation').toLowerCase();
   const termRaw = String(search || '').trim();
   const term = termRaw.toLowerCase();
@@ -3403,12 +3437,18 @@ export async function listBrandDealsFiltered(brandUserId, stage = 'negotiation',
   const params = [Number(brandUserId)];
   let idx = 2;
 
-  let where = `brand_user_id=$1 and `;
+  let where = `brand_user_id=$1`;
+
+  if (acceptedByUserId) {
+    where += ` and nullif(meta->'deal'->>'accepted_by_user_id','')::int = $${idx}`;
+    params.push(Number(acceptedByUserId));
+    idx += 1;
+  }
 
   if (st === 'all') {
-    where += `coalesce(meta->>'deal_stage','') <> ''`;
+    where += ` and coalesce(meta->>'deal_stage','') <> ''`;
   } else {
-    where += `coalesce(meta->>'deal_stage','') = $${idx}`;
+    where += ` and coalesce(meta->>'deal_stage','') = $${idx}`;
     params.push(st);
     idx += 1;
   }
@@ -3444,6 +3484,7 @@ export async function listBrandDealsFiltered(brandUserId, stage = 'negotiation',
   );
   return r.rows || [];
 }
+
 
 export async function setBrandApplicationDealStage(appId, stage, setByUserId) {
   const st = String(stage || '').toLowerCase();
