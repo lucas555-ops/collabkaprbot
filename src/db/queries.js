@@ -2388,83 +2388,42 @@ export async function listBrandsDirectoryFiltered(limit = 10, offset = 0, filter
     idx++;
   }
 
-  const qBoth = `
-    select bp.*, u.tg_username
-      from brand_profiles bp
-      join users u on u.id = bp.user_id
-      ${baseWhere}
-      ${extraWhere}
-       and (
-         exists (
-           select 1 from payments p
-            where p.user_id = bp.user_id
-              and p.kind in ('brand_pass', 'brand_plan')
-              and coalesce(p.status, 'RECEIVED') <> 'ERROR'
-            limit 1
-         )
-         or exists (
-           select 1 from stars_payments sp
-            where sp.user_id = bp.user_id
-              and sp.kind in ('brand_pass', 'brand_plan')
-            limit 1
-         )
-       )
-     order by bp.updated_at desc nulls last, bp.created_at desc
-     limit $1 offset $2
-  `;
-
-  const qPaymentsOnly = `
-    select bp.*, u.tg_username
-      from brand_profiles bp
-      join users u on u.id = bp.user_id
-      ${baseWhere}
-      ${extraWhere}
-       and exists (
-         select 1 from payments p
-          where p.user_id = bp.user_id
-            and p.kind in ('brand_pass', 'brand_plan')
-            and coalesce(p.status, 'RECEIVED') <> 'ERROR'
-          limit 1
-       )
-     order by bp.updated_at desc nulls last, bp.created_at desc
-     limit $1 offset $2
-  `;
-
-  const qStarsOnly = `
-    select bp.*, u.tg_username
-      from brand_profiles bp
-      join users u on u.id = bp.user_id
-      ${baseWhere}
-      ${extraWhere}
-       and exists (
-         select 1 from stars_payments sp
-          where sp.user_id = bp.user_id
-            and sp.kind in ('brand_pass', 'brand_plan')
-          limit 1
-       )
-     order by bp.updated_at desc nulls last, bp.created_at desc
-     limit $1 offset $2
-  `;
-
-  try {
-    const r = await pool.query(qBoth, params);
-    return r.rows || [];
-  } catch (e) {
-    const missPayments = isMissingRelationError(e, 'payments');
-    const missStars = isMissingRelationError(e, 'stars_payments');
-    if (!missPayments && !missStars) throw e;
-
-    if (missStars && !missPayments) {
-      const r = await pool.query(qPaymentsOnly, params);
-      return r.rows || [];
-    }
-    if (missPayments && !missStars) {
-      const r = await pool.query(qStarsOnly, params);
-      return r.rows || [];
-    }
-    return [];
+  // Advanced structured meta (brand_profiles.meta)
+  const bb = String(f.budgetBucket || '').trim();
+  if (bb) {
+    extraWhere += ` and (coalesce(bp.meta->>'budget_bucket','') = $${idx})`;
+    params.push(bb);
+    idx++;
   }
+
+  const goalsTags = Array.isArray(f.goalsTags) ? f.goalsTags.map((x) => String(x || '').trim()).filter(Boolean) : [];
+  if (goalsTags.length) {
+    extraWhere += ` and (coalesce(bp.meta->'goals_tags','[]'::jsonb) ?& $${idx}::text[])`;
+    params.push(goalsTags);
+    idx++;
+  }
+
+  const reqTags = Array.isArray(f.reqTags) ? f.reqTags.map((x) => String(x || '').trim()).filter(Boolean) : [];
+  if (reqTags.length) {
+    extraWhere += ` and (coalesce(bp.meta->'req_tags','[]'::jsonb) ?& $${idx}::text[])`;
+    params.push(reqTags);
+    idx++;
+  }
+
+  const q = `
+    select bp.*, u.tg_username
+      from brand_profiles bp
+      join users u on u.id = bp.user_id
+      ${baseWhere}
+      ${extraWhere}
+     order by bp.updated_at desc nulls last, bp.created_at desc
+     limit $1 offset $2
+  `;
+
+  const r = await pool.query(q, params);
+  return r.rows || [];
 }
+
 
 // -----------------------------
 // Workspace channel folders + editors (v1.1.2)
