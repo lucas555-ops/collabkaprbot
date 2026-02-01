@@ -1052,6 +1052,113 @@ function brandTeamKb() {
     .text('⬅️ Назад', 'a:menu');
 }
 
+
+// Brand Team access: unlock after basic profile + Brand Pass / Brand Plan
+function brandTeamLockedKb() {
+  return new InlineKeyboard()
+    .text('🏷 Профиль бренда', 'a:brand_profile|ws:0|ret:brand')
+    .row()
+    .text('🎫 Brand Pass', 'a:brand_pass|ws:0')
+    .text('⭐️ Brand Plan', 'a:brand_plan|ws:0')
+    .row()
+    .text('⬅️ Назад', 'a:menu');
+}
+
+async function getBrandTeamGateState(ownerUserId) {
+  const prof = await safeBrandProfiles(
+    () => db.getBrandProfile(ownerUserId),
+    async () => ({ __missing_relation: true })
+  );
+
+  if (prof && prof.__missing_relation) {
+    return {
+      ok: false,
+      missingRelation: true,
+      basicDone: 0,
+      missingBasic: ['Название', 'Ниша', 'Контакт', 'Ссылка'],
+      teamPaid: false
+    };
+  }
+
+  const p = prof || {};
+  const basic = [
+    { key: 'brand_name', label: 'Название' },
+    { key: 'niche', label: 'Ниша' },
+    { key: 'contact', label: 'Контакт' },
+    { key: 'brand_link', label: 'Ссылка' }
+  ];
+
+  const basicDone = basic.filter((x) => String(p[x.key] || '').trim()).length;
+  const missingBasic = basic.filter((x) => !String(p[x.key] || '').trim()).map((x) => x.label);
+
+  let teamPaid = false;
+  try {
+    teamPaid = await db.hasBrandTeamUnlockPurchase(ownerUserId);
+  } catch {
+    teamPaid = false;
+  }
+  if (!teamPaid) {
+    try {
+      teamPaid = await db.isBrandPlanActive(ownerUserId);
+    } catch {
+      teamPaid = false;
+    }
+  }
+
+  const ok = isBrandBasicComplete(p) && teamPaid;
+  return { ok, p, basicDone, missingBasic, teamPaid };
+}
+
+async function ensureBrandTeamUnlocked(ctx, u, { edit = true } = {}) {
+  // Owner-only: managers cannot manage team
+  const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: false });
+
+  if (bm.dbMissing) {
+    const kb = new InlineKeyboard().text('🏠 Меню', 'a:menu');
+    const text = `⚠️ <b>Нужна миграция 026_brand_managers</b>\n\nВ Neon должна быть таблица <code>brand_managers</code>.`;
+    if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+    return null;
+  }
+
+  if (bm.enabled && bm.brandUserId !== u.id) {
+    const kb = new InlineKeyboard().text('⬅️ Назад', 'a:menu').text('🏠 Меню', 'a:menu');
+    const text = `⛔ <b>Только владелец бренда</b>\n\nМенеджер не может управлять «👥 Команда бренда».`;
+    if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+    return null;
+  }
+
+  const st = await getBrandTeamGateState(u.id);
+
+  if (st.missingRelation) {
+    const kb = new InlineKeyboard().text('🏠 Меню', 'a:menu');
+    const text = `⚠️ <b>Нужна миграция 024_brand_profiles</b>\n\nВ Neon должна быть таблица <code>brand_profiles</code>.`;
+    if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+    return null;
+  }
+
+  if (!st.ok) {
+    const statusProfile = st.missingBasic && st.missingBasic.length
+      ? `• Профиль: ${st.basicDone}/4 (не хватает: <b>${escapeHtml(st.missingBasic.join(', '))}</b>)`
+      : `• Профиль: ${st.basicDone}/4`;
+
+    const statusPay = st.teamPaid
+      ? '• Покупка: ✅ найдена'
+      : '• Покупка: ❌ нет (нужен Brand Pass / Brand Plan)';
+
+    const text = `👥 <b>Команда бренда</b>\n\nДобавь менеджеров, чтобы быстрее отвечать на заявки и закрывать сделки.\n\n<b>Условия доступа:</b>\n1) Заполнить профиль бренда (4 поля: Название, Ниша, Контакт, Ссылка)\n2) Купить <b>Brand Pass</b> или <b>Brand Plan</b>\n\n<b>Статус:</b>\n${statusProfile}\n${statusPay}\n\n<i>Зачем:</i> защита от спама и ценность брендовой покупки.`;
+
+    const kb = brandTeamLockedKb();
+    if (edit) await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: kb });
+    else await ctx.reply(text, { parse_mode: 'HTML', reply_markup: kb });
+    return null;
+  }
+
+  return st;
+}
+
 function brandManagersListKb(managers) {
   const kb = new InlineKeyboard();
   for (const m of managers) {
@@ -1159,12 +1266,20 @@ function bxBrandMenuKb(wsId, credits, plan, retry = 0) {
 
 function isBrandBasicComplete(p) {
   if (!p) return false;
-  return !!(String(p.brand_name || '').trim() && String(p.brand_link || '').trim() && String(p.contact || '').trim());
+  return !!(
+    String(p.brand_name || '').trim() &&
+    String(p.niche || '').trim() &&
+    String(p.contact || '').trim() &&
+    String(p.brand_link || '').trim()
+  );
 }
 
 function isBrandExtendedComplete(p) {
   if (!p) return false;
-  return isBrandBasicComplete(p) && !!(String(p.niche || '').trim() && String(p.geo || '').trim() && String(p.collab_types || '').trim());
+  return isBrandBasicComplete(p) && !!(
+    String(p.geo || '').trim() &&
+    String(p.collab_types || '').trim()
+  );
 }
 
 function brandCbSuffix(params = {}) {
@@ -1258,13 +1373,17 @@ async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
   }
 
   const p = prof || {};
+
+  // Basic profile (anti-spam): required for messaging creators + unlocking Brand Team
   const basic = [
     { key: 'brand_name', label: 'Название' },
-    { key: 'brand_link', label: 'Ссылка' },
-    { key: 'contact', label: 'Контакт' }
-  ];
-  const ext = [
     { key: 'niche', label: 'Ниша' },
+    { key: 'contact', label: 'Контакт' },
+    { key: 'brand_link', label: 'Ссылка' }
+  ];
+
+  // Extended profile (trust + verification)
+  const ext = [
     { key: 'geo', label: 'Гео' },
     { key: 'collab_types', label: 'Форматы' },
     { key: 'budget', label: 'Бюджет' },
@@ -1278,36 +1397,57 @@ async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
   const missingBasic = basic.filter(x => !String(p[x.key] || '').trim()).map(x => x.label);
   const needBasic = missingBasic.length > 0;
 
+  // Brand Team unlock: require paid Brand Pass / Brand Plan
+  let teamPaid = false;
+  try {
+    teamPaid = await db.hasBrandTeamUnlockPurchase(ownerUserId);
+  } catch {
+    teamPaid = false;
+  }
+  if (!teamPaid) {
+    try {
+      teamPaid = await db.isBrandPlanActive(ownerUserId);
+    } catch {
+      teamPaid = false;
+    }
+  }
+
   const gateLine = needBasic && (params.ret === 'offer' || params.ret === 'lead')
     ? `
 
-⚠️ ${params.ret === 'lead' ? 'Чтобы оставить заявку, заполни 3 поля' : 'Чтобы писать креаторам, заполни 3 поля'}: <b>${escapeHtml(missingBasic.join(', '))}</b>.`
+⚠️ ${params.ret === 'lead' ? 'Чтобы оставить заявку, заполни 4 поля' : 'Чтобы писать креаторам, заполни 4 поля'}: <b>${escapeHtml(missingBasic.join(', '))}</b>.`
     : (needBasic ? `
 
-⚠️ Заполни 3 базовых поля, чтобы писать креаторам.` : '');
+⚠️ Заполни 4 базовых поля, чтобы писать креаторам.` : '');
+
+  const teamLine = teamPaid
+    ? ''
+    : `
+
+🔒 <b>Команда бренда (менеджеры)</b> откроется после покупки <b>Brand Pass</b> или <b>Brand Plan</b>.`;
 
   const verifyLine = (CFG.VERIFICATION_ENABLED && CFG.BRAND_VERIFY_REQUIRES_EXTENDED)
     ? `
 
-Для <b>Brand-верификации</b> рекомендовано заполнить: нишу, гео и форматы.`
+Для <b>Brand-верификации</b> рекомендовано заполнить: гео и форматы.`
     : '';
 
   const txt =
     `🏷 <b>Профиль бренда</b>
 
 ` +
-    `<b>База</b> (${basicDone}/3):
+    `<b>База</b> (${basicDone}/4):
 ` +
     `• Название: <b>${escapeHtml(p.brand_name || '—')}</b>
 ` +
-    `• Ссылка: <b>${escapeHtml(p.brand_link || '—')}</b>
+    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
 ` +
     `• Контакт: <b>${escapeHtml(p.contact || '—')}</b>
+` +
+    `• Ссылка: <b>${escapeHtml(p.brand_link || '—')}</b>
 
 ` +
-    `<b>Расширенный</b> (${extDone}/6):
-` +
-    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
+    `<b>Расширенный</b> (${extDone}/5):
 ` +
     `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
 ` +
@@ -1319,15 +1459,18 @@ async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
 ` +
     `• Требования: <b>${escapeHtml(p.requirements || '—')}</b>` +
     gateLine +
+    teamLine +
     verifyLine;
 
   const suf = brandCbSuffix(params);
 
   const kb = new InlineKeyboard()
     .text('✏️ Название', `a:brand_prof_set${suf}|f:bn`)
-    .text('🔗 Ссылка', `a:brand_prof_set${suf}|f:bl`)
+    .text('🎯 Ниша', `a:brand_prof_set${suf}|f:ni`)
     .row()
     .text('☎️ Контакт', `a:brand_prof_set${suf}|f:ct`)
+    .text('🔗 Ссылка', `a:brand_prof_set${suf}|f:bl`)
+    .row()
     .text('➕ Расширить', `a:brand_prof_more${suf}`)
     .row();
 
@@ -1352,14 +1495,13 @@ async function renderBrandProfileHome(ctx, ownerUserId, params = {}) {
 async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
   const prof = await safeBrandProfiles(() => db.getBrandProfile(ownerUserId), async () => null);
   const p = prof || {};
+
   const txt =
     `➕ <b>Расширенный профиль бренда</b>
 
 ` +
-    `Заполни детали — это повышает доверие и нужно для Brand-верификации.
+    `Заполни детали — это повышает доверие (и помогает в Brand-верификации).
 
-` +
-    `• Ниша: <b>${escapeHtml(p.niche || '—')}</b>
 ` +
     `• Гео: <b>${escapeHtml(p.geo || '—')}</b>
 ` +
@@ -1373,9 +1515,7 @@ async function renderBrandProfileMore(ctx, ownerUserId, params = {}) {
 
   const suf = brandCbSuffix(params);
   const kb = new InlineKeyboard()
-    .text('🎯 Ниша', `a:brand_prof_set${suf}|f:ni`)
     .text('🌍 Гео', `a:brand_prof_set${suf}|f:ge`)
-    .row()
     .text('🧩 Форматы', `a:brand_prof_set${suf}|f:ty`)
     .row()
     .text('💰 Бюджет', `a:brand_prof_set${suf}|f:bu`)
@@ -4697,6 +4837,7 @@ async function renderBrandPaywall(ctx, userId, wsId, offerId, page = 0) {
 
 Чтобы <b>написать блогеру</b> и открыть новый диалог, нужен <b>${cost}</b> кредит(ов).
 Переписка внутри открытого диалога — бесплатна.
+👥 Команда бренда (менеджеры) открывается после покупки Brand Pass или Brand Plan.
 ${trialLine}${limitLine}${verifyHintLine}
 Твой баланс: <b>${credits}</b> кредит(ов)
 🎟 Retry credits: <b>${retry}</b>
@@ -4943,6 +5084,8 @@ async function renderBrandPassTopup(ctx, userId, wsId) {
 
 Retry начисляется, если блогер не отвечает за 24ч (действует 7 дней).
 
+👥 Команда бренда (менеджеры) открывается после покупки Brand Pass или Brand Plan.
+
 Пополняй, чтобы открывать новые диалоги с микро-каналами.`,
     { parse_mode: 'HTML', reply_markup: kb }
   );
@@ -4965,6 +5108,7 @@ async function renderBrandPlan(ctx, userId, wsId) {
 Статус: <b>${escapeHtml(status)}</b>
 
 Brand Plan даёт инструменты внутри Inbox (CRM-стадии) и быстрые действия.
+Также открывает «Команда бренда» (добавление менеджеров).
 Кредиты Brand Pass покупаются отдельно.`,
     { parse_mode: 'HTML', reply_markup: kb }
   );
@@ -6092,6 +6236,41 @@ ctx.reply = (text, extra) => {
         return;
       }
       const username = m[1];
+
+      // Brand Team access guard (owner-only + unlock)
+      const bm = await resolveBmBrandContext(ctx, u, { requirePickWhenMissingActive: false });
+      if (bm.dbMissing) {
+        await ctx.reply('⚠️ Не найдена таблица brand_managers. Примените миграцию 026_brand_managers.sql в Neon.');
+        return;
+      }
+      if (bm.enabled && bm.brandUserId !== u.id) {
+        await ctx.reply('⛔️ Недостаточно прав. Добавлять менеджеров может только владелец бренда.');
+        return;
+      }
+
+      const st = await getBrandTeamGateState(u.id);
+      if (!st.ok) {
+        const miss = st.missingBasic && st.missingBasic.length ? ` (не хватает: ${st.missingBasic.join(', ')})` : '';
+        const profileLine = `• Профиль: ${st.basicDone || 0}/4${miss}`;
+        const payLine = `• Покупка: ${st.paidOk ? '✅' : '❌'} (Brand Pass / Brand Plan)`;
+
+        await ctx.reply(
+          `👥 <b>Команда бренда</b>
+
+` +
+          `Раздел доступен после заполнения профиля бренда и покупки Brand Pass/Plan.
+
+` +
+          `${escapeHtml(profileLine)}
+${escapeHtml(payLine)}
+
+` +
+          `Открой профиль, заполни базовые поля и оформи Brand Pass или Brand Plan — после этого сможешь добавлять менеджеров.`,
+          { parse_mode: 'HTML', reply_markup: brandTeamLockedKb() }
+        );
+        return;
+      }
+
       const manager = await db.findUserByUsername(username);
       if (!manager) {
         await ctx.reply(`⚠️ Эта функция требует, чтобы пользователь уже запускал бота.
@@ -9157,14 +9336,9 @@ if (p.a === 'a:ws_prof_mode') {
     if (p.a === 'a:brand_team') {
       await ctx.answerCallbackQuery();
 
-      const bm = await resolveBmBrandContext(ctx, u);
-      if (bm.enabled && bm.brandUserId !== u.id) {
-        await ctx.editMessageText(
-          '⛔️ Недостаточно прав. Раздел «Команда бренда» доступен только владельцу бренда.',
-          { parse_mode: 'HTML', reply_markup: navKb('a:menu') }
-        );
-        return;
-      }
+      const gate = await ensureBrandTeamUnlocked(ctx, u);
+      if (!gate) return;
+
 
       const managers = await db.listBrandManagers(u.id);
       const count = managers.length;
@@ -9182,6 +9356,8 @@ if (p.a === 'a:ws_prof_mode') {
 
     if (p.a === 'a:bm_invite') {
       await ctx.answerCallbackQuery();
+      const gate = await ensureBrandTeamUnlocked(ctx, u);
+      if (!gate) return;
       const token = randomToken(10);
       await redis.set(
         k(['bm_invite', token]),
@@ -9207,6 +9383,8 @@ ${link}`;
 
     if (p.a === 'a:bm_add_username') {
       await ctx.answerCallbackQuery();
+      const gate = await ensureBrandTeamUnlocked(ctx, u);
+      if (!gate) return;
       await setExpectText(ctx.from.id, { type: 'bm_username' });
       await ctx.editMessageText('Введи @username менеджера одним сообщением (пример: @manager).', {
         reply_markup: navKb('a:brand_team|ws:0'),
@@ -9216,6 +9394,8 @@ ${link}`;
 
     if (p.a === 'a:bm_list') {
       await ctx.answerCallbackQuery();
+      const gate = await ensureBrandTeamUnlocked(ctx, u);
+      if (!gate) return;
       const managers = await db.listBrandManagers(u.id);
       if (!managers.length) {
         await ctx.editMessageText('Пока менеджеров нет. Добавь менеджера через приглашение или по @username.', {
@@ -9238,6 +9418,8 @@ ${link}`;
 
     if (p.a === 'a:bm_rm_q') {
       await ctx.answerCallbackQuery();
+      const gate = await ensureBrandTeamUnlocked(ctx, u);
+      if (!gate) return;
       const managerUserId = Number(p.u || 0);
       if (!managerUserId) return;
 
@@ -9253,6 +9435,8 @@ ${link}`;
 
     if (p.a === 'a:bm_rm_ok') {
       await ctx.answerCallbackQuery();
+      const gate = await ensureBrandTeamUnlocked(ctx, u);
+      if (!gate) return;
       const managerUserId = Number(p.u || 0);
       if (!managerUserId) return;
       await db.removeBrandManager(u.id, managerUserId);
@@ -9337,7 +9521,7 @@ ${link}`;
 
       const prof = await safeBrandProfiles(() => db.getBrandProfile(u.id), async () => null);
       if (!isBrandBasicComplete(prof)) {
-        await ctx.answerCallbackQuery({ text: 'Заполни 3 поля профиля (Название, Ссылка, Контакт).', show_alert: true });
+        await ctx.answerCallbackQuery({ text: 'Заполни 4 поля профиля (Название, Ниша, Контакт, Ссылка).', show_alert: true });
         await renderBrandProfileHome(ctx, u.id, { wsId, ret: 'lead', edit: true });
         return;
       }
@@ -10329,13 +10513,13 @@ if (p.a === 'a:match_home') {
         bm = bmRes.bm || { enabled: false };
       }
 
-      // Brand profile gate (Brand Mode): require 3-step basic profile before messaging creators
+      // Brand profile gate (Brand Mode): require 4-step basic profile before messaging creators
       if (wsId === 0 && CFG.BRAND_PROFILE_REQUIRED) {
         const prof = await safeBrandProfiles(() => db.getBrandProfile(actorUserId), async () => null);
         if (!isBrandBasicComplete(prof)) {
           if (bm.enabled) {
             await ctx.answerCallbackQuery({
-              text: '⚠️ Профиль бренда не заполнен. Попроси владельца бренда заполнить 3 базовых поля (Название, Ссылка, Контакт).',
+              text: '⚠️ Профиль бренда не заполнен. Попроси владельца бренда заполнить 4 базовых поля (Название, Ниша, Контакт, Ссылка).',
               show_alert: true
             });
             await renderBxPublicView(ctx, actorUserId, wsId, offerId, page);
@@ -10343,7 +10527,7 @@ if (p.a === 'a:match_home') {
           }
 
           await ctx.answerCallbackQuery({
-            text: '⚠️ Заполни профиль бренда (3 шага), чтобы писать креаторам.',
+            text: '⚠️ Заполни профиль бренда (4 шага), чтобы писать креаторам.',
             show_alert: true
           });
           await renderBrandProfileHome(ctx, actorUserId, { wsId, ret: 'offer', backOfferId: offerId, backPage: page, edit: true });
